@@ -508,7 +508,35 @@ impl<'a> SourceAnalyzer<'a> {
             self.add_effect(eff, output);
         };
 
+        // Calling a mutating method (e.g. list.append) on a module-level variable from a
+        // nested scope is a global variable mutation.
+        let is_global_receiver = res.is_global()
+            || (res.scope == self.info.module_name && self.cursor.scope() != self.info.module_name);
+        if is_global_receiver
+            && let Some(t) = typ
+            && self.may_mutate_receiver(t, &attr.id)
+        {
+            let name = ModuleName::from_name(&res.name);
+            let eff = Effect::new(EffectKind::GlobalVarMutation, name, range);
+            self.add_effect(eff, output);
+        }
+
         true
+    }
+
+    /// Check whether a method call may mutate its receiver. For stub-defined types,
+    /// we trust the annotation: only `mutation()` methods return true. For types not
+    /// in stubs (project-defined classes), we conservatively assume mutation.
+    fn may_mutate_receiver(&self, typ: &ModuleName, method_name: &Name) -> bool {
+        let method_fqn = typ.append(method_name);
+        let stub_module = typ.parent().unwrap_or(*typ);
+        let Some(stub) = self.info.stubs.get(&stub_module) else {
+            return true;
+        };
+        stub.module_effects
+            .effects
+            .get(&method_fqn)
+            .is_some_and(|effects| effects.iter().any(|e| e.kind == EffectKind::Mutation))
     }
 
     fn check_indirectly_called_method(

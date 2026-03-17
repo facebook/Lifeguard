@@ -64,6 +64,66 @@ def f():
     }
 
     #[test]
+    fn test_global_var_method_mutation() {
+        let code = r#"
+a = [1, 2, 3]
+
+def f():
+    a.append(4)  # E: method-call  # E: global-var-mutation
+"#;
+        check_effects(code);
+    }
+
+    #[test]
+    fn test_global_var_method_mutation_cross_module() {
+        let a = r#"
+items = []
+
+def register(item):
+    items.append(item)
+"#;
+
+        let b = r#"
+from a import register
+register("x")  # E: unsafe-function-call
+"#;
+        check_all(vec![("a", a), ("b", b)]);
+    }
+
+    #[test]
+    fn test_global_var_method_no_mutation() {
+        let code = r#"
+a = [1, 2, 3]
+
+def f():
+    x = a.copy()  # E: method-call
+"#;
+        check_effects(code);
+    }
+
+    #[test]
+    fn test_global_var_method_mutation_custom_class() {
+        let a = r#"
+class Registry:
+    def __init__(self):
+        self._items = []
+    def add(self, item):
+        self._items.append(item)
+
+registry = Registry()
+
+def register(item):
+    registry.add(item)
+"#;
+
+        let b = r#"
+from a import register
+register("x")  # E: unsafe-function-call
+"#;
+        check_all(vec![("a", a), ("b", b)]);
+    }
+
+    #[test]
     fn test_unknown_function_call() {
         let code = r#"
 a = (x + y)(z)  # E: unknown-function-call
