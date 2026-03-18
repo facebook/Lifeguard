@@ -84,6 +84,33 @@ class A(metaclass=Meta):
     }
 
     #[test]
+    fn test_unsafe_post_init_called() {
+        // __post_init__ is called by dataclass-generated __init__
+        let code = r#"
+ import foo
+
+class A:
+    def __post_init__(self):
+        foo.x = 42
+
+a = A()  # E: unsafe-function-call
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_unsafe_post_init_not_called() {
+        let code = r#"
+ import foo
+
+class A:
+    def __post_init__(self):
+        foo.x = 42
+"#;
+        check(code);
+    }
+
+    #[test]
     fn test_metaclass_init() {
         // Mark a class unsafe if its metaclass.__init__ has unsafe behaviour
         let code = r#"

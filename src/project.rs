@@ -950,6 +950,9 @@ impl ProjectInfo {
         // TODO: Look up __init__ in the MRO
         let func = &cls_name.append_str("__init__");
         ret &= self.check_call_body(call, func, state)?;
+        // Check __post_init__ (called by dataclass-generated __init__)
+        let post_init_func = &cls_name.append_str("__post_init__");
+        ret &= self.check_call_body(call, post_init_func, state)?;
         Ok(ret)
     }
 
