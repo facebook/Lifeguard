@@ -119,6 +119,12 @@ def test() -> None:
     run(["buck2", "test", "--reuse-current-config"] + tests + ["--", "--run-disabled"])
 
 
+def test_oss() -> None:
+    print_running("scripts/test_cargo_build.sh (OSS tests)")
+    script = Path(__file__).parent / "scripts" / "test_cargo_build.sh"
+    run(["bash", str(script)])
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     # We may wish to add arguments in future, so validate no one is accidentally passing them
@@ -136,6 +142,8 @@ def main() -> None:
         clippy()
     with timing():
         test()
+    with timing():
+        test_oss()
 
 
 if __name__ == "__main__":
