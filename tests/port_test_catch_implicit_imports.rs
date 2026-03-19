@@ -236,7 +236,6 @@ mod tests {
 
     #[test]
     fn test_catch_implicit_import_function_in_other_unsafe_file() {
-        // TODO (T227158497): Correctness issue
         // If qux is analzyed first foo.bar is not reported as an implicit
         // import (foo.bar is unknown)
         let __main__ = r#"
