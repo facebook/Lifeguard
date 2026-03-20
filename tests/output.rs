@@ -103,8 +103,12 @@ mod tests {
         let sources = TestSources::new(modules);
         let sys_info = SysInfo::lg_default();
         let (import_graph, exports) = ImportGraph::make_with_exports(&sources, &sys_info);
-        let safety_map = project::run_analysis(&sources, &exports, &import_graph, &sys_info);
-        LifeGuardAnalysis::new(safety_map, import_graph, &exports, &test_options())
+        let (safety_map, side_effect_imports) =
+            project::run_analysis(&sources, &exports, &import_graph, &sys_info);
+        let mut analysis =
+            LifeGuardAnalysis::new(safety_map, import_graph, &exports, &test_options());
+        analysis.propagate_side_effect_imports(&side_effect_imports);
+        analysis
     }
 
     #[test]
@@ -683,6 +687,79 @@ mod tests {
         assert!(
             has_lazy_eligible_dep(&result, "cycle_a.sub", "cycle_b"),
             "cycle_a.sub should have cycle_b in its lazy_eligible list (propagated from parent cycle_a)"
+        );
+    }
+
+    #[test]
+    fn test_side_effect_imports_propagate_failing_deps() {
+        // When module A does a bare `import B` that is never accessed (side-effect import),
+        // and B is a passing module with non-empty failing deps, B should appear in A's
+        // failing deps so B is eagerly imported.
+
+        let registry = r#"
+            REGISTRY = {}
+            def register(name):
+                def decorator(cls):
+                    REGISTRY[name] = cls
+                    return cls
+                return decorator
+        "#;
+
+        let layer_film = r#"
+            from registry import register
+            @register("FiLMLayer")  # E: unknown-decorator-call
+            class FiLMLayer:
+                pass
+        "#;
+
+        // gen_layers: bare import of layer_film (side-effect import, never accessed)
+        let gen_layers = r#"
+            import layer_film
+        "#;
+
+        // test_module: bare import of gen_layers (side-effect import) + uses registry
+        let test_module = r#"
+            import gen_layers
+            from registry import REGISTRY
+            x = REGISTRY
+        "#;
+
+        let modules = vec![
+            ("registry", registry),
+            ("layer_film", layer_film),
+            ("gen_layers", gen_layers),
+            ("test_module", test_module),
+        ];
+
+        let result = run_lifeguard_analysis(&modules);
+
+        assert!(
+            result
+                .failing_modules
+                .contains(&ModuleName::from_str("layer_film")),
+            "layer_film should be failing"
+        );
+
+        assert!(
+            result
+                .passing_modules
+                .contains(&ModuleName::from_str("gen_layers")),
+            "gen_layers should be passing"
+        );
+        assert!(
+            has_lazy_eligible_dep(&result, "gen_layers", "layer_film"),
+            "gen_layers should have layer_film in its lazy_eligible list"
+        );
+
+        assert!(
+            result
+                .passing_modules
+                .contains(&ModuleName::from_str("test_module")),
+            "test_module should be passing"
+        );
+        assert!(
+            has_lazy_eligible_dep(&result, "test_module", "gen_layers"),
+            "test_module should have gen_layers in its lazy_eligible list (side-effect import)"
         );
     }
 

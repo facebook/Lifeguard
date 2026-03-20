@@ -45,7 +45,7 @@ pub fn process_source_map(
     });
     report_memory("After creating import graph and exports");
 
-    let analysis_output = time("Analyzing AST", || {
+    let (analysis_output, side_effect_imports) = time("Analyzing AST", || {
         project::run_analysis(&sources, &exports, &import_graph, &sys_info)
     });
     report_memory("After analyzing AST");
@@ -58,7 +58,9 @@ pub fn process_source_map(
     }
 
     let lifeguard_output = time("Creating analysis object", || {
-        LifeGuardAnalysis::new(analysis_output, import_graph, &exports, options)
+        let mut analysis = LifeGuardAnalysis::new(analysis_output, import_graph, &exports, options);
+        analysis.propagate_side_effect_imports(&side_effect_imports);
+        analysis
     });
 
     // Skip deallocation of large data structures since the process is about to exit.

@@ -44,6 +44,7 @@ use crate::traits::ModuleNameExt;
 
 pub type AnalysisMap = HashMap<ModuleName, AnalyzedModule, ahash::RandomState>;
 pub type SafetyMap = DashMap<ModuleName, SafetyResult>;
+pub type SideEffectMap = AHashMap<ModuleName, AHashSet<ModuleName>>;
 type ScopeImportsMap = AHashMap<ModuleName, AHashMap<ModuleName, AHashSet<ModuleName>>>;
 
 // Merge effects from all modules into a single effect table
@@ -240,14 +241,46 @@ impl GlobalAnalysisState {
     }
 }
 
+/// Compute side-effect imports: module-level imports never accessed in any scope.
+/// These are imports that exist solely for their side effects (e.g., decorator registration).
+fn compute_side_effect_imports(analysis_map: &AnalysisMap) -> SideEffectMap {
+    let results: Vec<_> = analysis_map
+        .par_iter()
+        .map(|(module_name, output)| {
+            let Some(module_pending) = output.module_effects.pending_imports.get(module_name)
+            else {
+                return (*module_name, AHashSet::new());
+            };
+
+            let all_called: AHashSet<ModuleName> = output
+                .module_effects
+                .called_imports
+                .values()
+                .flatten()
+                .copied()
+                .collect();
+
+            let side_effects: AHashSet<ModuleName> =
+                module_pending.difference(&all_called).copied().collect();
+
+            (*module_name, side_effects)
+        })
+        .collect();
+
+    results.into_iter().collect()
+}
+
 /// Run the full analysis pipeline
 pub fn run_analysis(
     sources: &impl ModuleProvider,
     exports: &Exports,
     import_graph: &ImportGraph,
     sys_info: &SysInfo,
-) -> SafetyMap {
+) -> (SafetyMap, SideEffectMap) {
     let analysis_map = analyze_all(sources, exports, import_graph, sys_info);
+    let side_effect_imports = time("  Computing side-effect imports", || {
+        compute_side_effect_imports(&analysis_map)
+    });
     let info = time("  Building project info", || {
         ProjectInfo::new(analysis_map, exports)
     });
@@ -255,7 +288,7 @@ pub fn run_analysis(
     time("  Filtering out stubs", || {
         filter_out_stubs(&safety_map, sources)
     });
-    safety_map
+    (safety_map, side_effect_imports)
 }
 
 /// Filter out stubs from the safety map

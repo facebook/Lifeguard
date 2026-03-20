@@ -195,7 +195,7 @@ fn check_output(
     let (import_graph, exports) = ImportGraph::make_with_exports(&sources, &sys_info);
 
     let safety_map = match check {
-        Check::Errors => project::run_analysis(&sources, &exports, &import_graph, &sys_info),
+        Check::Errors => project::run_analysis(&sources, &exports, &import_graph, &sys_info).0,
         _ => SafetyMap::new(),
     };
     let effect_map = match check {
