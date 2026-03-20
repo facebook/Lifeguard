@@ -382,6 +382,7 @@ struct BindingsTableBuilder<'a, 'b> {
     definitions: &'a DefinitionTable,
     exports: &'b Exports,
     cursor: Cursor,
+    is_stub: bool,
 }
 
 impl<'a, 'b> BindingsTableBuilder<'a, 'b> {
@@ -398,15 +399,27 @@ impl<'a, 'b> BindingsTableBuilder<'a, 'b> {
             exports,
             definitions,
             cursor: Cursor::new(),
+            is_stub: false,
         }
     }
 
     pub fn build(mut self, parsed_module: &ParsedModule) -> BindingsTable {
+        self.is_stub = parsed_module.is_stub();
         self.module(&parsed_module.ast.body);
         BindingsTable {
             bindings: self.bindings,
             aliases: self.aliases.aliases,
         }
+    }
+
+    /// Whether we trust type annotations as a source of truth
+    fn trust_annotations(&self) -> bool {
+        // We treat type annotations in stubs as trustworthy because they are often the only source
+        // of truth for variable types, e.g. in os.pyi we have
+        //   environ: Environ
+        // where a py file would have had
+        //   environ: Environ = Environ()
+        self.is_stub
     }
 
     fn resolve_expr(&self, x: &Expr) -> Option<ResolvedName<'_>> {
@@ -419,18 +432,19 @@ impl<'a, 'b> BindingsTableBuilder<'a, 'b> {
         bindings.insert(name, value);
     }
 
-    fn get_call_type(&self, call: &ExprCall) -> Option<ModuleName> {
-        // Get the definition of the called function, and check if it is a class.
-        let box func = &call.func;
-        // If we don't have a named function, or if we cannot resolve the function name in the
+    /// Resolve an expression to the class it names, if any.
+    /// Used both for constructor calls (to infer instance types) and for
+    /// type annotations in stub files.
+    fn resolve_to_class(&self, expr: &Expr) -> Option<ModuleName> {
+        // If we don't have a named expression, or if we cannot resolve the name in the
         // current scope, return None
-        let func_name = func.full_name()?;
-        let res = self.resolve_expr(func)?;
+        let expr_name = expr.full_name()?;
+        let res = self.resolve_expr(expr)?;
         if let Some(alias) = self.aliases.resolve(&res.scope, &res.name) {
-            // We have resolved `res.name`, which is the base name of `func`, i.e. if func is
+            // We have resolved `res.name`, which is the base name of `expr`, i.e. if expr is
             // `foo.bar.baz` we have only resolved `foo`, so we need to be careful that we take the
             // rest of the name into account
-            let parts = func_name.components();
+            let parts = expr_name.components();
             match alias {
                 Alias::Global(Value::Class(c)) => {
                     if parts.len() == 1 {
@@ -439,7 +453,7 @@ impl<'a, 'b> BindingsTableBuilder<'a, 'b> {
                     }
                 }
                 Alias::Global(Value::Module(m)) => {
-                    // The prefix of `func_name` is an aliased module; replace it with the actual
+                    // The prefix of `expr_name` is an aliased module; replace it with the actual
                     // module name and then see if the new qualified name is a class
                     let mut new = m.components();
                     new.extend_from_slice(&parts[1..]);
@@ -457,8 +471,12 @@ impl<'a, 'b> BindingsTableBuilder<'a, 'b> {
                 return Some(name);
             }
         }
-        // We have not matched the function name to a local or imported class
+        // We have not matched the expression to a class
         None
+    }
+
+    fn get_call_type(&self, call: &ExprCall) -> Option<ModuleName> {
+        self.resolve_to_class(&call.func)
     }
 
     fn get_expr_type(&self, expr: &Expr) -> Option<ModuleName> {
@@ -620,6 +638,12 @@ impl<'a, 'b> BindingsTableBuilder<'a, 'b> {
     fn ann_assign(&mut self, x: &StmtAnnAssign) {
         if let Some(val) = &x.value {
             self.assign_single(&x.target, val.as_ref())
+        } else if self.trust_annotations() {
+            if let Some(name) = x.target.as_var_name() {
+                if let Some(class_name) = self.resolve_to_class(&x.annotation) {
+                    self.add_binding(name, Value::Instance(class_name));
+                }
+            }
         }
     }
 
@@ -653,6 +677,7 @@ mod tests {
 
     use super::*;
     use crate::module_info::build_definitions_and_classes;
+    use crate::module_parser::parse_pyi;
     use crate::pyrefly::sys_info::SysInfo;
     use crate::source_map::ModuleProvider;
     use crate::test_lib::*;
@@ -667,6 +692,17 @@ mod tests {
         let (definitions, _classes) = build_definitions_and_classes(parsed_module, &sys_info);
         let (import_graph, exports) = ImportGraph::make_with_exports(&sources, &sys_info);
         BindingsTable::new(&definitions, &exports, &import_graph, parsed_module)
+    }
+
+    pub fn make_stub_bindings(module: &str, modules: &[(&str, &str)]) -> BindingsTable {
+        let mod_name = ModuleName::from_str(module);
+        let sources = TestSources::new(modules);
+        let sys_info = SysInfo::lg_default();
+        let code = sources.get_code(&mod_name).expect("module not found");
+        let parsed_module = parse_pyi(code, mod_name, false);
+        let (definitions, _classes) = build_definitions_and_classes(&parsed_module, &sys_info);
+        let (import_graph, exports) = ImportGraph::make_with_exports(&sources, &sys_info);
+        BindingsTable::new(&definitions, &exports, &import_graph, &parsed_module)
     }
 
     pub fn test_instances(bt: &BindingsTable, expected: Vec<(&str, &str, &str)>) {
@@ -942,5 +978,47 @@ a = A()
 
         let bt = make_bindings("test", &modules);
         test_instances(&bt, vec![("test", "a", "mod2.A")]);
+    }
+
+    #[test]
+    fn test_stub_annotated_constant() {
+        let stub = r#"
+class Environ:
+    def get(self, key: str) -> str: ...
+
+environ: Environ
+"#;
+        let modules = vec![("test", stub)];
+        let bt = make_stub_bindings("test", &modules);
+        test_instances(&bt, vec![("test", "environ", "test.Environ")]);
+    }
+
+    #[test]
+    fn test_stub_annotated_constant_imported_type() {
+        let types = r#"
+class MyType:
+    pass
+"#;
+        let stub = r#"
+from types_mod import MyType
+
+x: MyType
+"#;
+        let modules = vec![("types_mod", types), ("test", stub)];
+        let bt = make_stub_bindings("test", &modules);
+        test_instances(&bt, vec![("test", "x", "types_mod.MyType")]);
+    }
+
+    #[test]
+    fn test_non_stub_ignores_annotation_without_value() {
+        let code = r#"
+class Foo:
+    pass
+
+x: Foo
+"#;
+        let modules = vec![("test", code)];
+        let bt = make_bindings("test", &modules);
+        assert_eq!(bt.lookup_str("test", "x"), None);
     }
 }

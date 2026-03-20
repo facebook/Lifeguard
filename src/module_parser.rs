@@ -29,6 +29,10 @@ pub struct ParsedModule {
 }
 
 impl ParsedModule {
+    pub fn is_stub(&self) -> bool {
+        self.source_type == PySourceType::Stub
+    }
+
     pub fn byte_to_line_number(&self, pos: u32) -> usize {
         let idx = match self.newline_positions.binary_search(&pos) {
             Ok(n) => n,
