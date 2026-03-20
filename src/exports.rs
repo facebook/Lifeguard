@@ -40,14 +40,14 @@ pub struct Export {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Attribute {
     pub module: ModuleName,
-    pub attr: String,
+    pub attr: Name,
 }
 
 impl Attribute {
     pub fn new(module: ModuleName, attr: &str) -> Self {
         Self {
             module,
-            attr: attr.to_string(),
+            attr: Name::new(attr),
         }
     }
 
@@ -55,16 +55,19 @@ impl Attribute {
     pub fn from_module_name(name: &ModuleName) -> Self {
         let module = name.parent().unwrap_or_else(|| ModuleName::from_str(""));
         let components = name.components();
-        let attr = components.last().map(|n| n.to_string()).unwrap_or_default();
+        let attr = components
+            .last()
+            .map(Name::new)
+            .unwrap_or_else(|| Name::new(""));
         Self { module, attr }
     }
 
     /// Reconstruct the fully-qualified ModuleName (module.attr).
     pub fn as_module_name(&self) -> ModuleName {
         if self.module.as_str().is_empty() {
-            ModuleName::from_str(&self.attr)
+            ModuleName::from_str(self.attr.as_str())
         } else {
-            self.module.append(&Name::new(&self.attr))
+            self.module.append(&self.attr)
         }
     }
 }
