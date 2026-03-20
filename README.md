@@ -33,6 +33,7 @@ Lifeguard is in active development. We are still putting on the finishing touche
 - At this stage, we've tested Lifeguard against 3.12 and 3.14.
 - We are actively developing a standalone linter output mode to help users identify which specific lines in their codebase are incompatible with Lazy Imports.
 - We plan to add support for easy ingestion of Lifeguard's output to drive Lazy Imports enablement for advanced users (see [Using the Output](#using-the-output)).
+</details>
 
 ## Prerequisites
 
