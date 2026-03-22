@@ -33,7 +33,7 @@ anyhow = "1.0.102"
 clap = { version = "4.5.42", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 dashmap = { version = "5.5.3", features = ["rayon", "serde"] }
 itertools = "0.14.0"
-libc = "0.2.139"
+libc = "0.2.183"
 lifeguard_stubs = { path = "../resources" }
 petgraph = { version = "0.8", features = ["serde-1"] }
 pyrefly_python = { path = "../pyrefly/crates/pyrefly_python" }
