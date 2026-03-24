@@ -251,8 +251,10 @@ fn build_lazy_eligible(
 
             // Modules without python source code are marked as missing; by default,
             // these should be included in the list of "failing modules".
-            for missing_module in import_graph.get_missing_imports(module_name) {
-                failing_imported_modules.insert(*missing_module);
+            if let Some(missing) = import_graph.get_missing_imports(module_name) {
+                for missing_module in missing {
+                    failing_imported_modules.insert(*missing_module);
+                }
             }
             lazy_eligible.insert(*module_name, failing_imported_modules);
         }

@@ -193,7 +193,7 @@ pub fn get_import_chain_string(
 #[derive(Debug)]
 pub struct ImportGraph {
     pub graph: Graph,
-    missing: AHashMap<ModuleName, Vec<ModuleName>>,
+    missing: AHashMap<ModuleName, AHashSet<ModuleName>>,
 }
 
 impl ImportGraph {
@@ -229,17 +229,16 @@ impl ImportGraph {
         self.graph.contains(name)
     }
 
-    /// Get the list of modules imported by a module that do not exist in the graph.
-    pub fn get_missing_imports(&self, name: &ModuleName) -> &[ModuleName] {
-        self.missing
-            .get(name)
-            .map(|mods| mods.as_ref())
-            .unwrap_or(&[])
+    /// Get the set of modules imported by a module that do not exist in the graph.
+    pub fn get_missing_imports(&self, name: &ModuleName) -> Option<&AHashSet<ModuleName>> {
+        self.missing.get(name)
     }
 
     /// Check if a module has any imports to unidentified/missing modules.
     pub fn has_missing_import(&self, from: &ModuleName, module: &ModuleName) -> bool {
-        self.get_missing_imports(from).contains(module)
+        self.missing
+            .get(from)
+            .is_some_and(|mods| mods.contains(module))
     }
 }
 
@@ -407,7 +406,7 @@ impl<'a> ModuleImportCollector<'a> {
 
 struct ImportGraphBuilder<'a> {
     graph: Graph,
-    missing: AHashMap<ModuleName, Vec<ModuleName>>,
+    missing: AHashMap<ModuleName, AHashSet<ModuleName>>,
     sys_info: &'a SysInfo,
 }
 
@@ -446,7 +445,7 @@ impl<'a> ImportGraphBuilder<'a> {
             for (from, imports) in all_imports {
                 for to in imports {
                     if !(self.graph.add_edge(&from, &to)) {
-                        self.missing.entry(from).or_default().push(to);
+                        self.missing.entry(from).or_default().insert(to);
                     }
                 }
             }
@@ -588,10 +587,8 @@ import d
         let a = "import b";
         let b = "import c";
         let g = build_import_graph(&vec![("a", a), ("b", b)]);
-        assert_eq!(
-            g.missing.get(&ModuleName::from_str("b")),
-            Some(vec![ModuleName::from_str("c")].as_ref())
-        );
+        let expected: AHashSet<ModuleName> = AHashSet::from_iter(vec![ModuleName::from_str("c")]);
+        assert_eq!(g.missing.get(&ModuleName::from_str("b")), Some(&expected));
     }
 
     #[test]
