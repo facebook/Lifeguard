@@ -189,6 +189,7 @@ impl DunderAllEntry {
 struct DefinitionsBuilder<'a> {
     module_name: ModuleName,
     is_init: bool,
+    is_stub: bool,
     sys_info: &'a SysInfo,
     inner: Definitions,
 }
@@ -226,11 +227,18 @@ fn is_overload_decorator(decorator: &Decorator) -> bool {
 }
 
 impl Definitions {
-    pub fn new(x: &[Stmt], module_name: ModuleName, is_init: bool, sys_info: &SysInfo) -> Self {
+    pub fn new(
+        x: &[Stmt],
+        module_name: ModuleName,
+        is_init: bool,
+        is_stub: bool,
+        sys_info: &SysInfo,
+    ) -> Self {
         let mut builder = DefinitionsBuilder {
             module_name,
             sys_info,
             is_init,
+            is_stub,
             inner: Definitions::default(),
         };
         builder.stmts(x);
@@ -354,6 +362,47 @@ impl<'a> DefinitionsBuilder<'a> {
         body: Option<&[Stmt]>,
     ) {
         self.add_name_with_body(&x.id, x.range, style, body);
+    }
+
+    /// Detect assignment patterns that are semantically equivalent to imports:
+    ///   - `X = module.Attr` where `module` was imported → equivalent to `from module import Attr as X`
+    ///   - `X = name` where `name` was imported from some module → equivalent to `from module import name as X`
+    fn match_import_alias(&self, target: &ExprName, value: &Expr) -> Option<DefinitionStyle> {
+        match value {
+            // Pattern: X = module.Attr (attribute access on an imported module)
+            Expr::Attribute(ExprAttribute {
+                value: base, attr, ..
+            }) => {
+                let Expr::Name(base_name) = &**base else {
+                    return None;
+                };
+                let def = self.inner.definitions.get(&base_name.id)?;
+                let DefinitionStyle::ImportModule(module) = &def.style else {
+                    return None;
+                };
+                if target.id == attr.id {
+                    Some(DefinitionStyle::Import(*module))
+                } else {
+                    Some(DefinitionStyle::ImportAs(*module, attr.id.clone()))
+                }
+            }
+            // Pattern: X = imported_name (simple name that was imported)
+            Expr::Name(rhs_name) => {
+                let def = self.inner.definitions.get(&rhs_name.id)?;
+                let (module, original_name) = match &def.style {
+                    DefinitionStyle::Import(module) => (*module, rhs_name.id.clone()),
+                    DefinitionStyle::ImportAs(module, orig) => (*module, orig.clone()),
+                    DefinitionStyle::ImportAsEq(module) => (*module, rhs_name.id.clone()),
+                    _ => return None,
+                };
+                if target.id == original_name {
+                    Some(DefinitionStyle::Import(module))
+                } else {
+                    Some(DefinitionStyle::ImportAs(module, original_name))
+                }
+            }
+            _ => None,
+        }
     }
 
     fn expr_lvalue(&mut self, x: &Expr) {
@@ -507,6 +556,14 @@ impl<'a> DefinitionsBuilder<'a> {
                             target.range,
                             DefinitionStyle::ImportAs(imported_module, target.id.clone()),
                         )
+                    } else if self.is_stub
+                        && let Expr::Name(target) = t
+                        && let Some(style) = self.match_import_alias(target, &x.value)
+                    {
+                        self.add_name(&target.id, target.range, style);
+                        if DunderAllEntry::is_all(t) {
+                            self.inner.dunder_all = DunderAllEntry::as_list(&x.value);
+                        }
                     } else {
                         self.expr_lvalue(t);
                         if DunderAllEntry::is_all(t) {
@@ -791,6 +848,7 @@ mod tests {
             &Ast::parse_py(contents).0.body,
             module_name,
             is_init,
+            false, /* is_stub */
             &SysInfo::lg_default(),
         );
         res.dunder_all.iter_mut().for_each(unrange);
@@ -1082,5 +1140,99 @@ del x
         assert_definition_names(&defs, &["x"]);
         let x = defs.definitions.get(&Name::new_static("x")).unwrap();
         assert!(!x.needs_anywhere);
+    }
+
+    #[test]
+    fn test_stub_alias_attribute_access() {
+        // In a stub: `Lock = _thread.LockType` should produce ImportAs(_thread, LockType)
+        let code = r#"
+import _thread
+
+Lock = _thread.LockType
+"#;
+        let defs = Definitions::new(
+            &Ast::parse_py(code).0.body,
+            ModuleName::from_str("threading"),
+            false, /* is_init */
+            true,  /* is_stub */
+            &SysInfo::lg_default(),
+        );
+        let lock = defs.definitions.get(&Name::new_static("Lock")).unwrap();
+        assert_eq!(
+            lock.style,
+            DefinitionStyle::ImportAs(ModuleName::from_str("_thread"), Name::new("LockType"))
+        );
+    }
+
+    #[test]
+    fn test_stub_alias_imported_name() {
+        // In a stub: `ExceptHookArgs = _ExceptHookArgs` where _ExceptHookArgs is imported
+        let code = r#"
+from _thread import _ExceptHookArgs
+
+ExceptHookArgs = _ExceptHookArgs
+"#;
+        let defs = Definitions::new(
+            &Ast::parse_py(code).0.body,
+            ModuleName::from_str("threading"),
+            false, /* is_init */
+            true,  /* is_stub */
+            &SysInfo::lg_default(),
+        );
+        let ehargs = defs
+            .definitions
+            .get(&Name::new_static("ExceptHookArgs"))
+            .unwrap();
+        assert_eq!(
+            ehargs.style,
+            DefinitionStyle::ImportAs(
+                ModuleName::from_str("_thread"),
+                Name::new("_ExceptHookArgs")
+            )
+        );
+    }
+
+    #[test]
+    fn test_stub_alias_same_name() {
+        // In a stub: `error = _thread.error` where names match
+        let code = r#"
+import _thread
+
+error = _thread.error
+"#;
+        let defs = Definitions::new(
+            &Ast::parse_py(code).0.body,
+            ModuleName::from_str("threading"),
+            false, /* is_init */
+            true,  /* is_stub */
+            &SysInfo::lg_default(),
+        );
+        let err = defs.definitions.get(&Name::new_static("error")).unwrap();
+        assert_eq!(
+            err.style,
+            DefinitionStyle::Import(ModuleName::from_str("_thread"))
+        );
+    }
+
+    #[test]
+    fn test_non_stub_no_alias_detection() {
+        // In a regular .py file, the same pattern should NOT produce an import definition
+        let code = r#"
+import _thread
+
+Lock = _thread.LockType
+"#;
+        let defs = Definitions::new(
+            &Ast::parse_py(code).0.body,
+            ModuleName::from_str("threading"),
+            false, /* is_init */
+            false, /* is_stub */
+            &SysInfo::lg_default(),
+        );
+        let lock = defs.definitions.get(&Name::new_static("Lock")).unwrap();
+        assert_eq!(
+            lock.style,
+            DefinitionStyle::Unannotated(SymbolKind::Variable)
+        );
     }
 }

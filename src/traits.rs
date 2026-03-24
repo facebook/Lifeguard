@@ -91,7 +91,7 @@ pub trait DefinitionsExt {
 
 impl DefinitionsExt for Definitions {
     fn make(x: &[Stmt], module_name: ModuleName, is_init: bool, sys_info: &SysInfo) -> Self {
-        Self::new(x, module_name, is_init, sys_info)
+        Self::new(x, module_name, is_init, false /* is_stub */, sys_info)
     }
 }
 
@@ -223,6 +223,7 @@ mod tests {
             &Ast::parse_py(contents).0.body,
             module_name,
             is_init,
+            false, /* is_stub */
             &SysInfo::lg_default(),
         )
     }

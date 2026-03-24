@@ -117,11 +117,34 @@ impl Exports {
         ExportsBuilder::new_unfiltered(module_name, sys_info).build(parsed_module)
     }
 
-    /// Check if a symbol is a class.
+    /// Check if a symbol is a class, following re-export chains transitively if needed.
     pub fn is_class(&self, name: &ModuleName) -> bool {
-        self.exports
+        if self
+            .exports
             .get(name)
             .is_some_and(|e| matches!(e.typ, ExportType::Class))
+        {
+            return true;
+        }
+        // Follow re-export chain until we find a direct definition or a cycle
+        let mut current = Attribute::from_module_name(name);
+        let mut seen = AHashSet::new();
+        while let Some((imported, _)) = self.re_exports.get(&current) {
+            if seen.contains(imported) {
+                return false;
+            }
+            let target = imported.as_module_name();
+            if self
+                .exports
+                .get(&target)
+                .is_some_and(|e| matches!(e.typ, ExportType::Class))
+            {
+                return true;
+            }
+            seen.insert(current);
+            current = imported.clone();
+        }
+        false
     }
 
     /// Check if a symbol is a global variable.
@@ -236,6 +259,7 @@ impl<'a> ExportsBuilder<'a> {
             &parsed_module.ast.body,
             self.module_name,
             parsed_module.is_init,
+            parsed_module.is_stub(),
             self.sys_info,
         );
 

@@ -170,22 +170,6 @@ class _DummyThread(Thread):
 # This is actually the function _thread.allocate_lock for <= 3.12
 Lock = _thread.LockType
 
-## begin lifeguard block {
-
-# TODO(T248967581): Read the definition above. For now we duplicate the class from _thread
-class Lock:
-    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool: unsafe()
-    def release(self) -> None: unsafe()
-    def locked(self) -> bool: no_effects()
-    def acquire_lock(self, blocking: bool = True, timeout: float = -1) -> bool: unsafe()
-    def release_lock(self) -> None: unsafe()
-    def locked_lock(self) -> bool: no_effects()
-    def __enter__(self) -> bool: unsafe()
-    def __exit__(
-        self, type: type[BaseException] | None, value: BaseException | None, traceback: TracebackType | None
-    ) -> None: unsafe()
-
-## } end lifeguard block
 
 # Python implementation of RLock.
 @final
