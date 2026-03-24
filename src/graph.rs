@@ -13,9 +13,6 @@ use petgraph::graph::NodeIndex;
 use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
 
-/// Sentinel name for a missing node.
-pub const MISSING: &str = "*MISSING*";
-
 /// Sequence of nodes that form a cycle in the graph.
 pub type Cycle = Vec<NodeIndex>;
 
@@ -60,17 +57,14 @@ impl Graph {
 
     /// Add a new edge into the graph.  The `from` node is expected to exist in the graph already.
     /// When the `to` module is not present in the graph (e.g. it belongs to a third-party package
-    /// or the stdlib and is not part of the analyzed source database), the edge is redirected to a
-    /// single MISSING sentinel node.  This keeps the graph valid for traversal and cycle detection
-    /// while avoiding the creation of a unique node for every unresolved external module.
+    /// or the stdlib and is not part of the analyzed source database), no edge is created and
+    /// `false` is returned.  Missing imports are tracked separately by `ImportGraph.missing`.
     pub fn add_edge(&mut self, from: &ModuleName, to: &ModuleName) -> bool {
         let p = self.nodes[from];
         if let Some(&q) = self.nodes.get(to) {
             self.graph.add_edge(p, q, ());
             true
         } else {
-            let q = self.add_node(&ModuleName::from_str(MISSING));
-            self.graph.add_edge(p, q, ());
             false
         }
     }
@@ -143,7 +137,6 @@ impl Graph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::MISSING;
     use crate::test_lib::*;
 
     fn assert_deps(g: &Graph, module: &str, expected: Vec<&str>) {
@@ -187,9 +180,10 @@ mod tests {
         let c = ModuleName::from_str("c");
         g.add_node(&a);
         g.add_node(&b);
-        g.add_edge(&a, &b);
-        g.add_edge(&a, &c);
-        assert_deps(&g, "a", vec!["b", MISSING]);
+        assert!(g.add_edge(&a, &b));
+        assert!(!g.add_edge(&a, &c));
+        // Missing target produces no edge; only the resolved edge to b exists
+        assert_deps(&g, "a", vec!["b"]);
         assert!(!g.contains(&c));
     }
 
