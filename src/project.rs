@@ -268,16 +268,10 @@ fn compute_side_effect_imports(analysis_map: &AnalysisMap) -> SideEffectMap {
                 return (*module_name, AHashSet::new());
             };
 
-            let all_called: AHashSet<ModuleName> = output
-                .module_effects
-                .called_imports
-                .values()
-                .flatten()
+            let side_effects: AHashSet<ModuleName> = module_pending
+                .difference(&output.module_effects.all_called_import_names)
                 .copied()
                 .collect();
-
-            let side_effects: AHashSet<ModuleName> =
-                module_pending.difference(&all_called).copied().collect();
 
             (*module_name, side_effects)
         })

@@ -33,6 +33,9 @@ pub struct ModuleEffects {
     // Set of all pending import names across all scopes, for O(1) membership checks.
     pub all_pending_import_names: AHashSet<ModuleName>,
 
+    // Set of all called import names across all scopes, for O(1) membership checks.
+    pub all_called_import_names: AHashSet<ModuleName>,
+
     // list of functions called in the module
     pub called_functions: AHashSet<ModuleName>,
 
@@ -50,6 +53,7 @@ impl ModuleEffects {
             called_imports: AHashMap::new(),
             pending_imports: AHashMap::new(),
             all_pending_import_names: AHashSet::new(),
+            all_called_import_names: AHashSet::new(),
             called_functions: AHashSet::new(),
             indirectly_called_methods: AHashMap::new(),
         }
@@ -77,6 +81,7 @@ impl ModuleEffects {
             .entry(*scope)
             .or_default()
             .insert(import);
+        self.all_called_import_names.insert(import);
     }
 }
 
