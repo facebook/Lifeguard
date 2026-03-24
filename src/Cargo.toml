@@ -12,12 +12,12 @@ license = "MIT"
 path = "lib.rs"
 
 [[bin]]
-name = "analyzer"
-path = "main.rs"
-
-[[bin]]
 name = "gen_source_db"
 path = "bin/gen_source_db.rs"
+
+[[bin]]
+name = "lifeguard"
+path = "main.rs"
 
 [[bin]]
 name = "run_tree"
