@@ -127,6 +127,158 @@ impl LifeGuardOutput {
     }
 }
 
+/// Result of classifying modules from the safety map into passing/failing.
+struct ClassifiedModules {
+    failing_modules: SmallSet<ModuleName>,
+    passing_modules: SmallSet<ModuleName>,
+    load_imports_eagerly: SmallSet<ModuleName>,
+    implicit_imports: AHashMap<ModuleName, Vec<ModuleName>>,
+    aggregated_errors: AHashMap<(ErrorKind, ErrorMetadata), usize>,
+}
+
+/// Iterate the safety map and classify each module as passing or failing.
+/// Also collects load_imports_eagerly, implicit imports, and aggregated error counts.
+fn classify_modules(safety_map: SafetyMap) -> ClassifiedModules {
+    let mut result = ClassifiedModules {
+        failing_modules: SmallSet::new(),
+        passing_modules: SmallSet::new(),
+        load_imports_eagerly: SmallSet::new(),
+        implicit_imports: AHashMap::<ModuleName, Vec<ModuleName>>::new(),
+        aggregated_errors: AHashMap::new(),
+    };
+
+    for (module_name, safety_result) in safety_map {
+        // Skip modules that failed analysis
+        let module_safety = match safety_result {
+            SafetyResult::Ok(safety) => safety,
+            SafetyResult::AnalysisError(_) => {
+                result.failing_modules.insert(module_name);
+                continue;
+            }
+        };
+
+        let mut module_errors = AHashSet::new();
+        let is_safe = module_safety.is_safe();
+        if module_safety.should_load_imports_eagerly() {
+            result.load_imports_eagerly.insert(module_name);
+        }
+        if module_safety.has_implicit_imports() {
+            result
+                .implicit_imports
+                .insert(module_name, module_safety.implicit_imports);
+        }
+
+        let module_set = if is_safe {
+            &mut result.passing_modules
+        } else {
+            &mut result.failing_modules
+        };
+        module_set.insert(module_name);
+
+        for error in module_safety.errors {
+            module_errors.insert((error.kind, error.metadata));
+        }
+
+        // TODO: Should we add force_imports_eager_overrides to a separate error count?
+        for error in module_safety.force_imports_eager_overrides {
+            module_errors.insert((error.kind, error.metadata));
+        }
+        for k in module_errors.drain() {
+            *result.aggregated_errors.entry(k).or_insert(0) += 1;
+        }
+    }
+
+    result
+}
+
+/// Build a map from module -> set of source modules for its re-exports that are failing.
+fn build_re_export_map(
+    exports: &Exports,
+    failing_modules: &SmallSet<ModuleName>,
+) -> AHashMap<ModuleName, AHashSet<ModuleName>> {
+    let mut map: AHashMap<ModuleName, AHashSet<ModuleName>> = AHashMap::new();
+    for (re_export_name, (source_name, _)) in exports.get_re_exports() {
+        let source_module = source_name.module;
+        if failing_modules.contains(&source_module) {
+            let module_part = re_export_name.module;
+            map.entry(module_part).or_default().insert(source_module);
+        }
+    }
+    map
+}
+
+/// Build the lazy_eligible dict by scanning the import graph, handling cycles,
+/// and adding implicit imports.
+fn build_lazy_eligible(
+    import_graph: &ImportGraph,
+    classified: &ClassifiedModules,
+    re_export_map: &AHashMap<ModuleName, AHashSet<ModuleName>>,
+    all_cycles: &[Vec<ModuleName>],
+) -> DashMap<ModuleName, SmallSet<ModuleName>> {
+    let lazy_eligible: DashMap<ModuleName, SmallSet<ModuleName>> = DashMap::new();
+
+    // Build a set of cycle members so we can identify children of cycle modules
+    // during the parallel iteration below.
+    let cycle_module_set: AHashSet<ModuleName> = all_cycles.iter().flatten().cloned().collect();
+
+    // Compute the lazy_eligible dict by scanning the import graph. Also identify missing modules.
+    // We also need to check the source module for any re-exports imported.
+    //
+    // Simultaneously, collect children of cycle modules into a DashMap so we can
+    // propagate cycle deps without a separate iteration pass.
+    let cycle_children: DashMap<ModuleName, Vec<ModuleName>> = DashMap::new();
+    import_graph.modules_par_iter().for_each(|module_name| {
+        // Record if this module is a direct child of a cycle module
+        if let Some(parent) = module_name.parent() {
+            if cycle_module_set.contains(&parent) {
+                cycle_children.entry(parent).or_default().push(*module_name);
+            }
+        }
+
+        if classified.passing_modules.contains(module_name) {
+            let mut failing_imported_modules: SmallSet<ModuleName> = SmallSet::new();
+
+            for imported_module in import_graph.get_imports(module_name) {
+                // Check if directly failing
+                if classified.failing_modules.contains(imported_module) {
+                    failing_imported_modules.insert(*imported_module);
+                }
+                // Check if this module has re-exports from failing modules
+                if let Some(source_modules) = re_export_map.get(imported_module) {
+                    failing_imported_modules.extend(source_modules.iter().copied());
+                }
+            }
+
+            // Modules without python source code are marked as missing; by default,
+            // these should be included in the list of "failing modules".
+            for missing_module in import_graph.get_missing_imports(module_name) {
+                failing_imported_modules.insert(*missing_module);
+            }
+            lazy_eligible.insert(*module_name, failing_imported_modules);
+        }
+    });
+
+    let cycle_ctx = CycleDepsContext {
+        import_graph,
+        lazy_eligible: &lazy_eligible,
+        passing_modules: &classified.passing_modules,
+        cycle_children: &cycle_children,
+    };
+    add_cycle_deps(all_cycles, &cycle_ctx);
+
+    // Add implicit imports to lazy_eligible dict.
+    for (module_name, implicit_imports_set) in &classified.implicit_imports {
+        if classified.passing_modules.contains(module_name) {
+            lazy_eligible
+                .entry(*module_name)
+                .or_default()
+                .extend(implicit_imports_set.iter().copied());
+        }
+    }
+
+    lazy_eligible
+}
+
 impl LifeGuardAnalysis {
     pub fn new(
         safety_map: SafetyMap,
@@ -134,142 +286,27 @@ impl LifeGuardAnalysis {
         exports: &Exports,
         options: &Options,
     ) -> Self {
-        let mut output = LifeGuardOutput::new(options.sorted_output);
-        let mut failing_modules = SmallSet::new();
-        let mut passing_modules = SmallSet::new();
-        let mut aggregated_errors = AHashMap::new();
-
-        let mut implicit_imports = AHashMap::new();
-
         // Collect all modules in the safety map for filtering cycles later.
         let source_modules: AHashSet<ModuleName> =
             safety_map.iter().map(|entry| *entry.key()).collect();
 
-        // Iterate all processed modules and their errors.  Identify implicit imports.
-        for (module_name, safety_result) in safety_map {
-            // Skip modules that failed analysis
-            let module_safety = match safety_result {
-                SafetyResult::Ok(safety) => safety,
-                SafetyResult::AnalysisError(_) => {
-                    failing_modules.insert(module_name);
-                    continue;
-                }
-            };
-
-            let mut module_errors = AHashSet::new();
-            let is_safe = module_safety.is_safe();
-            if module_safety.should_load_imports_eagerly() {
-                output.load_imports_eagerly.insert(module_name);
-            }
-            if module_safety.has_implicit_imports() {
-                implicit_imports.insert(module_name, module_safety.implicit_imports);
-            }
-
-            let module_set = if is_safe {
-                &mut passing_modules
-            } else {
-                &mut failing_modules
-            };
-            module_set.insert(module_name);
-
-            for error in module_safety.errors {
-                module_errors.insert((error.kind, error.metadata));
-            }
-
-            // TODO: Should we add force_imports_eager_overrides to a separate error count?
-            for error in module_safety.force_imports_eager_overrides {
-                module_errors.insert((error.kind, error.metadata));
-            }
-            for k in module_errors.drain() {
-                *aggregated_errors.entry(k).or_insert(0) += 1;
-            }
-        }
-
+        let classified = classify_modules(safety_map);
         let all_cycles = collect_cycles(&import_graph, &source_modules);
+        let re_export_map = build_re_export_map(exports, &classified.failing_modules);
+        let lazy_eligible =
+            build_lazy_eligible(&import_graph, &classified, &re_export_map, &all_cycles);
 
-        // Build a set of cycle members so we can identify children of cycle modules
-        // during the parallel iteration below.
-        let cycle_module_set: AHashSet<ModuleName> = all_cycles.iter().flatten().cloned().collect();
-
-        // Pre-compute a map from module -> set of definition modules for its re-exports
-        let re_export_map: AHashMap<ModuleName, AHashSet<ModuleName>> = {
-            let mut map: AHashMap<ModuleName, AHashSet<ModuleName>> = AHashMap::new();
-            for (re_export_name, (source_name, _)) in exports.get_re_exports() {
-                // Get the source module from source_name
-                let source_module = source_name.module;
-                // Only track if the source module is failing
-                if failing_modules.contains(&source_module) {
-                    let module_part = re_export_name.module;
-                    map.entry(module_part).or_default().insert(source_module);
-                }
-            }
-            map
+        let output = LifeGuardOutput {
+            load_imports_eagerly: classified.load_imports_eagerly,
+            lazy_eligible,
+            sorted_output: options.sorted_output,
         };
-
-        // Compute the lazy_eligible dict by scanning the import graph. Also identify missing modules.
-        // We also need to check the source module for any re-exports imported.
-        //
-        // Simultaneously, collect children of cycle modules into a DashMap so we can
-        // propagate cycle deps without a separate iteration pass.
-        let cycle_children: DashMap<ModuleName, Vec<ModuleName>> = DashMap::new();
-        import_graph.modules_par_iter().for_each(|module_name| {
-            // Record if this module is a direct child of a cycle module
-            if let Some(parent) = module_name.parent() {
-                if cycle_module_set.contains(&parent) {
-                    cycle_children.entry(parent).or_default().push(*module_name);
-                }
-            }
-
-            if passing_modules.contains(module_name) {
-                let mut failing_imported_modules: SmallSet<ModuleName> = SmallSet::new();
-
-                for imported_module in import_graph.get_imports(module_name) {
-                    // Check if directly failing
-                    if failing_modules.contains(imported_module) {
-                        failing_imported_modules.insert(*imported_module);
-                    }
-
-                    // Check if this module has re-exports from failing modules, if so add them to the lazy_eligible list
-                    if let Some(source_modules) = re_export_map.get(imported_module) {
-                        failing_imported_modules.extend(source_modules.iter().copied());
-                    }
-                }
-
-                // Modules without python source code are marked as missing-- by default, these
-                // files should be included in the list of "failing modules".
-                for missing_module in import_graph.get_missing_imports(module_name) {
-                    failing_imported_modules.insert(*missing_module);
-                }
-                output
-                    .lazy_eligible
-                    .insert(*module_name, failing_imported_modules);
-            }
-        });
-
-        let cycle_ctx = CycleDepsContext {
-            import_graph: &import_graph,
-            lazy_eligible: &output.lazy_eligible,
-            passing_modules: &passing_modules,
-            cycle_children: &cycle_children,
-        };
-        add_cycle_deps(&all_cycles, &cycle_ctx);
-
-        // Add implicit imports to lazy_eligible dict.
-        for (module_name, implicit_imports_set) in implicit_imports {
-            if passing_modules.contains(&module_name) {
-                output
-                    .lazy_eligible
-                    .entry(module_name)
-                    .or_default()
-                    .extend(implicit_imports_set.into_iter());
-            }
-        }
 
         Self {
             output,
-            failing_modules,
-            passing_modules,
-            aggregated_errors,
+            failing_modules: classified.failing_modules,
+            passing_modules: classified.passing_modules,
+            aggregated_errors: classified.aggregated_errors,
         }
     }
 
