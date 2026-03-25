@@ -5,14 +5,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-// Generate a source DB JSON file from a directory tree of Python files,
-// recursively discovering imports from both the project and site-packages.
-//
-// $ cargo run --bin gen_source_db <input_dir> <output_path>
-//
-// Optionally reads a [lifeguard] section from <input_dir>/pyproject.toml
-// to find a site_packages path for resolving third-party imports.
-
 use std::collections::BTreeMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
@@ -24,15 +16,16 @@ use std::path::PathBuf;
 use anyhow::Context;
 use anyhow::Result;
 use clap::Parser;
-use lifeguard::source_map::is_python_file;
 use ruff_python_ast::Stmt;
 use ruff_python_parser::parse_unchecked_source;
 use serde::Deserialize;
 use serde::Serialize;
 use walkdir::WalkDir;
 
+use crate::source_map::is_python_file;
+
 #[derive(Parser)]
-struct Args {
+pub struct GenSourceDbArgs {
     /// Directory containing Python files to scan
     input_dir: PathBuf,
 
@@ -134,8 +127,37 @@ fn extract_imports(source: &str) -> Vec<String> {
     imports
 }
 
-fn main() -> Result<()> {
-    let args = Args::parse();
+fn load_site_packages(input_dir: &Path) -> Result<Option<PathBuf>> {
+    let pyproject_path = input_dir.join("pyproject.toml");
+    if !pyproject_path.is_file() {
+        return Ok(None);
+    }
+
+    let content = std::fs::read_to_string(&pyproject_path)
+        .with_context(|| format!("Failed to read {}", pyproject_path.display()))?;
+    let pyproject: PyprojectToml = toml::from_str(&content)
+        .with_context(|| format!("Failed to parse {}", pyproject_path.display()))?;
+
+    let sp_str = match pyproject.lifeguard.and_then(|l| l.site_packages) {
+        Some(s) => s,
+        None => return Ok(None),
+    };
+
+    let sp_path = Path::new(&sp_str);
+    let sp_path = if sp_path.is_absolute() {
+        sp_path.to_path_buf()
+    } else {
+        input_dir.join(sp_path)
+    };
+
+    let sp_path = sp_path
+        .canonicalize()
+        .with_context(|| format!("site_packages path not found: {}", sp_path.display()))?;
+
+    Ok(Some(sp_path))
+}
+
+pub fn run(args: GenSourceDbArgs) -> Result<()> {
     let input_dir = args.input_dir.canonicalize()?;
 
     // Load site_packages from pyproject.toml if present
@@ -238,34 +260,4 @@ fn main() -> Result<()> {
     );
 
     Ok(())
-}
-
-fn load_site_packages(input_dir: &Path) -> Result<Option<PathBuf>> {
-    let pyproject_path = input_dir.join("pyproject.toml");
-    if !pyproject_path.is_file() {
-        return Ok(None);
-    }
-
-    let content = std::fs::read_to_string(&pyproject_path)
-        .with_context(|| format!("Failed to read {}", pyproject_path.display()))?;
-    let pyproject: PyprojectToml = toml::from_str(&content)
-        .with_context(|| format!("Failed to parse {}", pyproject_path.display()))?;
-
-    let sp_str = match pyproject.lifeguard.and_then(|l| l.site_packages) {
-        Some(s) => s,
-        None => return Ok(None),
-    };
-
-    let sp_path = Path::new(&sp_str);
-    let sp_path = if sp_path.is_absolute() {
-        sp_path.to_path_buf()
-    } else {
-        input_dir.join(sp_path)
-    };
-
-    let sp_path = sp_path
-        .canonicalize()
-        .with_context(|| format!("site_packages path not found: {}", sp_path.display()))?;
-
-    Ok(Some(sp_path))
 }

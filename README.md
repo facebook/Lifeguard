@@ -62,9 +62,9 @@ For a full walkthrough including interpreting the output, see [GETTING_STARTED.m
 
 For larger projects where you need more control, you can generate a *source DB* — a JSON file that tells Lifeguard the full set of Python files in your project and their module paths (see [Input Format](#input-format) for details). Follow these steps:
 
-1. Generate the source DB. We provide a script to start this file for you, but you may need to tune it by hand. (As the project matures, we hope to make this process smoother.)
+1. Generate the source DB. We provide a subcommand to start this file for you, but you may need to tune it by hand. (As the project matures, we hope to make this process smoother.)
 ```
-cargo run --bin gen_source_db <INPUT_DIR> <OUTPUT_PATH>
+cargo run -- gen-source-db <INPUT_DIR> <OUTPUT_PATH>
 ```
 
 Optionally, if your project has library dependencies, you can point Lifeguard at your site-packages by adding a `lifeguard` section to your `pyproject.toml`:
@@ -74,18 +74,18 @@ Optionally, if your project has library dependencies, you can point Lifeguard at
 site_packages = "/path/to/site-packages"
 ```
 
-You can find out your site-packages path via `python -m site`. The `gen_source_db` binary reads this section automatically when generating the source DB.
+You can find out your site-packages path via `python -m site`. The `gen-source-db` subcommand reads this section automatically when generating the source DB.
 
 **Note:** The script may not discover all of your project's dependencies. If Lifeguard reports missing modules, you may need to manually add entries to the generated source DB.
 
 2. Run Lifeguard in one of two modes:
    - **Default**: Prints a high-level analysis of your codebase (% of compatible files, top errors, etc.) and writes the JSON output to `OUTPUT_PATH`.
    ```
-   cargo run --bin analyzer <DB_PATH> <OUTPUT_PATH>
+   cargo run -- <DB_PATH> <OUTPUT_PATH>
    ```
    - **Verbose mode**: Also writes a human-readable report showing which specific lines in each module cause incompatibility.
    ```
-   cargo run --bin analyzer <DB_PATH> <OUTPUT_PATH> --verbose-output <VERBOSE_OUTPUT_PATH>
+   cargo run -- <DB_PATH> <OUTPUT_PATH> --verbose-output <VERBOSE_OUTPUT_PATH>
    ```
 
 **Example Verbose Output:**
@@ -109,7 +109,7 @@ In some modes, Lifeguard requires a source DB — a JSON file mapping Python mod
 }
 ```
 
-You can generate this automatically using `cargo run --bin gen_source_db` (see [Running Lifeguard](#running-lifeguard)), or create it by hand.
+You can generate this automatically using `cargo run -- gen-source-db` (see [Running Lifeguard](#running-lifeguard)), or create it by hand.
 
 ## Output Format
 
