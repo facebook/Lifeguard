@@ -147,6 +147,49 @@ impl Cursor {
         self.qualified_scopes.iter().rev().copied()
     }
 
+    /// Get an iterator over scopes following Python's LEGB rule:
+    /// Local -> Enclosing functions (skipping class scopes) -> Global (module scope).
+    /// Builtins are handled separately.
+    pub fn legb_scope_names_iter(&self) -> impl Iterator<Item = ModuleName> + '_ {
+        let len = self.scopes.len();
+        let mut indices = Vec::with_capacity(len);
+
+        if len > 0 {
+            // L: current (innermost) scope
+            indices.push(len - 1);
+
+            // E: walk outward, skipping class scopes, until we hit module scope
+            let mut in_function = self.scopes[len - 1].kind == ScopeKind::Function;
+            for i in (1..len - 1).rev() {
+                match self.scopes[i].kind {
+                    ScopeKind::Class => {
+                        // If we are inside a function looking outward, skip class scopes
+                        // (Python's LEGB rule: class bodies don't create enclosing scopes
+                        // for nested functions). But if we're in a class scope directly
+                        // (e.g. class body referencing class-level vars), include it.
+                        if !in_function {
+                            indices.push(i);
+                        }
+                    }
+                    ScopeKind::Function => {
+                        indices.push(i);
+                        in_function = true;
+                    }
+                    ScopeKind::Module => {
+                        indices.push(i);
+                    }
+                }
+            }
+
+            // G: module scope (index 0) - always included if not already
+            if len > 1 && !indices.contains(&0) {
+                indices.push(0);
+            }
+        }
+
+        indices.into_iter().map(move |i| self.qualified_scopes[i])
+    }
+
     /// Get a vector containing the base name of each scope, starting with the outermost scope.
     pub fn scope_names(&self) -> Vec<&Name> {
         self.descending_scope_base_names_iter().collect()
@@ -246,6 +289,52 @@ mod tests {
             .collect::<Vec<_>>();
         let actual = c.ascending_scope_names_iter().collect::<Vec<_>>();
 
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn test_legb_skips_class_scope_for_nested_functions() {
+        let mut c = Cursor::new();
+        c.enter_module_scope(&ModuleName::from_str("mod"));
+        c.enter_class_scope_name(Name::new("A"));
+        c.enter_function_scope_name(Name::new("f"));
+
+        // LEGB should be: f (local) -> mod (global), skipping A (class)
+        let expected = ["mod.A.f", "mod"]
+            .iter()
+            .map(|s| ModuleName::from_str(s))
+            .collect::<Vec<_>>();
+        let actual = c.legb_scope_names_iter().collect::<Vec<_>>();
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn test_legb_includes_class_scope_from_class_body() {
+        let mut c = Cursor::new();
+        c.enter_module_scope(&ModuleName::from_str("mod"));
+        c.enter_class_scope_name(Name::new("A"));
+
+        // LEGB should be: A (local/class) -> mod (global)
+        let expected = ["mod.A", "mod"]
+            .iter()
+            .map(|s| ModuleName::from_str(s))
+            .collect::<Vec<_>>();
+        let actual = c.legb_scope_names_iter().collect::<Vec<_>>();
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn test_legb_nested_functions() {
+        let mut c = Cursor::new();
+        c.enter_module_scope(&ModuleName::from_str("mod"));
+        c.enter_function_scope_name(Name::new("f"));
+        c.enter_function_scope_name(Name::new("g"));
+
+        let expected = ["mod.f.g", "mod.f", "mod"]
+            .iter()
+            .map(|s| ModuleName::from_str(s))
+            .collect::<Vec<_>>();
+        let actual = c.legb_scope_names_iter().collect::<Vec<_>>();
         assert_eq!(expected, actual);
     }
 }

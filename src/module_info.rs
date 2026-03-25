@@ -85,9 +85,11 @@ impl DefinitionTable {
             .is_some_and(|res| res.is_global())
     }
 
-    // Look up a name in a chain of parent scopes.
+    // Look up a name following Python's LEGB (Local-Enclosing-Global-Builtin) rule.
+    // Class scopes are skipped when looking up from an enclosed function scope.
+    // Builtins are handled separately in ModuleInfo::resolve_builtins.
     fn resolve_name(&self, cursor: &Cursor, name: Name) -> Option<ResolvedName<'_>> {
-        for scope in cursor.ascending_scope_names_iter() {
+        for scope in cursor.legb_scope_names_iter() {
             if let Some(def) = self.get(&scope, &name) {
                 return Some(ResolvedName {
                     name,
@@ -474,7 +476,7 @@ impl<'a> CombinedDefinitionClassBuilder<'a> {
     }
 
     fn resolve_name(&self, name: Name) -> Option<ResolvedName<'_>> {
-        for scope in self.cursor.ascending_scope_names_iter() {
+        for scope in self.cursor.legb_scope_names_iter() {
             if let Some(defs) = self.definitions_map.get(&scope) {
                 if let Some(def) = defs.definitions.get(&name) {
                     return Some(ResolvedName {
