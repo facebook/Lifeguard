@@ -810,4 +810,59 @@ mod tests {
             "cycle_a.sub should NOT be in lazy_eligible (failing module, even with cycle propagation)"
         );
     }
+
+    #[test]
+    fn test_run_analysis_covers_all_modules() {
+        let code_a = r#"
+            import b
+            b.func()
+        "#;
+        let code_b = r#"
+            def func():
+                return 1
+        "#;
+        let code_c = r#"
+            x = 1
+            x[0] = 2
+        "#;
+        let modules = vec![("a", code_a), ("b", code_b), ("c", code_c)];
+        let sources = TestSources::new(&modules);
+        let sys_info = SysInfo::lg_default();
+        let (import_graph, exports) = ImportGraph::make_with_exports(&sources, &sys_info);
+        let (safety_map, _) = project::run_analysis(&sources, &exports, &import_graph, &sys_info);
+        for module_name in ["a", "b", "c"] {
+            let name = ModuleName::from_str(module_name);
+            let entry = safety_map.get(&name).unwrap_or_else(|| {
+                panic!(
+                    "Module '{}' should have a SafetyResult in the safety map",
+                    module_name
+                )
+            });
+            assert!(
+                matches!(*entry, SafetyResult::Ok(_)),
+                "Module '{}' should have SafetyResult::Ok, got AnalysisError",
+                module_name,
+            );
+        }
+    }
+
+    #[test]
+    fn test_analysis_error_modules_are_failing() {
+        let safety_map = SafetyMap::new();
+        safety_map.insert(
+            ModuleName::from_str("ok_module"),
+            SafetyResult::Ok(ModuleSafety::new()),
+        );
+        safety_map.insert(
+            ModuleName::from_str("error_module"),
+            SafetyResult::AnalysisError(anyhow::anyhow!("test analysis error")),
+        );
+
+        let import_graph = ImportGraph::new();
+        let exports = Exports::empty();
+        let result = LifeGuardAnalysis::new(safety_map, import_graph, &exports, &test_options());
+
+        assert_passing(&result, vec!["ok_module"]);
+        assert_failing(&result, vec!["error_module"]);
+    }
 }

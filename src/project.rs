@@ -795,13 +795,27 @@ impl ProjectInfo {
         let state = GlobalAnalysisState::new();
         state.init_safety_map(&self.analysis_map);
 
-        let _ = self.analysis_map.par_iter().for_each(|(mod_name, result)| {
+        self.analysis_map.par_iter().for_each(|(mod_name, result)| {
             let defs = &result.definitions;
             for scope in &defs.eager_scopes {
-                let _ = self.collect_errors_from_scope(mod_name, scope, &state);
+                if let Err(e) = self.collect_errors_from_scope(mod_name, scope, &state) {
+                    state
+                        .safety_map
+                        .insert(*mod_name, SafetyResult::AnalysisError(e));
+                    return;
+                }
             }
-            let _ = self.check_load_imports_eagerly(mod_name, result, &state);
-            let _ = self.collect_implicit_imports(mod_name, result, &state);
+            if let Err(e) = self.check_load_imports_eagerly(mod_name, result, &state) {
+                state
+                    .safety_map
+                    .insert(*mod_name, SafetyResult::AnalysisError(e));
+                return;
+            }
+            if let Err(e) = self.collect_implicit_imports(mod_name, result, &state) {
+                state
+                    .safety_map
+                    .insert(*mod_name, SafetyResult::AnalysisError(e));
+            }
 
             // Mark re-exported submodules as failing: when a module re-exports from
             // its own submodule via __all__, the submodule must be marked unsafe so
