@@ -11,6 +11,8 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::ArgAction;
 use clap::Parser;
+use clap::Subcommand;
+use lifeguard::commands::run_tree::RunTreeArgs;
 use lifeguard::debug::report_peak_memory;
 use lifeguard::runner::Options;
 use lifeguard::runner::process_source_map;
@@ -20,12 +22,16 @@ use lifeguard::tracing::time;
 use tracing::info;
 
 #[derive(Parser)]
-struct Args {
+#[command(args_conflicts_with_subcommands = true)]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+
     /// Path to input source db JSON file
-    db_path: PathBuf,
+    db_path: Option<PathBuf>,
 
     /// Path to output file
-    output_path: PathBuf,
+    output_path: Option<PathBuf>,
 
     /// Path to verbose output file.
     #[arg(long = "verbose-output")]
@@ -51,16 +57,26 @@ struct Args {
     sorted_output: bool,
 }
 
-fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
+#[derive(Subcommand)]
+enum Commands {
+    /// Analyze all Python files in a directory tree
+    RunTree(RunTreeArgs),
+}
 
+fn run_analyze(args: Cli) -> Result<()> {
     let timer = ProcessTimer::new();
-    let args = Args::parse();
 
-    info!("Loading source db from {}", args.db_path.display());
+    let db_path = args
+        .db_path
+        .ok_or_else(|| anyhow::anyhow!("missing required argument: <DB_PATH>"))?;
+    let output_path = args
+        .output_path
+        .ok_or_else(|| anyhow::anyhow!("missing required argument: <OUTPUT_PATH>"))?;
+
+    info!("Loading source db from {}", db_path.display());
 
     let src_map = time("Loading source db", || {
-        source_map::load_source_map(&args.db_path)
+        source_map::load_source_map(&db_path)
     })?;
 
     let root_dir = match args.root_dir {
@@ -88,15 +104,26 @@ fn main() -> Result<()> {
     }
 
     // Write the lifeguard_output to the specified output file
-    let output_file = std::fs::File::create(&args.output_path)?;
+    let output_file = std::fs::File::create(&output_path)?;
     let writer = BufWriter::new(output_file);
     serde_json::to_writer_pretty(writer, &lifeguard_output.output)?;
 
-    println!("Output written to {}", args.output_path.display());
+    println!("Output written to {}", output_path.display());
     report_peak_memory();
     println!("Full time executing: {:.2?}", timer.elapsed_wall());
     if let Some(cpu) = timer.elapsed_cpu() {
         println!("Full time executing (CPU): {:.2?}", cpu);
     }
     Ok(())
+}
+
+fn main() -> Result<()> {
+    tracing_subscriber::fmt::init();
+
+    let args = Cli::parse();
+
+    match args.command {
+        Some(Commands::RunTree(args)) => lifeguard::commands::run_tree::run(args),
+        None => run_analyze(args),
+    }
 }

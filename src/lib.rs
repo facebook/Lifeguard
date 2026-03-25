@@ -10,6 +10,7 @@ pub mod analyzer;
 pub mod bindings;
 pub mod builtins;
 pub mod class;
+pub mod commands;
 pub mod cursor;
 pub mod debug;
 pub mod effects;

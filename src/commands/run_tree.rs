@@ -5,10 +5,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-// Analyze all Python files in a directory tree.
-//
-// $ buck run :run_tree -- <path_to_directory> <output_path>
-
 use std::io::BufWriter;
 use std::path::Path;
 use std::path::PathBuf;
@@ -16,18 +12,19 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::ArgAction;
 use clap::Parser;
-use lifeguard::runner::Options;
-use lifeguard::runner::process_source_map;
-use lifeguard::source_map::ModuleName;
-use lifeguard::source_map::SourceMap;
-use lifeguard::source_map::SourceResult;
-use lifeguard::source_map::is_python_file;
-use lifeguard::tracing::ProcessTimer;
-use lifeguard::tracing::time;
 use walkdir::WalkDir;
 
+use crate::runner::Options;
+use crate::runner::process_source_map;
+use crate::source_map::ModuleName;
+use crate::source_map::SourceMap;
+use crate::source_map::SourceResult;
+use crate::source_map::is_python_file;
+use crate::tracing::ProcessTimer;
+use crate::tracing::time;
+
 #[derive(Parser)]
-struct Args {
+pub struct RunTreeArgs {
     /// Directory containing Python files to analyze
     input_dir: PathBuf,
 
@@ -93,11 +90,8 @@ fn build_source_map(input_dir: &Path, cwd: &Path) -> Result<SourceMap> {
     Ok(source_map)
 }
 
-fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
-
+pub fn run(args: RunTreeArgs) -> Result<()> {
     let timer = ProcessTimer::new();
-    let args = Args::parse();
     let cwd = std::env::current_dir()?;
 
     // Build source map from directory

@@ -32,20 +32,20 @@ Verify everything compiles:
 cargo build
 ```
 
-## Quick Start — Analyze a directory (`run_tree`)
+## Quick Start — Analyze a directory (`run-tree`)
 
-The `run_tree` binary analyzes every `.py` file under a directory tree.
+The `run-tree` subcommand analyzes every `.py` file under a directory tree.
 
 Run it against the bundled sample project:
 
 ```bash
-cargo run --bin run_tree testdata/sample_project output.json
+cargo run -- run-tree testdata/sample_project output.json
 ```
 
 Add `--verbose-output verbose.txt` to see per-module details:
 
 ```bash
-cargo run --bin run_tree -- testdata/sample_project output.json \
+cargo run -- run-tree testdata/sample_project output.json \
   --verbose-output verbose.txt
 ```
 

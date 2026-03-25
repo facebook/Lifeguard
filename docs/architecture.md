@@ -2,7 +2,7 @@
 
 ### Analysis Pipeline
 
-The pipeline is orchestrated through `runner::process_source_map()` (shared by `main.rs` and `bin/run_tree.rs`):
+The pipeline is orchestrated through `runner::process_source_map()` (shared by `main.rs` and `commands/run_tree.rs`):
 
 1. **Load sources** - Parse the source DB JSON, load stubs, build `Sources` (`source_map.rs`)
 2. **Build import graph + exports** - Extract import relationships and module exports in a single pass (`ImportGraph::make_with_exports`)
@@ -27,7 +27,7 @@ AST parsing is on-demand — modules are parsed as needed during import graph co
 - `module_info.rs` - Combined DefinitionTable + ClassTable construction (single AST pass optimization)
 
 **Pipeline orchestration**:
-- `runner.rs` - Shared pipeline orchestration used by `main.rs` and `bin/run_tree.rs`
+- `runner.rs` - Shared pipeline orchestration used by `main.rs` and `commands/run_tree.rs`
 
 **AST traversal helpers**:
 - `cursor.rs` - Tracks current scope during AST traversal (module → class → function)
@@ -58,8 +58,8 @@ AST parsing is on-demand — modules are parsed as needed during import graph co
 - `traits.rs` - Extension traits bridging lifeguard with pyrefly types
 
 **Binary utilities**:
+- `commands/run_tree.rs` - Subcommand to analyze a directory tree without Buck
 - `bin/show_effects.rs` - CLI to dump effects for a single Python file
-- `bin/run_tree.rs` - CLI to analyze a directory tree without Buck
 
 **Local pyrefly forks**:
 - `pyrefly/definitions.rs` - Local fork of pyrefly's definitions module (with `LIFEGUARD:` markers)

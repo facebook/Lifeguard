@@ -44,16 +44,16 @@ If you already cloned without `--recurse-submodules`, run `git submodule update 
 
 ## Quick Start
 
-The fastest way to try Lifeguard is the `run_tree` binary, which analyzes every `.py` file under a directory. No additional setup needed.
+The fastest way to try Lifeguard is the `run-tree` subcommand, which analyzes every `.py` file under a directory. No additional setup needed.
 
 ```bash
-cargo run --bin run_tree <INPUT_DIR> <OUTPUT_PATH>
+cargo run -- run-tree <INPUT_DIR> <OUTPUT_PATH>
 ```
 
 For example, using the bundled sample project:
 
 ```bash
-cargo run --bin run_tree testdata/sample_project output.json
+cargo run -- run-tree testdata/sample_project output.json
 ```
 
 For a full walkthrough including interpreting the output, see [GETTING_STARTED.md](GETTING_STARTED.md).
