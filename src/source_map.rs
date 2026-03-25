@@ -139,7 +139,11 @@ fn resolve_source_map(raw: RawSourceMap) -> SourceMap {
                 continue;
             }
         };
-        let priority = source_priority(&full_path);
+        // TODO(T257095571): We need to surface the error where the path does not convert to a valid file.
+        let priority = match source_priority(&full_path) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
         let dominated = priorities.get(&mod_name).is_some_and(|&p| p <= priority);
         if !dominated {
             priorities.insert(mod_name, priority);
@@ -149,21 +153,22 @@ fn resolve_source_map(raw: RawSourceMap) -> SourceMap {
     result
 }
 
-/// Returns priority value for Python extensions (lower number = higher priority)
-fn source_priority(path: &Path) -> u8 {
+/// Returns priority value for Python extensions (lower number = higher priority).
+/// Returns Err for invalid unicode paths or unrecognized extensions.
+fn source_priority(path: &Path) -> anyhow::Result<u8> {
     let s = path
         .to_str()
-        .unwrap_or_else(|| panic!("Invalid unicode in filepath {:?}", path));
+        .ok_or_else(|| anyhow!("Path contains invalid UTF-8: {:?}", path))?;
     if s.ends_with("__init__.pyi") {
-        0
+        Ok(0)
     } else if s.ends_with(".pyi") {
-        1
+        Ok(1)
     } else if s.ends_with("__init__.py") {
-        2
+        Ok(2)
     } else if s.ends_with(".py") {
-        3
+        Ok(3)
     } else {
-        panic!("Invalid extension for Python file: {:?}", path);
+        Err(anyhow!("Unrecognized file extension for path: {:?}", path))
     }
 }
 
@@ -422,5 +427,17 @@ mod tests {
             ],
             vec![("foo.bar", "foo/bar/__init__.py")],
         );
+    }
+
+    #[test]
+    fn test_source_priority_values() {
+        assert_eq!(source_priority(Path::new("pkg/__init__.pyi")).ok(), Some(0));
+        assert_eq!(source_priority(Path::new("pkg/__init__.py")).ok(), Some(2));
+        assert_eq!(source_priority(Path::new("module.pyi")).ok(), Some(1));
+        assert_eq!(source_priority(Path::new("module.py")).ok(), Some(3));
+        assert!(source_priority(Path::new("module.pyx")).is_err());
+        assert!(source_priority(Path::new("module.rs")).is_err());
+        assert!(source_priority(Path::new("module.txt")).is_err());
+        assert!(source_priority(Path::new("no_extension")).is_err());
     }
 }
