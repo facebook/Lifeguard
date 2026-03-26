@@ -608,3 +608,300 @@ pub fn write_verbose<W: Write>(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use ruff_text_size::TextRange;
+    use ruff_text_size::TextSize;
+
+    use super::*;
+    use crate::errors::ErrorKind;
+    use crate::errors::SafetyError;
+    use crate::module_safety::ModuleSafety;
+    use crate::module_safety::SafetyResult;
+    use crate::test_lib::TestSources;
+
+    fn mn(s: &str) -> ModuleName {
+        ModuleName::from_str(s)
+    }
+
+    fn make_error(kind: ErrorKind, metadata: &str, offset: u32) -> SafetyError {
+        SafetyError::new(
+            kind,
+            metadata.to_string(),
+            TextRange::new(TextSize::new(offset), TextSize::new(offset + 1)),
+        )
+    }
+
+    // ---- classify_modules tests ----
+
+    #[test]
+    fn test_classify_modules_passing() {
+        let safety_map: SafetyMap = DashMap::new();
+        safety_map.insert(mn("foo"), SafetyResult::Ok(ModuleSafety::new()));
+        safety_map.insert(mn("bar"), SafetyResult::Ok(ModuleSafety::new()));
+
+        let result = classify_modules(safety_map);
+        assert_eq!(result.passing_modules.len(), 2);
+        assert_eq!(result.failing_modules.len(), 0);
+        assert!(result.load_imports_eagerly.is_empty());
+    }
+
+    #[test]
+    fn test_classify_modules_failing() {
+        let safety_map: SafetyMap = DashMap::new();
+        let mut safety = ModuleSafety::new();
+        safety.add_error(make_error(ErrorKind::UnsafeFunctionCall, "some_func()", 0));
+        safety_map.insert(mn("bad"), SafetyResult::Ok(safety));
+
+        let result = classify_modules(safety_map);
+        assert_eq!(result.failing_modules.len(), 1);
+        assert!(result.failing_modules.contains(&mn("bad")));
+        assert_eq!(result.passing_modules.len(), 0);
+    }
+
+    #[test]
+    fn test_classify_modules_analysis_error() {
+        let safety_map: SafetyMap = DashMap::new();
+        safety_map.insert(
+            mn("broken"),
+            SafetyResult::AnalysisError(anyhow::anyhow!("parse failed")),
+        );
+        safety_map.insert(mn("good"), SafetyResult::Ok(ModuleSafety::new()));
+
+        let result = classify_modules(safety_map);
+        assert!(result.failing_modules.contains(&mn("broken")));
+        assert!(result.passing_modules.contains(&mn("good")));
+        assert_eq!(result.aggregated_errors.len(), 0);
+    }
+
+    #[test]
+    fn test_classify_modules_load_imports_eagerly() {
+        let safety_map: SafetyMap = DashMap::new();
+        let mut safety = ModuleSafety::new();
+        safety.add_force_import_override(make_error(ErrorKind::ExecCall, "exec()", 0));
+        safety_map.insert(mn("exec_mod"), SafetyResult::Ok(safety));
+
+        let result = classify_modules(safety_map);
+        assert!(result.load_imports_eagerly.contains(&mn("exec_mod")));
+    }
+
+    #[test]
+    fn test_classify_modules_aggregated_errors() {
+        let safety_map: SafetyMap = DashMap::new();
+
+        let mut s1 = ModuleSafety::new();
+        s1.add_error(make_error(ErrorKind::UnsafeFunctionCall, "f()", 0));
+        safety_map.insert(mn("a"), SafetyResult::Ok(s1));
+
+        let mut s2 = ModuleSafety::new();
+        s2.add_error(make_error(ErrorKind::UnsafeFunctionCall, "f()", 10));
+        safety_map.insert(mn("b"), SafetyResult::Ok(s2));
+
+        let result = classify_modules(safety_map);
+        let key = (
+            ErrorKind::UnsafeFunctionCall,
+            "f()".parse::<ErrorMetadata>().unwrap(),
+        );
+        assert_eq!(result.aggregated_errors[&key], 2);
+    }
+
+    // ---- LifeGuardOutput serialization tests ----
+
+    #[test]
+    fn test_serialize_sorted_output() {
+        let mut output = LifeGuardOutput::new(true);
+        output.load_imports_eagerly.insert(mn("z_mod"));
+        output.load_imports_eagerly.insert(mn("a_mod"));
+        output.lazy_eligible.insert(mn("foo"), SmallSet::new());
+
+        let json = serde_json::to_string(&output).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        let eager = parsed["LOAD_IMPORTS_EAGERLY"].as_array().unwrap();
+        assert_eq!(eager[0].as_str().unwrap(), "a_mod");
+        assert_eq!(eager[1].as_str().unwrap(), "z_mod");
+        assert!(parsed["LAZY_ELIGIBLE"]["foo"].is_array());
+    }
+
+    #[test]
+    fn test_serialize_unsorted_output() {
+        let output = LifeGuardOutput::new(false);
+        output.lazy_eligible.insert(mn("mod_a"), {
+            let mut s = SmallSet::new();
+            s.insert(mn("dep_x"));
+            s
+        });
+
+        let json = serde_json::to_string(&output).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert!(
+            parsed["LOAD_IMPORTS_EAGERLY"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(parsed["LAZY_ELIGIBLE"].is_object());
+    }
+
+    // ---- write_verbose tests ----
+
+    #[test]
+    fn test_write_verbose_analysis_error() {
+        let sources = TestSources::new(&[("broken", "x = 1\n")]);
+        let safety_map: SafetyMap = DashMap::new();
+        safety_map.insert(
+            mn("broken"),
+            SafetyResult::AnalysisError(anyhow::anyhow!("something went wrong")),
+        );
+
+        let mut buf = Vec::new();
+        write_verbose(&mut buf, &safety_map, &sources).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+
+        assert!(output.contains("## broken"));
+        assert!(output.contains("### Analysis Error"));
+        assert!(output.contains("something went wrong"));
+    }
+
+    #[test]
+    fn test_write_verbose_no_errors() {
+        let sources = TestSources::new(&[("clean", "x = 1\n")]);
+        let safety_map: SafetyMap = DashMap::new();
+        safety_map.insert(mn("clean"), SafetyResult::Ok(ModuleSafety::new()));
+
+        let mut buf = Vec::new();
+        write_verbose(&mut buf, &safety_map, &sources).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+
+        assert!(output.contains("## clean"));
+        assert!(output.contains("Lazy imports incompatibilities were not detected"));
+    }
+
+    #[test]
+    fn test_write_verbose_with_errors() {
+        let sources = TestSources::new(&[("bad", "some_func()\n")]);
+        let safety_map: SafetyMap = DashMap::new();
+        let mut safety = ModuleSafety::new();
+        safety.add_error(make_error(ErrorKind::UnsafeFunctionCall, "some_func()", 0));
+        safety_map.insert(mn("bad"), SafetyResult::Ok(safety));
+
+        let mut buf = Vec::new();
+        write_verbose(&mut buf, &safety_map, &sources).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+
+        assert!(output.contains("## bad"));
+        assert!(output.contains("### Errors"));
+        assert!(output.contains("UnsafeFunctionCall"));
+        assert!(output.contains("some_func()"));
+    }
+
+    // ---- build_lazy_eligible / cycle propagation tests ----
+
+    #[test]
+    fn test_build_lazy_eligible_basic() {
+        let mut import_graph = ImportGraph::new();
+        import_graph.graph.add_node(&mn("safe"));
+        import_graph.graph.add_node(&mn("unsafe_mod"));
+        import_graph.graph.add_edge(&mn("safe"), &mn("unsafe_mod"));
+
+        let mut classified = ClassifiedModules {
+            failing_modules: SmallSet::new(),
+            passing_modules: SmallSet::new(),
+            load_imports_eagerly: SmallSet::new(),
+            implicit_imports: AHashMap::new(),
+            aggregated_errors: AHashMap::new(),
+        };
+        classified.passing_modules.insert(mn("safe"));
+        classified.failing_modules.insert(mn("unsafe_mod"));
+
+        let re_export_map = AHashMap::new();
+        let all_cycles: Vec<Vec<ModuleName>> = vec![];
+        let lazy_eligible =
+            build_lazy_eligible(&import_graph, &classified, &re_export_map, &all_cycles);
+
+        let entry = lazy_eligible.get(&mn("safe")).unwrap();
+        assert!(entry.contains(&mn("unsafe_mod")));
+    }
+
+    #[test]
+    fn test_cycle_deps_propagate_to_children() {
+        // Create a cycle: a -> b -> a
+        // And a child module a.child that is passing
+        let mut import_graph = ImportGraph::new();
+        let a = mn("a");
+        let b = mn("b");
+        let a_child = mn("a.child");
+
+        import_graph.graph.add_node(&a);
+        import_graph.graph.add_node(&b);
+        import_graph.graph.add_node(&a_child);
+        import_graph.graph.add_edge(&a, &b);
+        import_graph.graph.add_edge(&b, &a);
+
+        let mut classified = ClassifiedModules {
+            failing_modules: SmallSet::new(),
+            passing_modules: SmallSet::new(),
+            load_imports_eagerly: SmallSet::new(),
+            implicit_imports: AHashMap::new(),
+            aggregated_errors: AHashMap::new(),
+        };
+        classified.passing_modules.insert(a);
+        classified.passing_modules.insert(b);
+        classified.passing_modules.insert(a_child);
+
+        let re_export_map = AHashMap::new();
+        let all_cycles = vec![vec![a, b]];
+        let lazy_eligible =
+            build_lazy_eligible(&import_graph, &classified, &re_export_map, &all_cycles);
+
+        // a should have b as a cycle dep
+        let a_deps = lazy_eligible.get(&a).unwrap();
+        assert!(a_deps.contains(&b));
+
+        // b should have a as a cycle dep
+        let b_deps = lazy_eligible.get(&b).unwrap();
+        assert!(b_deps.contains(&a));
+
+        // a.child (child of cycle member a) should also get the cycle deps propagated
+        let child_deps = lazy_eligible.get(&a_child).unwrap();
+        assert!(child_deps.contains(&b));
+    }
+
+    // ---- get_report tests ----
+
+    #[test]
+    fn test_get_report_format() {
+        let analysis = LifeGuardAnalysis {
+            output: LifeGuardOutput::new(true),
+            failing_modules: {
+                let mut s = SmallSet::new();
+                s.insert(mn("bad"));
+                s
+            },
+            passing_modules: {
+                let mut s = SmallSet::new();
+                s.insert(mn("good1"));
+                s.insert(mn("good2"));
+                s
+            },
+            aggregated_errors: {
+                let mut m = AHashMap::new();
+                m.insert(
+                    (
+                        ErrorKind::UnsafeFunctionCall,
+                        "f()".parse::<ErrorMetadata>().unwrap(),
+                    ),
+                    3,
+                );
+                m
+            },
+        };
+
+        let report = analysis.get_report();
+        assert!(report.contains("66.67 %"));
+        assert!(report.contains("Num of failing files: 1"));
+        assert!(report.contains("Num of passing files: 2"));
+    }
+}
