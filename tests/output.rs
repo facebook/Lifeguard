@@ -763,6 +763,123 @@ mod tests {
         );
     }
 
+    fn verbose_test_options() -> Options {
+        Options {
+            verbose_output_path: Some(std::path::PathBuf::from("/tmp/test_verbose")),
+            sorted_output: true,
+        }
+    }
+
+    fn run_lifeguard_analysis_verbose(modules: &Vec<(&str, &str)>) -> LifeGuardAnalysis {
+        let sources = TestSources::new(modules);
+        let sys_info = SysInfo::lg_default();
+        let (import_graph, exports) = ImportGraph::make_with_exports(&sources, &sys_info);
+        let (safety_map, side_effect_imports) =
+            project::run_analysis(&sources, &exports, &import_graph, &sys_info);
+        let mut analysis =
+            LifeGuardAnalysis::new(safety_map, import_graph, &exports, &verbose_test_options());
+        analysis.propagate_side_effect_imports(&side_effect_imports);
+        analysis
+    }
+
+    #[test]
+    fn test_verbose_output_includes_implicit_imports() {
+        let code1 = r#"
+            import os
+            x = os.path.join("a", "b")
+        "#;
+        let code_os = r#"
+            val = 1
+        "#;
+        let modules = vec![("test_mod", code1), ("os", code_os)];
+
+        let result = run_lifeguard_analysis_verbose(&modules);
+        assert!(
+            result.output.implicit_imports.is_some(),
+            "implicit_imports should be populated in verbose mode"
+        );
+    }
+
+    #[test]
+    fn test_verbose_output_includes_import_cycles() {
+        let cycle_a = r#"
+            import cycle_b
+            def func_a():
+                pass
+        "#;
+        let cycle_b = r#"
+            import cycle_a
+            def func_b():
+                pass
+        "#;
+        let modules = vec![("cycle_a", cycle_a), ("cycle_b", cycle_b)];
+
+        let result = run_lifeguard_analysis_verbose(&modules);
+        assert!(
+            result.output.import_cycles.is_some(),
+            "import_cycles should be populated in verbose mode"
+        );
+        let cycles = result.output.import_cycles.as_ref().unwrap();
+        assert!(
+            !cycles.is_empty(),
+            "import_cycles should contain the detected cycle"
+        );
+    }
+
+    #[test]
+    fn test_verbose_output_json_format() {
+        let cycle_a = r#"
+            import cycle_b
+            def func_a():
+                pass
+        "#;
+        let cycle_b = r#"
+            import cycle_a
+            def func_b():
+                pass
+        "#;
+        let modules = vec![("cycle_a", cycle_a), ("cycle_b", cycle_b)];
+
+        let result = run_lifeguard_analysis_verbose(&modules);
+        let json_value = serde_json::to_value(&result.output).unwrap();
+
+        assert!(
+            json_value.get("IMPLICIT_IMPORTS").is_some(),
+            "JSON should contain IMPLICIT_IMPORTS key"
+        );
+        assert!(
+            json_value.get("IMPORT_CYCLES").is_some(),
+            "JSON should contain IMPORT_CYCLES key"
+        );
+    }
+
+    #[test]
+    fn test_non_verbose_output_excludes_verbose_fields() {
+        let cycle_a = r#"
+            import cycle_b
+            def func_a():
+                pass
+        "#;
+        let cycle_b = r#"
+            import cycle_a
+            def func_b():
+                pass
+        "#;
+        let modules = vec![("cycle_a", cycle_a), ("cycle_b", cycle_b)];
+
+        let result = run_lifeguard_analysis(&modules);
+        let json_value = serde_json::to_value(&result.output).unwrap();
+
+        assert!(
+            json_value.get("IMPLICIT_IMPORTS").is_none(),
+            "Non-verbose JSON should NOT contain IMPLICIT_IMPORTS"
+        );
+        assert!(
+            json_value.get("IMPORT_CYCLES").is_none(),
+            "Non-verbose JSON should NOT contain IMPORT_CYCLES"
+        );
+    }
+
     #[test]
     fn test_cycle_deps_do_not_propagate_to_failing_children() {
         // When a cycle module has a child that is failing (e.g. due to SubmoduleReExport),

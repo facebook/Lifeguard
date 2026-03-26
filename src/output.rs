@@ -49,6 +49,10 @@ pub struct LifeGuardOutput {
 
     // Whether to sort keys and values for deterministic output.
     pub sorted_output: bool,
+
+    // Verbose-mode fields: only populated when --verbose-output is used.
+    pub implicit_imports: Option<AHashMap<ModuleName, Vec<ModuleName>>>,
+    pub import_cycles: Option<Vec<Vec<ModuleName>>>,
 }
 
 impl Serialize for LifeGuardOutput {
@@ -56,7 +60,9 @@ impl Serialize for LifeGuardOutput {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("LifeGuardOutput", 2)?;
+        let num_fields =
+            2 + self.implicit_imports.is_some() as usize + self.import_cycles.is_some() as usize;
+        let mut state = serializer.serialize_struct("LifeGuardOutput", num_fields)?;
         if self.sorted_output {
             let mut items: Vec<&ModuleName> = self.load_imports_eagerly.iter().collect();
             items.sort();
@@ -77,18 +83,43 @@ impl Serialize for LifeGuardOutput {
                     (*k, vals)
                 })
                 .collect();
-            state.serialize_field("LAZY_ELIGIBLE", &LazyEligibleSorted(&sorted))?;
+            state.serialize_field("LAZY_ELIGIBLE", &SortedModuleMap(&sorted))?;
         } else {
-            state.serialize_field("LAZY_ELIGIBLE", &LazyEligibleUnsorted(&self.lazy_eligible))?;
+            state.serialize_field("LAZY_ELIGIBLE", &UnsortedDashMap(&self.lazy_eligible))?;
         }
+
+        // Always sort implicit_imports and import_cycles — these are only
+        // included in verbose mode where determinism matters more than speed.
+        if let Some(implicit_imports) = &self.implicit_imports {
+            let mut sorted: Vec<(ModuleName, Vec<ModuleName>)> = implicit_imports
+                .iter()
+                .map(|(k, v)| {
+                    let mut vals = v.clone();
+                    vals.sort();
+                    (*k, vals)
+                })
+                .collect();
+            sorted.sort_by_key(|(k, _)| *k);
+            state.serialize_field("IMPLICIT_IMPORTS", &SortedModuleMap(&sorted))?;
+        }
+
+        if let Some(import_cycles) = &self.import_cycles {
+            let mut sorted = import_cycles.clone();
+            for cycle in &mut sorted {
+                cycle.sort();
+            }
+            sorted.sort();
+            state.serialize_field("IMPORT_CYCLES", &sorted)?;
+        }
+
         state.end()
     }
 }
 
 /// Helper to serialize a pre-sorted list of (key, values) as a JSON map.
-struct LazyEligibleSorted<'a>(&'a [(ModuleName, Vec<ModuleName>)]);
+struct SortedModuleMap<'a>(&'a [(ModuleName, Vec<ModuleName>)]);
 
-impl Serialize for LazyEligibleSorted<'_> {
+impl Serialize for SortedModuleMap<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -102,9 +133,9 @@ impl Serialize for LazyEligibleSorted<'_> {
 }
 
 /// Helper to serialize a DashMap as a JSON map without sorting.
-struct LazyEligibleUnsorted<'a>(&'a DashMap<ModuleName, SmallSet<ModuleName>>);
+struct UnsortedDashMap<'a>(&'a DashMap<ModuleName, SmallSet<ModuleName>>);
 
-impl Serialize for LazyEligibleUnsorted<'_> {
+impl Serialize for UnsortedDashMap<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -123,6 +154,8 @@ impl LifeGuardOutput {
             load_imports_eagerly: SmallSet::new(),
             lazy_eligible: DashMap::new(),
             sorted_output,
+            implicit_imports: None,
+            import_cycles: None,
         }
     }
 }
@@ -298,10 +331,23 @@ impl LifeGuardAnalysis {
         let lazy_eligible =
             build_lazy_eligible(&import_graph, &classified, &re_export_map, &all_cycles);
 
-        let output = LifeGuardOutput {
-            load_imports_eagerly: classified.load_imports_eagerly,
-            lazy_eligible,
-            sorted_output: options.sorted_output,
+        let verbose = options.verbose_output_path.is_some();
+        let output = if verbose {
+            LifeGuardOutput {
+                load_imports_eagerly: classified.load_imports_eagerly,
+                lazy_eligible,
+                sorted_output: options.sorted_output,
+                implicit_imports: Some(classified.implicit_imports),
+                import_cycles: Some(all_cycles),
+            }
+        } else {
+            LifeGuardOutput {
+                load_imports_eagerly: classified.load_imports_eagerly,
+                lazy_eligible,
+                sorted_output: options.sorted_output,
+                implicit_imports: None,
+                import_cycles: None,
+            }
         };
 
         Self {
@@ -401,12 +447,17 @@ fn collect_cycles(
         .graph
         .find_cycles()
         .into_iter()
-        .map(|cycle| {
-            import_graph
+        .filter_map(|cycle| {
+            let members: Vec<ModuleName> = import_graph
                 .graph
                 .cycle_names(&cycle)
                 .filter(|m| source_modules.contains(m))
-                .collect()
+                .collect();
+            if members.is_empty() {
+                None
+            } else {
+                Some(members)
+            }
         })
         .collect()
 }
