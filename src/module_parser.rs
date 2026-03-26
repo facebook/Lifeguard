@@ -45,7 +45,7 @@ impl ParsedModule {
         if size == 0 {
             return 1;
         } else if idx >= size {
-            return self.newline_positions[size - 1] as usize;
+            return size + 1;
         }
 
         let newline_pos = self.newline_positions[idx];
@@ -112,4 +112,63 @@ fn compute_newline_positions(source: &str) -> Vec<u32> {
             },
         )
         .collect::<Vec<_>>()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_parsed(source: &str) -> ParsedModule {
+        parse_source(source, ModuleName::from_str("test"), false)
+    }
+
+    #[test]
+    fn empty_file() {
+        let m = make_parsed("");
+        assert_eq!(m.byte_to_line_number(0), 1, "empty file returns line 1");
+    }
+
+    #[test]
+    fn single_line_no_newline() {
+        let m = make_parsed("hello");
+        assert_eq!(m.byte_to_line_number(0), 1, "position 0 is on line 1");
+        assert_eq!(m.byte_to_line_number(3), 1, "position 3 is on line 1");
+        assert_eq!(m.byte_to_line_number(4), 1, "position 4 is on line 1");
+    }
+
+    #[test]
+    fn position_at_newline_boundary() {
+        // "ab\ncd\n" -> newlines at positions 2 and 5
+        let m = make_parsed("ab\ncd\n");
+        assert_eq!(m.byte_to_line_number(2), 1, "at first newline");
+        assert_eq!(m.byte_to_line_number(5), 2, "at second newline");
+    }
+
+    #[test]
+    fn position_past_eof() {
+        // "a\nb\n" -> newlines at positions 1 and 3
+        let m = make_parsed("a\nb\n");
+        assert_eq!(m.newline_positions.len(), 2);
+        // Past EOF returns one line past the last newline
+        assert_eq!(
+            m.byte_to_line_number(100),
+            3,
+            "past EOF returns last line number"
+        );
+    }
+
+    #[test]
+    fn multi_line_various_positions() {
+        // "line1\nline2\nline3"
+        // newlines at positions 5 and 11
+        let m = make_parsed("line1\nline2\nline3");
+        assert_eq!(m.byte_to_line_number(0), 1, "start of line 1");
+        assert_eq!(m.byte_to_line_number(4), 1, "end of line 1 content");
+        assert_eq!(m.byte_to_line_number(5), 1, "at first newline");
+        assert_eq!(m.byte_to_line_number(6), 2, "start of line 2");
+        assert_eq!(m.byte_to_line_number(11), 2, "at second newline");
+        // Positions past the last newline are on the last line
+        assert_eq!(m.byte_to_line_number(12), 3, "start of line 3");
+        assert_eq!(m.byte_to_line_number(16), 3, "end of file");
+    }
 }
