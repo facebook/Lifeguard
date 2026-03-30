@@ -27,38 +27,70 @@ use crate::module_parser::ParsedModule;
 #[derive(Debug, Eq, PartialEq, Hash, Copy, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum EffectKind {
+    // Assigning to a global via `global` statement.
     GlobalVarAssign,
+    // Assigning to a class variable.
     ClassVarAssign,
+    // Mutating a global (e.g., `my_list.append(x)` at module level).
     GlobalVarMutation,
+    // Decorator application.
     DecoratorCall,
+    // Imported decorator application.
     ImportedDecoratorCall,
+    // Import triggered implicitly.
     ImplicitImport,
+    // Mutating an imported variable (e.g., `foo.x = 1`).
     ImportedVarMutation,
+    // Calling an imported function.
     ImportedFunctionCall,
+    // Accessing an attribute on an imported type (may be a property).
     ImportedTypeAttr,
+    // Calling a method.
     MethodCall,
+    // Calling a method on a function parameter.
     ParamMethodCall,
+    // Calling a locally-defined function.
     FunctionCall,
+    // Calling explicitly prohibited builtins (e.g., `getattr` with non-literal arg).
     ProhibitedFunctionCall,
+    // Call where the decorator target cannot be resolved.
     UnknownDecoratorCall,
+    // Call where the function target cannot be resolved.
     UnknownFunctionCall,
+    // Call where the method target cannot be resolved.
     UnknownMethodCall,
+    // Binary operation on imported values (may trigger `__eq__` etc.).
     UnknownValueBinaryOp,
+    // Accessing an attribute on an unresolved object.
     UnknownObject,
+    // Explicitly raising an exception.
     Raise,
+    // Attribute assignment.
     SetAttr,
+    // Subscript assignment.
     SetSubscript,
+    // Class with `__del__` method.
     CustomFinalizer,
+    // Calling `exec()`.
     ExecCall,
+    // Accessing `sys.modules`.
     SysModulesAccess,
+    // Re-exporting a submodule's name via `__all__`.
     SubmoduleReExport,
+    // Passing an imported variable as a function argument.
     ImportedVarArgument,
+    // Re-assigning an imported variable (for re-export tracking).
     ImportedVarReassignment,
     // For stub files. Update is_unsafe_stub_effect() when adding entries here.
+    // Explicitly marks a function as side-effect-free.
     NoEffects,
+    // Function body is `...` (unknown).
     UnknownEffects,
+    // Explicitly marks as unsafe.
     Unsafe,
+    // Marks a method as mutating its receiver.
     Mutation,
+    // Marks a dunder method.
     Dunder,
 }
 
