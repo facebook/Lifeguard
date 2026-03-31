@@ -24,7 +24,6 @@ use crate::analyzer::AnalyzedModule;
 use crate::class::Class;
 use crate::class::ClassTable;
 use crate::class::FieldKind;
-use crate::effects::CallData;
 use crate::effects::Effect;
 use crate::effects::EffectData;
 use crate::effects::EffectKind;
@@ -1014,29 +1013,43 @@ impl ProjectInfo {
         Ok(ret)
     }
 
-    fn check_call_params(&self, call: &Call, effs: &[Effect], state: &GlobalAnalysisState) {
-        if !matches!(
-            call.effect.data,
-            EffectData::Call(CallData {
-                has_unsafe_args: true
-            })
-        ) {
-            // We don't care about the function effects if the call doesn't have unsafe args
+    fn check_call_params(
+        &self,
+        call: &Call,
+        func: &ModuleName,
+        effs: &[Effect],
+        state: &GlobalAnalysisState,
+    ) {
+        let EffectData::Call(ref call_data) = call.effect.data else {
+            return;
+        };
+        if !call_data.has_unsafe_args {
             return;
         }
+
+        let func_module = self.functions.get(func).copied().unwrap_or(*func);
+        let defs = self.analysis_map.get(&func_module).map(|m| &m.definitions);
+
         for eff in effs {
-            if matches!(eff.kind, EffectKind::ParamMethodCall) {
-                // If we call a method on a param and the call has unsafe args then raise a
-                // safety error.
-                // NOTE: We do not mark the function itself as unsafe, since it is not
-                // necessarily unsafe when called with different args.
-                // TODO: arg matching and dataflow analysis - this is currently a very coarse
-                // check that a function with some global/imported var as an argument calls a
-                // method on some (possibly the same) arg. We also don't check if the method
-                // mutates self.
-                let err = SafetyError::new_from_effect(ErrorKind::ImportedVarArgument, call.effect);
-                state.add_error_to_module(call.caller_module, err);
+            if eff.kind != EffectKind::ParamMethodCall {
+                continue;
             }
+            let param_name = eff.name.as_str();
+            if call_data.unsafe_arg_indices != 0 {
+                if let Some(param_idx) = defs.and_then(|d| d.get_param_index(func, param_name)) {
+                    if param_idx < 64 && (call_data.unsafe_arg_indices & (1u64 << param_idx)) != 0 {
+                        let err = SafetyError::new_from_effect(
+                            ErrorKind::ImportedVarArgument,
+                            call.effect,
+                        );
+                        state.add_error_to_module(call.caller_module, err);
+                    }
+                    continue;
+                }
+            }
+            // Fallback: if we can't resolve the param index, use coarse matching
+            let err = SafetyError::new_from_effect(ErrorKind::ImportedVarArgument, call.effect);
+            state.add_error_to_module(call.caller_module, err);
         }
     }
 
@@ -1060,7 +1073,7 @@ impl ProjectInfo {
 
         // Call param mutation is orthogonal to function safety; we always need to check for it
         // even if the function safety is cached.
-        self.check_call_params(call, effs, state);
+        self.check_call_params(call, func, effs, state);
 
         let is_cross_module_call = *call.caller_module != *call_module;
 

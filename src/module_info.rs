@@ -52,6 +52,8 @@ pub struct DefinitionTable {
     pub functions: AHashSet<ModuleName>,
     // Tracks the enclosing top-level function scope for nested defs
     pub enclosing_functions: AHashMap<ModuleName, ModuleName>,
+    // Ordered parameter names per function scope, for arg-param matching
+    pub param_names: AHashMap<ModuleName, Vec<Name>>,
 }
 
 impl DefinitionTable {
@@ -62,12 +64,18 @@ impl DefinitionTable {
             eager_scopes: AHashSet::new(),
             functions: AHashSet::new(),
             enclosing_functions: AHashMap::new(),
+            param_names: AHashMap::new(),
         }
     }
 
     pub fn get(&self, scope: &ModuleName, name: &Name) -> Option<&Definition> {
         let defs = self.definitions.get(scope)?;
         defs.definitions.get(name)
+    }
+
+    pub fn get_param_index(&self, func_scope: &ModuleName, param_name: &str) -> Option<usize> {
+        let names = self.param_names.get(func_scope)?;
+        names.iter().position(|n| n.as_str() == param_name)
     }
 
     pub fn resolve(&self, cursor: &Cursor, value: &Expr) -> Option<ResolvedName<'_>> {
@@ -259,6 +267,7 @@ struct CombinedDefinitionClassBuilder<'a> {
     eager_scopes: AHashSet<ModuleName>,
     functions_set: AHashSet<ModuleName>,
     enclosing_functions: AHashMap<ModuleName, ModuleName>,
+    param_names: AHashMap<ModuleName, Vec<Name>>,
 
     // ClassTable fields
     classes_map: AHashMap<ModuleName, crate::class::Class>,
@@ -275,6 +284,7 @@ impl<'a> CombinedDefinitionClassBuilder<'a> {
             eager_scopes: AHashSet::new(),
             functions_set: AHashSet::new(),
             enclosing_functions: AHashMap::new(),
+            param_names: AHashMap::new(),
             classes_map: AHashMap::new(),
         }
     }
@@ -386,6 +396,7 @@ impl<'a> CombinedDefinitionClassBuilder<'a> {
         let scope = self.cursor.scope();
         if let Some(defs) = self.definitions_map.get_mut(&scope) {
             let box params = &func.parameters;
+            let mut ordered_names = Vec::new();
             for p in params.iter_non_variadic_params() {
                 let def = Definition {
                     range: p.range,
@@ -393,8 +404,10 @@ impl<'a> CombinedDefinitionClassBuilder<'a> {
                     needs_anywhere: false,
                     docstring_range: None,
                 };
+                ordered_names.push(p.parameter.name.id.clone());
                 defs.definitions.insert(p.parameter.name.id.clone(), def);
             }
+            self.param_names.insert(scope, ordered_names);
         }
     }
 
@@ -516,6 +529,7 @@ impl<'a> CombinedDefinitionClassBuilder<'a> {
             eager_scopes: self.eager_scopes,
             functions: self.functions_set,
             enclosing_functions: self.enclosing_functions,
+            param_names: self.param_names,
         };
         let classes = ClassTable::new(self.classes_map);
         (definitions, classes)

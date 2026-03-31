@@ -156,6 +156,7 @@ impl CallKind {
 #[derive(Debug, Eq, PartialEq, Hash, Copy, Clone)]
 pub struct CallData {
     pub has_unsafe_args: bool,
+    pub unsafe_arg_indices: u64,
 }
 
 #[derive(Debug, Eq, PartialEq, Hash, Copy, Clone)]
@@ -254,10 +255,6 @@ impl EffectTable {
         F: FnMut(&ModuleName, &mut Vec<Effect>) -> bool,
     {
         self.table.retain(f)
-    }
-
-    pub(crate) fn contains_key(&self, name: &ModuleName) -> bool {
-        self.table.contains_key(name)
     }
 
     pub(crate) fn merge(&mut self, other: &Self) {
