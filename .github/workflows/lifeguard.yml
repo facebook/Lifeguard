@@ -15,12 +15,14 @@ jobs:
     - uses: actions/checkout@v6
       with:
         submodules: recursive
-    - run: rustup show
-    - run: rustup component add clippy rustfmt
+    - uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: nightly-2026-01-18
+        components: clippy, rustfmt
     - uses: Swatinem/rust-cache@v2
       with:
         prefix-key: lifeguard
     - run: cargo fmt -- --check
-    - run: cargo clippy --locked
-    - run: cargo test --locked
-    - run: cargo build --bin lifeguard --release --locked
+    - run: cargo clippy --release
+    - run: cargo test --release
+    - run: cargo build --bin lifeguard --release
