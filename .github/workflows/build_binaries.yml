@@ -10,7 +10,7 @@ on:
   workflow_call:
 
 env:
-  PACKAGE_NAME: lifeguard-lazy-imports
+  PACKAGE_FILE_NAME: lifeguard_lazy_imports
   BINARY_NAME: lifeguard
   PYTHON_VERSION: "3.12"
 
@@ -32,7 +32,7 @@ jobs:
           args: --out dist
       - name: Test sdist
         run: |
-          pip install dist/"${PACKAGE_NAME}"-*.tar.gz --force-reinstall
+          pip install dist/"${PACKAGE_FILE_NAME}"-*.tar.gz --force-reinstall
           "${BINARY_NAME}" --version
           "${BINARY_NAME}" --help
           python -m lifeguard_lazy_imports --version
@@ -68,7 +68,7 @@ jobs:
       - name: Test wheel
         if: ${{ matrix.platform.target == 'aarch64' }}
         run: |
-          pip install dist/"${PACKAGE_NAME}"-*.whl --force-reinstall
+          pip install dist/"${PACKAGE_FILE_NAME}"-*.whl --force-reinstall
           "${BINARY_NAME}" --version
           "${BINARY_NAME}" --help
           python -m lifeguard_lazy_imports --version
@@ -105,7 +105,7 @@ jobs:
         if: ${{ !startsWith(matrix.platform.target, 'aarch64') }}
         shell: bash
         run: |
-          python -m pip install dist/"${PACKAGE_NAME}"-*.whl --force-reinstall
+          python -m pip install dist/"${PACKAGE_FILE_NAME}"-*.whl --force-reinstall
           "${BINARY_NAME}" --version
           "${BINARY_NAME}" --help
           python -m lifeguard_lazy_imports --version
@@ -140,7 +140,7 @@ jobs:
       - name: Test wheel
         if: ${{ startsWith(matrix.target, 'x86_64') }}
         run: |
-          pip install dist/"${PACKAGE_NAME}"-*.whl --force-reinstall
+          pip install dist/"${PACKAGE_FILE_NAME}"-*.whl --force-reinstall
           "${BINARY_NAME}" --version
           "${BINARY_NAME}" --help
           python -m lifeguard_lazy_imports --version
@@ -169,7 +169,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Test wheel
         run: |
-          pip install dist/"${PACKAGE_NAME}"-*.whl --force-reinstall
+          pip install dist/"${PACKAGE_FILE_NAME}"-*.whl --force-reinstall
           "${BINARY_NAME}" --version
           "${BINARY_NAME}" --help
           python -m lifeguard_lazy_imports --version

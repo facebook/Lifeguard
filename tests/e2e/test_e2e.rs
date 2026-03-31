@@ -11,6 +11,10 @@ mod tests {
 
     #[test]
     fn test_lifeguard_build_integration() {
+        if Command::new("buck2").arg("--help").output().is_err() {
+            eprintln!("Skipping: buck2 not available");
+            return;
+        }
         let output = Command::new("buck2")
             .args([
                 "--isolation-dir",
@@ -29,6 +33,10 @@ mod tests {
 
     #[test]
     fn test_lifeguard_build_integration_with_local_changes() {
+        if Command::new("buck2").arg("--help").output().is_err() {
+            eprintln!("Skipping: buck2 not available");
+            return;
+        }
         let output = Command::new("buck2")
             .args([
                 "--isolation-dir",
@@ -52,6 +60,10 @@ mod tests {
         // The standalone lifeguard script kicks off a buck build to gather the
         // db json, this creates a tangle of buck commands. Need to set an
         // isolation dir
+        if Command::new("buck2").arg("--help").output().is_err() {
+            eprintln!("Skipping: buck2 not available");
+            return;
+        }
         let output = Command::new("buck2")
             .args([
                 "--isolation-dir",
