@@ -9,8 +9,13 @@
 mod tests {
     use std::process::Command;
 
+    use lifeguard::test_lib::check_buck_availability;
+
     #[test]
     fn test_lifeguard_build_integration() {
+        if !check_buck_availability() {
+            return;
+        }
         let output = Command::new("buck2")
             .args([
                 "--isolation-dir",
@@ -29,6 +34,9 @@ mod tests {
 
     #[test]
     fn test_lifeguard_build_integration_with_local_changes() {
+        if !check_buck_availability() {
+            return;
+        }
         let output = Command::new("buck2")
             .args([
                 "--isolation-dir",
@@ -52,6 +60,9 @@ mod tests {
         // The standalone lifeguard script kicks off a buck build to gather the
         // db json, this creates a tangle of buck commands. Need to set an
         // isolation dir
+        if !check_buck_availability() {
+            return;
+        }
         let output = Command::new("buck2")
             .args([
                 "--isolation-dir",

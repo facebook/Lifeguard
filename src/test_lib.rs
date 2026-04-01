@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::process::Command;
 
 use ahash::AHashMap;
 use ahash::AHashSet;
@@ -407,4 +408,12 @@ pub fn analyze_tree(modules: &Vec<(&str, &str)>) -> AnalysisMap {
     let sys_info = SysInfo::lg_default();
     let (import_graph, exports) = ImportGraph::make_with_exports(&sources, &sys_info);
     project::analyze_all(&sources, &exports, &import_graph, &sys_info)
+}
+
+pub fn check_buck_availability() -> bool {
+    if Command::new("buck2").output().is_err() {
+        eprintln!("buck2 not available");
+        return false;
+    }
+    true
 }
