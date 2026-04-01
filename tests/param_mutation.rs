@@ -560,6 +560,150 @@ f(registry)
     }
 
     // =========================================================================
+    // StmtDelete: del x[k] and del x.attr on function parameters
+    //
+    // Deleting a subscript or attribute of a parameter is a mutation.
+    // Handled by Stmt::Delete arm in stmt() calling check_assign_target.
+    // =========================================================================
+
+    #[test]
+
+    fn test_param_del_subscript_with_imported_arg() {
+        // del x["key"] on a param is a mutation (calls __delitem__)
+        let code = r#"
+from foo import d
+
+def f(x):
+    del x["key"]
+
+f(d)  # E: imported-var-argument
+"#;
+        check(code);
+    }
+
+    #[test]
+
+    fn test_param_del_subscript_safe_without_imported_arg() {
+        // del x["key"] with a non-imported arg is safe
+        let code = r#"
+def f(x):
+    del x["key"]
+
+f({})
+"#;
+        check(code);
+    }
+
+    #[test]
+
+    fn test_param_del_attr_with_imported_arg() {
+        // del x.attr on a param is a mutation (calls __delattr__)
+        let code = r#"
+from foo import obj
+
+def f(x):
+    del x.enabled
+
+f(obj)  # E: imported-var-argument
+"#;
+        check(code);
+    }
+
+    #[test]
+
+    fn test_param_del_attr_safe_without_imported_arg() {
+        // del x.attr with a non-imported arg is safe
+        let code = r#"
+def f(x):
+    del x.enabled
+
+f(10)
+"#;
+        check(code);
+    }
+
+    #[test]
+
+    fn test_param_del_subscript_effect() {
+        // Effects-level: del x["key"] should generate param-method-call
+        let code = r#"
+def f(x):
+    del x["key"]  # E: param-method-call
+"#;
+        check_effects(code);
+    }
+
+    #[test]
+
+    fn test_param_del_attr_effect() {
+        // Effects-level: del x.attr should generate param-method-call
+        let code = r#"
+def f(x):
+    del x.enabled  # E: param-method-call
+"#;
+        check_effects(code);
+    }
+
+    #[test]
+
+    fn test_param_del_subscript_precise_match() {
+        // Only first param has del, imported var at second position → safe
+        let code = r#"
+from foo import A
+
+def f(x, y):
+    del x["key"]
+
+f(1, A)
+"#;
+        check(code);
+    }
+
+    #[test]
+
+    fn test_param_del_attr_precise_match() {
+        // Only second param has del, imported var at second position → unsafe
+        let code = r#"
+from foo import A
+
+def f(x, y):
+    del y.attr
+
+f(1, A)  # E: imported-var-argument
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_del_bare_imported_name_is_safe() {
+        // del on a bare imported name unbinds the name from the namespace.
+        // It does NOT mutate the imported object — no effect should be raised.
+        let code = r#"
+from foo import bar
+
+del bar
+"#;
+        check(code);
+    }
+
+    #[test]
+
+    fn test_param_del_cross_module() {
+        // Cross-module: imported function with del on param
+        let setup = r#"
+def cleanup(x):
+    del x["temp"]
+"#;
+        let main = r#"
+from setup import cleanup
+from config import settings
+
+cleanup(settings)  # E: imported-var-argument
+"#;
+        check_all(vec![("setup", setup), ("main", main)]);
+    }
+
+    // =========================================================================
     // Mixed positional + keyword args: regression test for project.rs continue bug
     //
     // When a call has BOTH positional and keyword imported args, the positional

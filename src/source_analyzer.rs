@@ -24,6 +24,7 @@ use ruff_python_ast::StmtAnnAssign;
 use ruff_python_ast::StmtAssign;
 use ruff_python_ast::StmtAugAssign;
 use ruff_python_ast::StmtClassDef;
+use ruff_python_ast::StmtDelete;
 use ruff_python_ast::StmtFor;
 use ruff_python_ast::StmtFunctionDef;
 use ruff_python_ast::StmtIf;
@@ -741,7 +742,7 @@ impl<'a> SourceAnalyzer<'a> {
         // we need to cross-check this with whether a side-effecting `__getitem__` is defined
         // on the type of the variable. There is not much point doing this until we have better
         // type information though.
-        if e.ctx != ExprContext::Store {
+        if e.ctx == ExprContext::Load {
             return;
         };
 
@@ -873,6 +874,17 @@ impl<'a> SourceAnalyzer<'a> {
         // assignment will modify foo.x and should therefore be marked unsafe.
         self.check_assign_target(&x.target, output);
         self.expr(&x.value, output);
+    }
+
+    fn delete(&self, x: &StmtDelete, output: &mut ModuleEffects) {
+        for target in &x.targets {
+            match target {
+                Expr::Subscript(_) | Expr::Attribute(_) => {
+                    self.check_assign_target(target, output);
+                }
+                _ => {}
+            }
+        }
     }
 
     fn check_decorators(&self, decs: &Vec<Decorator>, output: &mut ModuleEffects) {
@@ -1262,6 +1274,7 @@ impl<'a> SourceAnalyzer<'a> {
             Stmt::Assign(a) => self.assign(a, output),
             Stmt::AnnAssign(a) => self.ann_assign(a, output),
             Stmt::AugAssign(a) => self.aug_assign(a, output),
+            Stmt::Delete(d) => self.delete(d, output),
             Stmt::Expr(e) => self.expr(&e.value, output),
             Stmt::ClassDef(c) => self.class_def(c, output),
             Stmt::FunctionDef(f) => self.function_def(f, output),
