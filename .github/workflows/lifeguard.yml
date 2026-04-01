@@ -23,4 +23,4 @@ jobs:
     - run: cargo fmt -- --check
     - run: cargo clippy --locked
     - run: cargo test --locked
-    - run: cargo build --bin analyzer --release --locked
+    - run: cargo build --bin lifeguard --release --locked

@@ -14,7 +14,7 @@ use lifeguard::commands::run_tree::RunTreeArgs;
 use lifeguard::commands::show_effects::ShowEffectsArgs;
 
 #[derive(Parser)]
-#[command(args_conflicts_with_subcommands = true)]
+#[command(args_conflicts_with_subcommands = true, version)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,

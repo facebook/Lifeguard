@@ -8,10 +8,12 @@
 use std::sync::OnceLock;
 
 use pyrefly_python::module_name::ModuleName;
+use ruff_python_ast::name::Name;
 use starlark_map::small_map::SmallMap;
 
 use crate::analyzer::AnalyzedModule;
 use crate::builtins::Builtins;
+use crate::effects::EffectKind;
 use crate::stub_analyzer;
 
 /// A lazily initialized map of parsed stubs. Stores the text of the stub files in the `raw` map on
@@ -58,6 +60,32 @@ impl Stubs {
         // We should panic if builtins is not in the stubs, so unwrap is fine here.
         Builtins::new(self.get(&ModuleName::builtins()).unwrap())
     }
+
+    /// Check whether a method name is safe (non-mutating) across all builtin types
+    /// that define it. Returns true if the method is defined in at least one
+    /// builtin type and none of those definitions have a Mutation effect.
+    ///
+    /// Methods annotated with `no_effects()` in stubs are removed from the
+    /// effects table during stub analysis, so we check the definitions table
+    /// to find all builtin methods and then verify none of them are mutating.
+    pub fn is_method_safe_in_builtins(&self, method_name: &Name) -> bool {
+        let Some(builtins) = self.get(&ModuleName::builtins()) else {
+            return false;
+        };
+        let suffix = format!(".{}", method_name.as_str());
+        let mut found = false;
+        for func in &builtins.definitions.functions {
+            if func.as_str().ends_with(&suffix) {
+                found = true;
+                if let Some(effects) = builtins.module_effects.effects.get(func) {
+                    if effects.iter().any(|e| e.kind == EffectKind::Mutation) {
+                        return false;
+                    }
+                }
+            }
+        }
+        found
+    }
 }
 
 #[cfg(test)]
@@ -99,6 +127,20 @@ mod tests {
         let list = Name::new("list");
         assert!(builtins.get(&list).is_some());
         assert!(builtins.is_class(&list));
+    }
+
+    #[test]
+    fn test_method_safe_in_builtins() {
+        let stubs = Stubs::new();
+        assert!(stubs.is_method_safe_in_builtins(&Name::new("copy")));
+        assert!(stubs.is_method_safe_in_builtins(&Name::new("get")));
+        assert!(stubs.is_method_safe_in_builtins(&Name::new("index")));
+        assert!(stubs.is_method_safe_in_builtins(&Name::new("count")));
+        assert!(!stubs.is_method_safe_in_builtins(&Name::new("append")));
+        assert!(!stubs.is_method_safe_in_builtins(&Name::new("extend")));
+        assert!(!stubs.is_method_safe_in_builtins(&Name::new("pop")));
+        assert!(!stubs.is_method_safe_in_builtins(&Name::new("remove")));
+        assert!(!stubs.is_method_safe_in_builtins(&Name::new("nonexistent_method")));
     }
 
     #[test]

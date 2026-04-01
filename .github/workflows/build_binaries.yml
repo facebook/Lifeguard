@@ -25,6 +25,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+      - run: rustup show
+      - run: rustup component add clippy rustfmt
       - name: Build sdist
         uses: PyO3/maturin-action@v1
         with:

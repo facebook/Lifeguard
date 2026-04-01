@@ -11,3 +11,6 @@ license = "MIT"
 [[test]]
 name = "test_e2e"
 path = "test_e2e.rs"
+
+[dev-dependencies]
+lifeguard = { path = "../../src" }

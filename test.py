@@ -132,7 +132,7 @@ def main() -> None:
     _eprintln(f"Python executable: {sys.executable}")
     _eprintln(f"Python version_info: {sys.version_info}")
 
-    # Change to the target_determinator directory
+    # Change to the lifeguard directory
     script_dir = Path(__file__).parent.absolute()
     os.chdir(str(script_dir))
 

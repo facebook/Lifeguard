@@ -291,15 +291,21 @@ impl<'a> SourceAnalyzer<'a> {
         ret
     }
 
-    fn check_call_args(&self, args: &Arguments, output: &mut ModuleEffects) -> bool {
-        let mut ret = false;
-        for arg in args.args.as_ref() {
-            ret |= self.check_call_arg(arg, output);
+    fn check_call_args(&self, args: &Arguments, output: &mut ModuleEffects) -> (bool, u64) {
+        let mut has_unsafe = false;
+        let mut unsafe_indices: u64 = 0;
+        for (i, arg) in args.args.as_ref().iter().enumerate() {
+            if self.check_call_arg(arg, output) {
+                has_unsafe = true;
+                if i < 64 {
+                    unsafe_indices |= 1u64 << i;
+                }
+            }
         }
         for arg in args.keywords.as_ref() {
-            ret |= self.check_call_arg(&arg.value, output);
+            has_unsafe |= self.check_call_arg(&arg.value, output);
         }
-        ret
+        (has_unsafe, unsafe_indices)
     }
 
     fn check_unresolved_call(
@@ -407,8 +413,11 @@ impl<'a> SourceAnalyzer<'a> {
     ) {
         // Check the call arguments for imported variables
         let mut has_unsafe_args = false;
+        let mut unsafe_arg_indices: u64 = 0;
         if let Some(args) = args {
-            has_unsafe_args = self.check_call_args(args, output);
+            let (unsafe_flag, indices) = self.check_call_args(args, output);
+            has_unsafe_args = unsafe_flag;
+            unsafe_arg_indices = indices;
         }
 
         if let Expr::Attribute(ExprAttribute { value, .. }) = func {
@@ -422,7 +431,10 @@ impl<'a> SourceAnalyzer<'a> {
         };
 
         output.called_functions.insert(fname);
-        let data = EffectData::Call(CallData { has_unsafe_args });
+        let data = EffectData::Call(CallData {
+            has_unsafe_args,
+            unsafe_arg_indices,
+        });
 
         // Functions we have special-cased as safe.
         if manual_override::declared_safe(&fname) {
@@ -505,14 +517,32 @@ impl<'a> SourceAnalyzer<'a> {
             // Otherwise, we can't resolve the attr so stick with fname
             _ => fname,
         };
-        let eff = Effect::with_data(EffectKind::MethodCall, fname, range, data);
-        self.add_effect(eff, output);
+
+        // For param receivers with unknown type, check if the method is
+        // known-safe across all builtin types (e.g. copy, get, index).
+        // Only applies to builtins — user-defined classes with same-named
+        // methods are not affected since their types aren't in the builtins stub.
+        let is_safe_builtin_method = res.definition.is_param()
+            && typ.is_none()
+            && self.info.stubs.is_method_safe_in_builtins(&attr.id);
+
+        if !is_safe_builtin_method {
+            let eff = Effect::with_data(EffectKind::MethodCall, fname, range, data);
+            self.add_effect(eff, output);
+        }
 
         self.check_indirectly_called_method(fname, res, attr, output);
 
-        if res.definition.is_param() {
-            let eff = Effect::new(EffectKind::ParamMethodCall, fname, range);
-            self.add_effect(eff, output);
+        if res.definition.is_param() && !is_safe_builtin_method {
+            let is_mutating = match typ {
+                Some(t) => self.may_mutate_receiver(t, &attr.id),
+                None => true,
+            };
+            if is_mutating {
+                let param_name = ModuleName::from_name(&res.name);
+                let eff = Effect::new(EffectKind::ParamMethodCall, param_name, range);
+                self.add_effect(eff, output);
+            }
         };
 
         // Calling a mutating method (e.g. list.append) on a module-level variable from a
@@ -785,6 +815,10 @@ impl<'a> SourceAnalyzer<'a> {
         } else {
             match target {
                 Expr::Subscript(e) => self.check_subscript(e, output),
+                Expr::Attribute(_) if res.definition.is_param() => {
+                    let eff = Effect::new(EffectKind::ParamMethodCall, name, target.range());
+                    self.add_effect(eff, output);
+                }
                 _ => {}
             }
         }
