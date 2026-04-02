@@ -1,9 +1,9 @@
 # Lifeguard for Lazy Imports
-A fast static analysis tool to aid adoption for [Lazy Imports](https://peps.python.org/pep-0810/) in Python.
+A fast static analysis tool to aid adoption of [Lazy Imports](https://peps.python.org/pep-0810/) in Python.
 
 ## What are Lazy Imports?
 
-In Python, every `import` statement executes immediately when a module is loaded. This overhead is incurred regardless of if that import is actually used. [PEP 0810](https://peps.python.org/pep-0810/) introduces *explicit Lazy Imports* to Python, which defer the actual loading of a module until the imported name is first accessed. Lazy Imports can significantly reduce memory usage, startup times, and import overhead, especially in large codebases with deep dependency trees.
+In Python, every `import` statement executes immediately when a module is loaded. This overhead is incurred regardless of whether that import is actually used. [PEP 810](https://peps.python.org/pep-0810/) introduces *explicit Lazy Imports* to Python, which defer the actual loading of a module until the imported name is first accessed. Lazy Imports can significantly reduce memory usage, startup times, and import overhead, especially in large codebases with deep dependency trees.
 
 However, some Python patterns depend on imports executing immediately. For example:
 
@@ -15,25 +15,20 @@ However, some Python patterns depend on imports executing immediately. For examp
 Adapting an existing codebase to use Lazy Imports can be a daunting task, especially at scale. Lifeguard identifies these incompatible patterns so you can adopt Lazy Imports with confidence.
 
 ## How does Lifeguard work?
-Lifeguard analyzes Python source files for a given target in parallel. It walks each module's AST to detect effects and maps Lazy Imports incompatible effects to errors. The analyzer takes a conservative approach towards its analysis: any module that cannot be programmatically determined to be safe to import lazily is marked unsafe by default.
-This means Lifeguard will err on the side of marking potentially compatible modules as incompatible, trading maximum performance for production safety.
+Lifeguard analyzes Python source files for a given project in parallel. It walks each module's AST to detect effects and maps Lazy-Imports-incompatible effects to errors. The analyzer takes a conservative approach towards its analysis: any module that cannot be programmatically determined to be safe to import lazily is marked unsafe by default.
+This means Lifeguard will err on the side of marking potentially compatible modules as incompatible, leaving potential performance optimizations on the table in favor of production safety.
 
 For a deeper look at the analysis pipeline and architecture, see [docs/architecture.md](docs/architecture.md).
 
 ## Project Stage: Beta
-Lifeguard is in active development. We are still putting on the finishing touches.
+Lifeguard is in active development. We are aiming to be ready for general use by the [Python 3.15 final release](https://peps.python.org/pep-0790/).
 
-<details>
-<summary>View what we have planned!</summary>
-
-### Open items on our roadmap
-- We still need to set up the necessary GitHub actions to fully support external contributors.
-- We do not yet release to [PyPI](https://pypi.org/).
-- We currently support up to Python 3.14. This means we do not yet support the [`lazy` keyword added in PEP-810](https://peps.python.org/pep-0810/) — but we fully intend to support this ahead of the 3.15 release.
-- At this stage, we've tested Lifeguard against 3.12 and 3.14.
+### Items on our roadmap
+- We are preparing GitHub actions to fully support external contributors.
+- We plan to release to [PyPI](https://pypi.org/).
+- We've tested and support Python 3.12 and 3.14. Other versions may also work. We do not yet support the [`lazy` keyword added in PEP 810](https://peps.python.org/pep-0810/) — but we fully intend to support this ahead of the 3.15 release.
 - We are actively developing a standalone linter output mode to help users identify which specific lines in their codebase are incompatible with Lazy Imports.
 - We plan to add support for easy ingestion of Lifeguard's output to drive Lazy Imports enablement for advanced users (see [Using the Output](#using-the-output)).
-</details>
 
 ## Prerequisites
 
@@ -119,7 +114,7 @@ Lifeguard writes a JSON file with two fields:
 {
     "LAZY_ELIGIBLE": {
         "module1": [],
-        "module2": ["module3", "module4"]
+        "module2": ["module3", "module4"],
         "module5": [],
     },
     "LOAD_IMPORTS_EAGERLY": ["module5", "module99", "module100"]
@@ -154,9 +149,9 @@ Lifeguard can be used as a standalone linter to identify which specific lines in
 
 ### To drive a lazy import loader
 
-The JSON output is designed to drive a lazy import loader's filter function. In Python 3.15, [`importlib.util.lazy_import`](https://peps.python.org/pep-0810/) accepts a filter callback that controls which imports are deferred and which are loaded eagerly. Lifeguard's output provides the data needed to build this filter — using `lazy_eligible` to identify safe modules and their constraints, and `load_imports_eagerly` to identify modules that need all imports resolved upfront.
+The JSON output is designed to drive a lazy import loader's filter function. In Python 3.15, [`importlib.util.lazy_import`](https://peps.python.org/pep-0810/) accepts a filter callback that controls which imports are deferred and which are loaded eagerly. Lifeguard's output provides the data needed to build this filter — using `LAZY_ELIGIBLE` to identify safe modules and their constraints, and `LOAD_IMPORTS_EAGERLY` to identify modules that need all imports resolved upfront.
 
-We plan to provide tooling for easy ingestion of Lifeguard's output ahead of the Python 3.15 release. This is a work in progress — stay tuned for updates.
+We plan to provide tooling for easy ingestion of Lifeguard's output ahead of the Python 3.15 release. This is a work in progress.
 
 ## Implementation
 Lifeguard is implemented in Rust. We leverage [ruff](https://github.com/astral-sh/ruff) for AST traversal and re-use several crates from [pyrefly](https://github.com/facebook/pyrefly). We also extend `.pyi` stub files to annotate known side effects in third-party libraries — for example, marking that a particular module-level function call in a dependency has observable behavior. These stubs are stored in the `resources/` folder. See [resources/stubs/stubs.md](resources/stubs/stubs.md) for details on how effect annotations work alongside standard type stubs.
