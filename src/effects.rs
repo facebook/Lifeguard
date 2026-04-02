@@ -224,7 +224,7 @@ impl CallData {
 #[derive(Debug, Eq, PartialEq, Hash, Clone)]
 pub enum EffectData {
     None,
-    Call(CallData),
+    Call(Box<CallData>),
 }
 
 #[derive(Debug, Eq, PartialEq, Hash, Clone)]

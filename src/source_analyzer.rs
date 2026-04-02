@@ -453,7 +453,11 @@ impl<'a> SourceAnalyzer<'a> {
         };
 
         output.called_functions.insert(fname);
-        let data = EffectData::Call(call_data);
+        let data = if call_data.has_unsafe_args() {
+            EffectData::Call(Box::new(call_data))
+        } else {
+            EffectData::None
+        };
 
         // Functions we have special-cased as safe.
         if manual_override::declared_safe(&fname) {
