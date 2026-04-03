@@ -491,13 +491,11 @@ fn build_init_module_map(analysis_map: &AnalysisMap) -> HashMap<ModuleName, Modu
         .par_iter()
         .filter_map(|(module, _)| {
             let module_str = module.as_str();
-            if module_str.ends_with("/__init__") {
+            module_str.ends_with("/__init__").then(|| {
                 let base_module_str = module_str.strip_suffix("/__init__").unwrap_or(module_str);
                 let base_module = ModuleName::from_str(base_module_str);
-                Some((base_module, *module))
-            } else {
-                None
-            }
+                (base_module, *module)
+            })
         })
         .collect()
 }

@@ -513,11 +513,7 @@ impl<'a> CombinedDefinitionClassBuilder<'a> {
                 _ => None,
             },
             Expr::Attribute(a) => {
-                if a.attr.as_str() == "setter" {
-                    Some(FieldKind::PropertySetter)
-                } else {
-                    None
-                }
+                (a.attr.as_str() == "setter").then_some(FieldKind::PropertySetter)
             }
             _ => None,
         }

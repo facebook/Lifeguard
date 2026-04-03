@@ -484,11 +484,7 @@ impl<'a, 'b> BindingsTableBuilder<'a, 'b> {
             return Some(class_name);
         }
         let return_type = self.get_function_return_type(&call.func)?;
-        if self.exports.is_class(&return_type) {
-            Some(return_type)
-        } else {
-            None
-        }
+        self.exports.is_class(&return_type).then_some(return_type)
     }
 
     fn get_function_return_type(&self, func: &Expr) -> Option<ModuleName> {
@@ -635,11 +631,9 @@ impl<'a, 'b> BindingsTableBuilder<'a, 'b> {
         };
         let imported_name = self.resolve_to_imported_name(&expr_name.id)?;
         let source_name = self.exports.get_definition_source_name(&imported_name)?;
-        if self.exports.is_class(&source_name.as_module_name()) {
-            Some(imported_name.as_module_name())
-        } else {
-            None
-        }
+        self.exports
+            .is_class(&source_name.as_module_name())
+            .then(|| imported_name.as_module_name())
     }
 
     // An `import` statement introduces a name into its scope. If that scope is visible at module

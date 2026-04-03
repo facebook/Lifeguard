@@ -53,11 +53,7 @@ fn get_process_cpu_time() -> Option<Duration> {
         tv_nsec: 0,
     };
     let ret = unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &mut ts) };
-    if ret == 0 {
-        Some(Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32))
-    } else {
-        None
-    }
+    (ret == 0).then(|| Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32))
 }
 
 #[cfg(not(unix))]

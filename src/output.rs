@@ -453,11 +453,7 @@ fn collect_cycles(
                 .cycle_names(&cycle)
                 .filter(|m| source_modules.contains(m))
                 .collect();
-            if members.is_empty() {
-                None
-            } else {
-                Some(members)
-            }
+            (!members.is_empty()).then_some(members)
         })
         .collect()
 }

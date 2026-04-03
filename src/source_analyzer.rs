@@ -408,15 +408,9 @@ impl<'a> SourceAnalyzer<'a> {
         let call_name_str = call_name.as_str();
         let base_name_str = res.name.as_str();
 
-        if call_name_str.starts_with(base_name_str) {
-            Some(ModuleName::from_str(&call_name_str.replacen(
-                base_name_str,
-                alias,
-                1,
-            )))
-        } else {
-            None
-        }
+        call_name_str
+            .starts_with(base_name_str)
+            .then(|| ModuleName::from_str(&call_name_str.replacen(base_name_str, alias, 1)))
     }
 
     fn get_method_definition_source_name(

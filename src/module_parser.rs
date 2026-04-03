@@ -106,11 +106,7 @@ fn compute_newline_positions(source: &str) -> Vec<u32> {
     source
         .chars()
         .enumerate()
-        .filter_map(
-            |(index, ch)| {
-                if ch == '\n' { Some(index as u32) } else { None }
-            },
-        )
+        .filter_map(|(index, ch)| (ch == '\n').then_some(index as u32))
         .collect::<Vec<_>>()
 }
 
