@@ -14,6 +14,9 @@ use ahash::AHashMap;
 use ahash::AHashSet;
 use pyrefly_python::module_name::ModuleName;
 use pyrefly_python::symbol_kind::SymbolKind;
+use pyrefly_util::visit::Visit;
+use ruff_python_ast::Expr;
+use ruff_python_ast::Stmt;
 use ruff_python_ast::name::Name;
 use ruff_text_size::TextRange;
 
@@ -24,6 +27,7 @@ use crate::pyrefly::definitions::DefinitionStyle;
 use crate::pyrefly::definitions::Definitions;
 use crate::pyrefly::definitions::DunderAllEntry;
 use crate::pyrefly::sys_info::SysInfo;
+use crate::traits::ExprExt;
 use crate::traits::ModuleNameExt;
 
 #[derive(Debug, Clone, Copy)]
@@ -81,6 +85,9 @@ pub struct Exports {
     re_exports: AHashMap<Attribute, (Attribute, TextRange)>,
     /// Map of module name to the contents of that module's `__all__`.
     all: AHashMap<ModuleName, Vec<Name>>,
+    /// Map of fully-qualified function names to their return types (class names).
+    /// Populated from stub file function return type annotations.
+    return_types: AHashMap<ModuleName, ModuleName>,
 }
 
 impl Exports {
@@ -89,6 +96,7 @@ impl Exports {
             exports: AHashMap::new(),
             re_exports: AHashMap::new(),
             all: AHashMap::new(),
+            return_types: AHashMap::new(),
         }
     }
 
@@ -99,6 +107,7 @@ impl Exports {
             exports: AHashMap::with_capacity(num_modules * 4),
             re_exports: AHashMap::with_capacity(num_modules * 10),
             all: AHashMap::with_capacity(num_modules),
+            return_types: AHashMap::new(),
         }
     }
 
@@ -155,6 +164,18 @@ impl Exports {
             .is_some_and(|e| matches!(e.typ, ExportType::Global))
     }
 
+    /// Check if a symbol is a function.
+    pub fn is_function(&self, name: &ModuleName) -> bool {
+        self.exports
+            .get(name)
+            .is_some_and(|e| matches!(e.typ, ExportType::Function))
+    }
+
+    /// Get the return type of a function, if known from stub annotations.
+    pub fn get_return_type(&self, func_name: &ModuleName) -> Option<ModuleName> {
+        self.return_types.get(func_name).copied()
+    }
+
     /// Get an iterator to all exported symbols and their export info.
     pub fn get_exports(&self) -> impl Iterator<Item = (&ModuleName, &Export)> {
         self.exports.iter()
@@ -181,6 +202,7 @@ impl Exports {
         self.exports.extend(other.exports);
         self.re_exports.extend(other.re_exports);
         self.all.extend(other.all);
+        self.return_types.extend(other.return_types);
     }
 
     /// Merge a collection of per-module Exports into a single Exports.
@@ -273,6 +295,10 @@ impl<'a> ExportsBuilder<'a> {
             self.inner.all.insert(self.module_name, all_names);
         }
 
+        if parsed_module.is_stub() {
+            self.extract_return_types(&parsed_module.ast.body, &definitions, self.module_name);
+        }
+
         self.inner
     }
 
@@ -306,6 +332,76 @@ impl<'a> ExportsBuilder<'a> {
             SymbolKind::Class => ExportType::Class,
             SymbolKind::Function | SymbolKind::Method => ExportType::Function,
             _ => ExportType::Global,
+        }
+    }
+
+    fn extract_return_types(
+        &mut self,
+        body: &[Stmt],
+        definitions: &Definitions,
+        scope: ModuleName,
+    ) {
+        for stmt in body {
+            match stmt {
+                Stmt::FunctionDef(func) => {
+                    if let Some(returns) = &func.returns {
+                        if let Some(rt) = self.resolve_return_type(returns, definitions) {
+                            let func_fqn = scope.append(&func.name.id);
+                            self.inner.return_types.insert(func_fqn, rt);
+                        }
+                    }
+                }
+                Stmt::ClassDef(cls) => {
+                    let class_scope = scope.append(&cls.name.id);
+                    self.extract_return_types(&cls.body, definitions, class_scope);
+                }
+                _ => stmt.recurse(&mut |s| {
+                    self.extract_return_types(std::slice::from_ref(s), definitions, scope);
+                }),
+            }
+        }
+    }
+
+    fn resolve_return_type(
+        &self,
+        annotation: &Expr,
+        definitions: &Definitions,
+    ) -> Option<ModuleName> {
+        match annotation {
+            Expr::Name(name) => {
+                if let Some(def) = definitions.definitions.get(&name.id) {
+                    match &def.style {
+                        DefinitionStyle::Unannotated(SymbolKind::Class)
+                        | DefinitionStyle::Annotated(SymbolKind::Class, _) => {
+                            Some(self.module_name.append(&name.id))
+                        }
+                        DefinitionStyle::Import(from_module) => Some(from_module.append(&name.id)),
+                        DefinitionStyle::ImportAs(from_module, original_name) => {
+                            Some(from_module.append(original_name))
+                        }
+                        DefinitionStyle::ImportAsEq(from_module) => {
+                            Some(from_module.append(&name.id))
+                        }
+                        _ => None,
+                    }
+                } else {
+                    // Name not in definitions — treat as a builtin (e.g. int, str, list).
+                    // Validated via is_class() at lookup time.
+                    Some(ModuleName::builtins().append(&name.id))
+                }
+            }
+            Expr::Attribute(attr) => {
+                let base_name = attr.value.as_name_expr()?;
+                let def = definitions.definitions.get(&base_name.id)?;
+                match &def.style {
+                    DefinitionStyle::ImportModule(_) => annotation.full_name(),
+                    DefinitionStyle::Import(from_module) => {
+                        Some(from_module.append(&base_name.id).append(&attr.attr.id))
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
         }
     }
 
@@ -454,5 +550,164 @@ __all__.extend(['c'])
 __all__.append('d')
 ";
         assert_eq!(get_dunder_all(code), Some(names(&["a", "b", "c", "d"])));
+    }
+
+    use super::Exports;
+    use crate::module_parser::parse_pyi;
+
+    fn get_stub_return_types(code: &str) -> Exports {
+        let module_name = ModuleName::from_str("test");
+        let parsed = parse_pyi(code, module_name, false);
+        let import_graph = ImportGraph::new();
+        let sys_info = SysInfo::lg_default();
+        ExportsBuilder::new(module_name, &import_graph, &sys_info).build(&parsed)
+    }
+
+    #[test]
+    fn test_return_type_local_class() {
+        let code = r#"
+class MyClass:
+    pass
+
+def make() -> MyClass: ...
+"#;
+        let exports = get_stub_return_types(code);
+        assert_eq!(
+            exports.get_return_type(&ModuleName::from_str("test.make")),
+            Some(ModuleName::from_str("test.MyClass")),
+        );
+    }
+
+    #[test]
+    fn test_return_type_no_annotation() {
+        let code = r#"
+def make(): ...
+"#;
+        let exports = get_stub_return_types(code);
+        assert_eq!(
+            exports.get_return_type(&ModuleName::from_str("test.make")),
+            None,
+        );
+    }
+
+    #[test]
+    fn test_return_type_imported_class() {
+        let code = r#"
+from other import Widget
+
+def create() -> Widget: ...
+"#;
+        let exports = get_stub_return_types(code);
+        assert_eq!(
+            exports.get_return_type(&ModuleName::from_str("test.create")),
+            Some(ModuleName::from_str("other.Widget")),
+        );
+    }
+
+    #[test]
+    fn test_return_type_aliased_import() {
+        let code = r#"
+from other import Original as Renamed
+
+def make() -> Renamed: ...
+"#;
+        let exports = get_stub_return_types(code);
+        assert_eq!(
+            exports.get_return_type(&ModuleName::from_str("test.make")),
+            Some(ModuleName::from_str("other.Original")),
+        );
+    }
+
+    #[test]
+    fn test_return_type_dotted_module_import() {
+        let code = r#"
+import other
+
+def get() -> other.Result: ...
+"#;
+        let exports = get_stub_return_types(code);
+        assert_eq!(
+            exports.get_return_type(&ModuleName::from_str("test.get")),
+            Some(ModuleName::from_str("other.Result")),
+        );
+    }
+
+    #[test]
+    fn test_return_type_method_in_class() {
+        let code = r#"
+class A:
+    pass
+
+class Factory:
+    def create(self) -> A: ...
+"#;
+        let exports = get_stub_return_types(code);
+        assert_eq!(
+            exports.get_return_type(&ModuleName::from_str("test.Factory.create")),
+            Some(ModuleName::from_str("test.A")),
+        );
+    }
+
+    #[test]
+    fn test_return_type_not_extracted_from_py() {
+        let code = r#"
+class MyClass:
+    pass
+
+def make() -> MyClass: ...
+"#;
+        let module_name = ModuleName::from_str("test");
+        let parsed = parse_source(code, module_name, false);
+        let import_graph = ImportGraph::new();
+        let sys_info = SysInfo::lg_default();
+        let exports = ExportsBuilder::new(module_name, &import_graph, &sys_info).build(&parsed);
+        assert_eq!(
+            exports.get_return_type(&ModuleName::from_str("test.make")),
+            None,
+        );
+    }
+
+    #[test]
+    fn test_return_type_builtin() {
+        let code = r#"
+def make() -> int: ...
+"#;
+        let exports = get_stub_return_types(code);
+        assert_eq!(
+            exports.get_return_type(&ModuleName::from_str("test.make")),
+            Some(ModuleName::from_str("builtins.int")),
+        );
+    }
+
+    #[test]
+    fn test_return_type_generic_skipped() {
+        let code = r#"
+class MyClass:
+    pass
+
+def make() -> list[MyClass]: ...
+"#;
+        let exports = get_stub_return_types(code);
+        // Generic types (subscripts) are not resolved
+        assert_eq!(
+            exports.get_return_type(&ModuleName::from_str("test.make")),
+            None,
+        );
+    }
+
+    #[test]
+    fn test_is_function() {
+        let code = r#"
+class MyClass:
+    pass
+
+def my_func(): ...
+
+x = 1
+"#;
+        let exports = get_stub_return_types(code);
+        assert!(exports.is_function(&ModuleName::from_str("test.my_func")));
+        assert!(!exports.is_function(&ModuleName::from_str("test.MyClass")));
+        assert!(!exports.is_function(&ModuleName::from_str("test.x")));
     }
 }

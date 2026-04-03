@@ -46,12 +46,21 @@ use crate::traits::SysInfoExt;
 /// Parses modules from strings on demand.
 pub struct TestSources {
     modules: HashMap<ModuleName, String, ahash::RandomState>,
+    stub_modules: AHashSet<ModuleName>,
     stubs: Stubs,
     names: Vec<ModuleName>,
 }
 
 impl TestSources {
     pub fn new(modules: &[(&str, &str)]) -> Self {
+        Self::new_impl(modules, &[])
+    }
+
+    pub fn new_with_stubs(modules: &[(&str, &str)], stub_names: &[&str]) -> Self {
+        Self::new_impl(modules, stub_names)
+    }
+
+    fn new_impl(modules: &[(&str, &str)], stub_names: &[&str]) -> Self {
         let stubs = Stubs::new();
 
         // Collect all names: stubs first, then test modules (test modules override stubs)
@@ -65,10 +74,14 @@ impl TestSources {
             module_map.insert(mod_name, code.to_string());
         }
 
+        let stub_modules: AHashSet<ModuleName> =
+            stub_names.iter().map(|n| ModuleName::from_str(n)).collect();
+
         let names: Vec<ModuleName> = name_set.into_iter().collect();
 
         Self {
             modules: module_map,
+            stub_modules,
             stubs,
             names,
         }
@@ -95,6 +108,9 @@ impl ModuleProvider for TestSources {
     fn parse(&self, name: &ModuleName) -> Option<AstResult> {
         // Test modules take priority over stubs
         if let Some(code) = self.modules.get(name) {
+            if self.stub_modules.contains(name) {
+                return Some(AstResult::Ok(parse_pyi(code, *name, false)));
+            }
             // A module is an __init__.py (package) if any other module is a child of it
             let name_prefix = format!("{}.", name.as_str());
             let is_init = self
@@ -113,6 +129,9 @@ impl ModuleProvider for TestSources {
     }
 
     fn is_stub(&self, name: &ModuleName) -> bool {
+        if self.stub_modules.contains(name) {
+            return true;
+        }
         // A module is a stub only if it comes from stubs and is NOT overridden by a test module
         !self.modules.contains_key(name) && self.stubs.get_raw_source(name).is_some()
     }

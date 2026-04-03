@@ -257,6 +257,8 @@ impl<'a, 'b> AliasTableBuilder<'a, 'b> {
             Some(Value::Module(name.clone()))
         } else if self.exports.is_class(name) {
             Some(Value::Class(name.clone()))
+        } else if self.exports.is_function(name) {
+            Some(Value::Function(name.clone()))
         } else {
             None
         }
@@ -478,7 +480,44 @@ impl<'a, 'b> BindingsTableBuilder<'a, 'b> {
     }
 
     fn get_call_type(&self, call: &ExprCall) -> Option<ModuleName> {
-        self.resolve_to_class(&call.func)
+        if let Some(class_name) = self.resolve_to_class(&call.func) {
+            return Some(class_name);
+        }
+        let return_type = self.get_function_return_type(&call.func)?;
+        if self.exports.is_class(&return_type) {
+            Some(return_type)
+        } else {
+            None
+        }
+    }
+
+    fn get_function_return_type(&self, func: &Expr) -> Option<ModuleName> {
+        let expr_name = func.full_name()?;
+        let res = self.resolve_expr(func)?;
+
+        let fqn = if let Some(alias) = self.aliases.resolve(&res.scope, &res.name) {
+            let parts = expr_name.components();
+            match alias {
+                Alias::Global(Value::Function(f)) if parts.len() == 1 => *f,
+                Alias::Global(Value::Module(m)) => {
+                    let mut new = m.components();
+                    new.extend_from_slice(&parts[1..]);
+                    ModuleName::from_parts(new)
+                }
+                Alias::Global(Value::Variable(v)) if parts.len() == 1 => *v,
+                _ => return None,
+            }
+        } else {
+            res.qualified_name()
+        };
+
+        if let Some(rt) = self.exports.get_return_type(&fqn) {
+            return Some(rt);
+        }
+        // Follow re-export chain for re-exported functions
+        let attr = Attribute::from_module_name(&fqn);
+        let source = self.exports.get_definition_source_name(&attr)?;
+        self.exports.get_return_type(&source.as_module_name())
     }
 
     fn get_expr_type(&self, expr: &Expr) -> Option<ModuleName> {
@@ -686,8 +725,24 @@ mod tests {
     use crate::traits::SysInfoExt;
 
     pub fn make_bindings(module: &str, modules: &[(&str, &str)]) -> BindingsTable {
+        make_bindings_impl(module, modules, &[])
+    }
+
+    pub fn make_bindings_with_stubs(
+        module: &str,
+        modules: &[(&str, &str)],
+        stub_names: &[&str],
+    ) -> BindingsTable {
+        make_bindings_impl(module, modules, stub_names)
+    }
+
+    fn make_bindings_impl(
+        module: &str,
+        modules: &[(&str, &str)],
+        stub_names: &[&str],
+    ) -> BindingsTable {
         let mod_name = ModuleName::from_str(module);
-        let sources = TestSources::new(modules);
+        let sources = TestSources::new_with_stubs(modules, stub_names);
         let sys_info = SysInfo::lg_default();
         let ast_result = sources.parse(&mod_name).expect("module not found");
         let parsed_module = ast_result.as_parsed().expect("module failed to parse");
@@ -1022,5 +1077,136 @@ x: Foo
         let modules = vec![("test", code)];
         let bt = make_bindings("test", &modules);
         assert_eq!(bt.lookup_str("test", "x"), None);
+    }
+
+    #[test]
+    fn test_stub_function_return_type_local_class() {
+        let stub = r#"
+class MyClass:
+    pass
+
+def make_thing() -> MyClass: ...
+"#;
+        let test = r#"
+from stub_mod import make_thing
+
+x = make_thing()
+"#;
+        let modules = vec![("stub_mod", stub), ("test", test)];
+        let bt = make_bindings_with_stubs("test", &modules, &["stub_mod"]);
+        test_instances(&bt, vec![("test", "x", "stub_mod.MyClass")]);
+    }
+
+    #[test]
+    fn test_stub_function_return_type_imported_class() {
+        let types_mod = r#"
+class Widget:
+    pass
+"#;
+        let stub = r#"
+from types_mod import Widget
+
+def create_widget() -> Widget: ...
+"#;
+        let test = r#"
+from stub_mod import create_widget
+
+w = create_widget()
+"#;
+        let modules = vec![("types_mod", types_mod), ("stub_mod", stub), ("test", test)];
+        let bt = make_bindings_with_stubs("test", &modules, &["stub_mod"]);
+        test_instances(&bt, vec![("test", "w", "types_mod.Widget")]);
+    }
+
+    #[test]
+    fn test_stub_function_return_type_dotted_name() {
+        let other = r#"
+class Result:
+    pass
+"#;
+        let stub = r#"
+import other
+
+def get_result() -> other.Result: ...
+"#;
+        let test = r#"
+from stub_mod import get_result
+
+r = get_result()
+"#;
+        let modules = vec![("other", other), ("stub_mod", stub), ("test", test)];
+        let bt = make_bindings_with_stubs("test", &modules, &["stub_mod"]);
+        test_instances(&bt, vec![("test", "r", "other.Result")]);
+    }
+
+    #[test]
+    fn test_stub_function_return_type_aliased_import() {
+        let types_mod = r#"
+class Original:
+    pass
+"#;
+        let stub = r#"
+from types_mod import Original as Alias
+
+def make() -> Alias: ...
+"#;
+        let test = r#"
+from stub_mod import make
+
+x = make()
+"#;
+        let modules = vec![("types_mod", types_mod), ("stub_mod", stub), ("test", test)];
+        let bt = make_bindings_with_stubs("test", &modules, &["stub_mod"]);
+        test_instances(&bt, vec![("test", "x", "types_mod.Original")]);
+    }
+
+    #[test]
+    fn test_stub_function_return_type_no_annotation() {
+        let stub = r#"
+def no_return_type(): ...
+"#;
+        let test = r#"
+from stub_mod import no_return_type
+
+x = no_return_type()
+"#;
+        let modules = vec![("stub_mod", stub), ("test", test)];
+        let bt = make_bindings_with_stubs("test", &modules, &["stub_mod"]);
+        assert_eq!(bt.lookup_str("test", "x"), Some(&Value::Unknown));
+    }
+
+    #[test]
+    fn test_stub_function_return_type_builtin() {
+        let stub = r#"
+def returns_int() -> int: ...
+"#;
+        let test = r#"
+from stub_mod import returns_int
+
+x = returns_int()
+"#;
+        let modules = vec![("stub_mod", stub), ("test", test)];
+        let bt = make_bindings_with_stubs("test", &modules, &["stub_mod"]);
+        test_instances(&bt, vec![("test", "x", "builtins.int")]);
+    }
+
+    #[test]
+    fn test_stub_method_return_type() {
+        let stub = r#"
+class Factory:
+    def create(self) -> Factory: ...
+"#;
+        let test = r#"
+from stub_mod import Factory
+
+f = Factory()
+g = f.create()
+"#;
+        let modules = vec![("stub_mod", stub), ("test", test)];
+        let bt = make_bindings_with_stubs("test", &modules, &["stub_mod"]);
+        test_instances(
+            &bt,
+            vec![("test", "f", "stub_mod.Factory"), ("test", "g", "")],
+        );
     }
 }
