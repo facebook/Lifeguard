@@ -65,6 +65,7 @@ class OverloadMerger(cst.CSTTransformer):
 
                 while j < len(statements):
                     next_stmt = statements[j]
+                    # pyrefly: ignore [missing-attribute]
                     if self._is_overload(next_stmt) and next_stmt.name.value == func_name:
                         overload_group.append(next_stmt)
                         j += 1
@@ -183,7 +184,7 @@ class OverloadMerger(cst.CSTTransformer):
         """Extract effect statements (non-docstring, non-ellipsis) from a function body."""
         if isinstance(body, cst.SimpleStatementSuite):
             # Inline body - check if it's an ellipsis
-            effects = []
+            effects: list[cst.BaseStatement] = []
             for stmt in body.body:
                 if not self._is_ellipsis_expr(stmt):
                     # Preserve trailing_whitespace (includes comments)
@@ -237,7 +238,7 @@ class OverloadMerger(cst.CSTTransformer):
             return self._create_inline_ellipsis(trailing_whitespace)
 
         # Build body statements
-        body_stmts = []
+        body_stmts: list[cst.BaseStatement] = []
         if docstring:
             body_stmts.append(docstring)
 
