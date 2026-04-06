@@ -65,8 +65,11 @@ class OverloadMerger(cst.CSTTransformer):
 
                 while j < len(statements):
                     next_stmt = statements[j]
-                    # pyrefly: ignore [missing-attribute]
-                    if self._is_overload(next_stmt) and next_stmt.name.value == func_name:
+                    if (
+                        isinstance(next_stmt, cst.FunctionDef)
+                        and self._is_overload(next_stmt)
+                        and next_stmt.name.value == func_name
+                    ):
                         overload_group.append(next_stmt)
                         j += 1
                     else:
