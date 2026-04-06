@@ -219,7 +219,7 @@ fn check_output(
         _ => SafetyMap::new(),
     };
     let effect_map = match check {
-        Check::Effects => project::analyze_all(&sources, &exports, &import_graph, &sys_info),
+        Check::Effects => project::analyze_all(&sources, &exports, &import_graph, &sys_info).0,
         _ => HashMap::<_, _, ahash::RandomState>::default(),
     };
 
@@ -426,7 +426,7 @@ pub fn analyze_tree(modules: &Vec<(&str, &str)>) -> AnalysisMap {
     let sources = TestSources::new(modules);
     let sys_info = SysInfo::lg_default();
     let (import_graph, exports) = ImportGraph::make_with_exports(&sources, &sys_info);
-    project::analyze_all(&sources, &exports, &import_graph, &sys_info)
+    project::analyze_all(&sources, &exports, &import_graph, &sys_info).0
 }
 
 pub fn check_buck_availability() -> bool {

@@ -103,7 +103,7 @@ mod tests {
         let sources = TestSources::new(modules);
         let sys_info = SysInfo::lg_default();
         let (import_graph, exports) = ImportGraph::make_with_exports(&sources, &sys_info);
-        let (safety_map, side_effect_imports) =
+        let (safety_map, side_effect_imports, _) =
             project::run_analysis(&sources, &exports, &import_graph, &sys_info);
         let mut analysis =
             LifeGuardAnalysis::new(safety_map, import_graph, &exports, &test_options());
@@ -774,7 +774,7 @@ mod tests {
         let sources = TestSources::new(modules);
         let sys_info = SysInfo::lg_default();
         let (import_graph, exports) = ImportGraph::make_with_exports(&sources, &sys_info);
-        let (safety_map, side_effect_imports) =
+        let (safety_map, side_effect_imports, _) =
             project::run_analysis(&sources, &exports, &import_graph, &sys_info);
         let mut analysis =
             LifeGuardAnalysis::new(safety_map, import_graph, &exports, &verbose_test_options());
@@ -946,7 +946,8 @@ mod tests {
         let sources = TestSources::new(&modules);
         let sys_info = SysInfo::lg_default();
         let (import_graph, exports) = ImportGraph::make_with_exports(&sources, &sys_info);
-        let (safety_map, _) = project::run_analysis(&sources, &exports, &import_graph, &sys_info);
+        let (safety_map, _, _) =
+            project::run_analysis(&sources, &exports, &import_graph, &sys_info);
         for module_name in ["a", "b", "c"] {
             let name = ModuleName::from_str(module_name);
             let entry = safety_map.get(&name).unwrap_or_else(|| {
@@ -981,5 +982,40 @@ mod tests {
 
         assert_passing(&result, vec!["ok_module"]);
         assert_failing(&result, vec!["error_module"]);
+    }
+
+    #[test]
+    fn test_write_verbose_handles_analysis_error() {
+        use lifeguard::output::write_verbose;
+
+        let safety_map = SafetyMap::new();
+        safety_map.insert(
+            ModuleName::from_str("broken_mod"),
+            SafetyResult::AnalysisError(anyhow::anyhow!("Parse error: invalid syntax")),
+        );
+
+        let modules = vec![("broken_mod", "")];
+        let sources = TestSources::new(&modules);
+        let mut buf = Vec::new();
+        let result = write_verbose(&mut buf, &safety_map, &sources);
+
+        if let Err(e) = &result {
+            panic!("write_verbose failed with error: {:?}", e);
+        }
+        assert!(result.is_ok(), "write_verbose should succeed");
+
+        let output = String::from_utf8(buf).unwrap();
+        assert!(
+            output.contains("broken_mod"),
+            "verbose output should mention the broken module"
+        );
+        assert!(
+            output.contains("Analysis Error"),
+            "verbose output should show the analysis error header"
+        );
+        assert!(
+            output.contains("Parse error: invalid syntax"),
+            "verbose output should show the error message"
+        );
     }
 }

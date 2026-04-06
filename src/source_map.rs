@@ -19,6 +19,7 @@ pub use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
 use ruff_python_ast::PySourceType;
 use serde::Deserialize;
+use tracing::warn;
 
 use crate::debug::report_memory;
 use crate::module_parser::ParsedModule;
@@ -131,7 +132,7 @@ fn resolve_source_map(raw: RawSourceMap) -> SourceMap {
             Ok(name) => name,
             Err(e) => {
                 tracing::warn!(
-                    "Skipping module path '{}' (file '{}'): {}",
+                    "Failed to convert path to module name '{}' (file '{}'): {}",
                     module_path,
                     full_path.display(),
                     e
@@ -142,7 +143,10 @@ fn resolve_source_map(raw: RawSourceMap) -> SourceMap {
         // TODO(T257095571): We need to surface the error where the path does not convert to a valid file.
         let priority = match source_priority(&full_path) {
             Ok(p) => p,
-            Err(_) => continue,
+            Err(e) => {
+                warn!("Skipping file with invalid path: {:?}: {}", full_path, e);
+                continue;
+            }
         };
         let dominated = priorities.get(&mod_name).is_some_and(|&p| p <= priority);
         if !dominated {

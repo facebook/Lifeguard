@@ -33,6 +33,7 @@ use crate::errors::SafetyError;
 use crate::exports::Exports;
 use crate::imports::ImportGraph;
 use crate::module_effects::ModuleImportsMap;
+use crate::module_parser::ParsedModule;
 use crate::module_safety::ModuleSafety;
 use crate::module_safety::SafetyResult;
 use crate::pyrefly::sys_info::SysInfo;
@@ -45,6 +46,7 @@ use crate::traits::ModuleNameExt;
 pub type AnalysisMap = HashMap<ModuleName, AnalyzedModule, ahash::RandomState>;
 pub type SafetyMap = DashMap<ModuleName, SafetyResult>;
 pub type SideEffectMap = AHashMap<ModuleName, AHashSet<ModuleName>>;
+pub type ParseErrors = DashMap<ModuleName, String>;
 type ScopeImportsMap = AHashMap<ModuleName, AHashMap<ModuleName, AHashSet<ModuleName>>>;
 
 /// Shared immutable context for per-module analysis.
@@ -288,8 +290,8 @@ pub fn run_analysis(
     exports: &Exports,
     import_graph: &ImportGraph,
     sys_info: &SysInfo,
-) -> (SafetyMap, SideEffectMap) {
-    let analysis_map = analyze_all(sources, exports, import_graph, sys_info);
+) -> (SafetyMap, SideEffectMap, ParseErrors) {
+    let (analysis_map, parse_errors) = analyze_all(sources, exports, import_graph, sys_info);
     let side_effect_imports = time("  Computing side-effect imports", || {
         compute_side_effect_imports(&analysis_map)
     });
@@ -300,7 +302,7 @@ pub fn run_analysis(
     time("  Filtering out stubs", || {
         filter_out_stubs(&safety_map, sources)
     });
-    (safety_map, side_effect_imports)
+    (safety_map, side_effect_imports, parse_errors)
 }
 
 /// Filter out stubs from the safety map
@@ -666,10 +668,9 @@ fn get_implicit_imports(analysis_map: &mut AnalysisMap, import_graph: &ImportGra
 
 fn analyze_module(
     mod_name: ModuleName,
-    ast_result: &AstResult,
+    module: &ParsedModule,
     ctx: &AnalysisContext,
-) -> Option<(ModuleName, AnalyzedModule)> {
-    let module = ast_result.as_parsed().ok()?;
+) -> (ModuleName, AnalyzedModule) {
     let output = analyzer::analyze(
         module,
         ctx.exports,
@@ -677,35 +678,46 @@ fn analyze_module(
         ctx.stubs,
         ctx.sys_info,
     );
-    Some((mod_name, output))
+    (mod_name, output)
 }
 
-/// Analyze all modules and build an analysis map
+/// Analyze all modules and build an analysis map.
+/// Parse errors are collected and returned separately.
 pub fn analyze_all(
     sources: &impl ModuleProvider,
     exports: &Exports,
     import_graph: &ImportGraph,
     sys_info: &SysInfo,
-) -> AnalysisMap {
+) -> (AnalysisMap, ParseErrors) {
     let ctx = AnalysisContext {
         exports,
         import_graph,
         stubs: sources.stubs(),
         sys_info,
     };
-    let mut analysis_map = time("  Building analysis map", || {
+
+    let parse_errors = ParseErrors::new();
+
+    let mut analysis_map: AnalysisMap = time("  Building analysis map", || {
         sources
             .module_names_par_iter()
             .filter_map(|mod_name| {
                 let ast_result = sources.parse(mod_name)?;
-                analyze_module(*mod_name, &ast_result, &ctx)
+                match ast_result {
+                    AstResult::ParserError(e) => {
+                        parse_errors.insert(*mod_name, e.to_string());
+                        None
+                    }
+                    AstResult::Ok(ref module) => Some(analyze_module(*mod_name, module, &ctx)),
+                }
             })
             .collect()
     });
+
     time("  Getting implicit imports", || {
         get_implicit_imports(&mut analysis_map, import_graph)
     });
-    analysis_map
+    (analysis_map, parse_errors)
 }
 
 #[derive(Debug)]

@@ -14,6 +14,7 @@ use anyhow::Result;
 
 use crate::debug::report_memory;
 use crate::imports::ImportGraph;
+use crate::module_safety;
 use crate::output::LifeGuardAnalysis;
 use crate::output::write_verbose;
 use crate::project;
@@ -45,10 +46,23 @@ pub fn process_source_map(
     });
     report_memory("After creating import graph and exports");
 
-    let (analysis_output, side_effect_imports) = time("Analyzing AST", || {
+    let (analysis_output, side_effect_imports, parse_errors) = time("Analyzing AST", || {
         project::run_analysis(&sources, &exports, &import_graph, &sys_info)
     });
     report_memory("After analyzing AST");
+
+    // Surface parse errors in the safety map so they appear in the final output.
+    // This activates the existing SafetyResult::AnalysisError handling in
+    // LifeGuardAnalysis::new (adds to failing_modules) and write_verbose.
+    for entry in parse_errors.iter() {
+        analysis_output.insert(
+            *entry.key(),
+            module_safety::SafetyResult::AnalysisError(anyhow::anyhow!(
+                "Parse error: {}",
+                entry.value()
+            )),
+        );
+    }
 
     if let Some(out) = &options.verbose_output_path {
         println!("Writing verbose output to {}", out.display());
