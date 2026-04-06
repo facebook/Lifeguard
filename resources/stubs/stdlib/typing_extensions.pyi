@@ -214,18 +214,18 @@ _T_contra = _TypeVar("_T_contra", contravariant=True)
 # on older versions of Python.
 Protocol: _SpecialForm
 
-def runtime_checkable(cls: _TC) -> _TC: ...
+def runtime_checkable(cls: _TC) -> _TC: no_effects()
 
 # This alias for above is kept here for backwards compatibility.
 runtime = runtime_checkable
 Final: _SpecialForm
 
-def final(f: _F) -> _F: ...
-def disjoint_base(cls: _TC) -> _TC: ...
+def final(f: _F) -> _F: no_effects()
+def disjoint_base(cls: _TC) -> _TC: no_effects()
 
 Literal: _SpecialForm
 
-def IntVar(name: str) -> Any: ...  # returns a new TypeVar
+def IntVar(name: str) -> Any: no_effects()  # returns a new TypeVar
 
 # Internal mypy fallback type for all typed dicts (does not exist at runtime)
 # N.B. Keep this mostly in sync with typing._TypedDict/mypy_extensions._TypedDict
@@ -279,16 +279,16 @@ if sys.version_info >= (3, 13):
 else:
     def get_type_hints(
         obj: Any, globalns: dict[str, Any] | None = None, localns: Mapping[str, Any] | None = None, include_extras: bool = False
-    ) -> dict[str, AnnotationForm]: ...
+    ) -> dict[str, AnnotationForm]: no_effects()
 
-def get_args(tp: AnnotationForm) -> tuple[AnnotationForm, ...]: ...
+def get_args(tp: AnnotationForm) -> tuple[AnnotationForm, ...]: no_effects()
 
 if sys.version_info >= (3, 10):
     @overload
-    def get_origin(tp: UnionType) -> type[UnionType]: ...
+    def get_origin(tp: UnionType) -> type[UnionType]: no_effects()
 
 @overload
-def get_origin(tp: GenericAlias) -> type: ...
+def get_origin(tp: GenericAlias) -> type: no_effects()
 @overload
 def get_origin(tp: ParamSpecArgs | ParamSpecKwargs) -> ParamSpec: ...
 @overload
@@ -323,7 +323,7 @@ else:
     Concatenate: _SpecialForm
     TypeAlias: _SpecialForm
     TypeGuard: _SpecialForm
-    def is_typeddict(tp: object) -> bool: ...
+    def is_typeddict(tp: object) -> bool: no_effects()
 
 # New and changed things in 3.11
 if sys.version_info >= (3, 11):
@@ -346,11 +346,11 @@ if sys.version_info >= (3, 11):
 else:
     Self: _SpecialForm
     Never: _SpecialForm
-    def reveal_type(obj: _T, /) -> _T: ...
-    def assert_never(arg: Never, /) -> Never: ...
-    def assert_type(val: _T, typ: AnnotationForm, /) -> _T: ...
+    def reveal_type(obj: _T, /) -> _T: no_effects()
+    def assert_never(arg: Never, /) -> Never: no_effects()
+    def assert_type(val: _T, typ: AnnotationForm, /) -> _T: no_effects()
     def clear_overloads() -> None: ...
-    def get_overloads(func: Callable[..., object]) -> Sequence[Callable[..., object]]: ...
+    def get_overloads(func: Callable[..., object]) -> Sequence[Callable[..., object]]: no_effects()
 
     Required: _SpecialForm
     NotRequired: _SpecialForm
@@ -403,7 +403,7 @@ if sys.version_info >= (3, 12):
         override as override,
     )
 else:
-    def override(arg: _F, /) -> _F: ...
+    def override(arg: _F, /) -> _F: no_effects()
     def get_original_bases(cls: type, /) -> tuple[Any, ...]: ...
 
     # mypy and pyright object to this being both ABC and Protocol.
@@ -701,7 +701,7 @@ else:
         type_params: Iterable[TypeVar | ParamSpec | TypeVarTuple] | None = None,
         format: Literal[Format.STRING],
         _recursive_guard: Container[str] = ...,
-    ) -> str: ...
+    ) -> str: no_effects()
     @overload
     def evaluate_forward_ref(
         forward_ref: ForwardRef,

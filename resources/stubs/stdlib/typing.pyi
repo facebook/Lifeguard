@@ -143,7 +143,7 @@ if sys.version_info >= (3, 13):
 # due to an import cycle. Below instead we use Any with a comment.
 # from _typeshed import AnnotationForm
 
-class Any: ...
+class Any: no_effects()
 
 class _Final:
     __slots__ = ("__weakref__",)
@@ -152,21 +152,21 @@ def final(f: _T) -> _T: no_effects()
 @final
 class TypeVar:
     @property
-    def __name__(self) -> str: ...
+    def __name__(self) -> str: no_effects()
     @property
-    def __bound__(self) -> Any | None: ...  # AnnotationForm
+    def __bound__(self) -> Any | None: no_effects()  # AnnotationForm
     @property
-    def __constraints__(self) -> tuple[Any, ...]: ...  # AnnotationForm
+    def __constraints__(self) -> tuple[Any, ...]: no_effects()  # AnnotationForm
     @property
-    def __covariant__(self) -> bool: ...
+    def __covariant__(self) -> bool: no_effects()
     @property
-    def __contravariant__(self) -> bool: ...
+    def __contravariant__(self) -> bool: no_effects()
     if sys.version_info >= (3, 12):
         @property
-        def __infer_variance__(self) -> bool: ...
+        def __infer_variance__(self) -> bool: no_effects()
     if sys.version_info >= (3, 13):
         @property
-        def __default__(self) -> Any: ...  # AnnotationForm
+        def __default__(self) -> Any: no_effects()  # AnnotationForm
     if sys.version_info >= (3, 13):
         def __new__(
             cls,
@@ -215,20 +215,20 @@ class TypeVar:
             no_effects()
 
     if sys.version_info >= (3, 10):
-        def __or__(self, right: Any, /) -> _SpecialForm: ...  # AnnotationForm
-        def __ror__(self, left: Any, /) -> _SpecialForm: ...  # AnnotationForm
+        def __or__(self, right: Any, /) -> _SpecialForm: no_effects()  # AnnotationForm
+        def __ror__(self, left: Any, /) -> _SpecialForm: no_effects()  # AnnotationForm
     if sys.version_info >= (3, 11):
-        def __typing_subst__(self, arg: Any, /) -> Any: ...
+        def __typing_subst__(self, arg: Any, /) -> Any: no_effects()
     if sys.version_info >= (3, 13):
-        def __typing_prepare_subst__(self, alias: Any, args: Any, /) -> tuple[Any, ...]: ...
-        def has_default(self) -> bool: ...
+        def __typing_prepare_subst__(self, alias: Any, args: Any, /) -> tuple[Any, ...]: no_effects()
+        def has_default(self) -> bool: no_effects()
     if sys.version_info >= (3, 14):
         @property
-        def evaluate_bound(self) -> EvaluateFunc | None: ...
+        def evaluate_bound(self) -> EvaluateFunc | None: no_effects()
         @property
-        def evaluate_constraints(self) -> EvaluateFunc | None: ...
+        def evaluate_constraints(self) -> EvaluateFunc | None: no_effects()
         @property
-        def evaluate_default(self) -> EvaluateFunc | None: ...
+        def evaluate_default(self) -> EvaluateFunc | None: no_effects()
 
 # Used for an undocumented mypy feature. Does not exist at runtime.
 # Obsolete, use _typeshed._type_checker_internals.promote instead.
@@ -238,10 +238,10 @@ _promote = object()
 @final
 class _SpecialForm(_Final):
     __slots__ = ("_name", "__doc__", "_getitem")
-    def __getitem__(self, parameters: Any) -> object: ...
+    def __getitem__(self, parameters: Any) -> object: no_effects()
     if sys.version_info >= (3, 10):
-        def __or__(self, other: Any) -> _SpecialForm: ...
-        def __ror__(self, other: Any) -> _SpecialForm: ...
+        def __or__(self, other: Any) -> _SpecialForm: no_effects()
+        def __ror__(self, other: Any) -> _SpecialForm: no_effects()
 
 Union: _SpecialForm
 Protocol: _SpecialForm
@@ -268,66 +268,66 @@ if sys.version_info >= (3, 11):
     @final
     class TypeVarTuple:
         @property
-        def __name__(self) -> str: ...
+        def __name__(self) -> str: no_effects()
         if sys.version_info >= (3, 13):
             @property
-            def __default__(self) -> Any: ...  # AnnotationForm
-            def has_default(self) -> bool: ...
+            def __default__(self) -> Any: no_effects()  # AnnotationForm
+            def has_default(self) -> bool: no_effects()
         if sys.version_info >= (3, 13):
-            def __new__(cls, name: str, *, default: Any = ...) -> Self: ...  # AnnotationForm
+            def __new__(cls, name: str, *, default: Any = ...) -> Self: no_effects()  # AnnotationForm
         elif sys.version_info >= (3, 12):
-            def __new__(cls, name: str) -> Self: ...
+            def __new__(cls, name: str) -> Self: no_effects()
         else:
-            def __init__(self, name: str) -> None: ...
+            def __init__(self, name: str) -> None: no_effects()
 
-        def __iter__(self) -> Any: ...
-        def __typing_subst__(self, arg: Never, /) -> Never: ...
-        def __typing_prepare_subst__(self, alias: Any, args: Any, /) -> tuple[Any, ...]: ...
+        def __iter__(self) -> Any: no_effects()
+        def __typing_subst__(self, arg: Never, /) -> Never: no_effects()
+        def __typing_prepare_subst__(self, alias: Any, args: Any, /) -> tuple[Any, ...]: no_effects()
         if sys.version_info >= (3, 14):
             @property
-            def evaluate_default(self) -> EvaluateFunc | None: ...
+            def evaluate_default(self) -> EvaluateFunc | None: no_effects()
 
 if sys.version_info >= (3, 10):
     @final
     class ParamSpecArgs:
         @property
-        def __origin__(self) -> ParamSpec: ...
+        def __origin__(self) -> ParamSpec: no_effects()
         if sys.version_info >= (3, 12):
-            def __new__(cls, origin: ParamSpec) -> Self: ...
+            def __new__(cls, origin: ParamSpec) -> Self: no_effects()
         else:
-            def __init__(self, origin: ParamSpec) -> None: ...
+            def __init__(self, origin: ParamSpec) -> None: no_effects()
 
-        def __eq__(self, other: object, /) -> bool: ...
+        def __eq__(self, other: object, /) -> bool: no_effects()
         __hash__: ClassVar[None]  # type: ignore[assignment]
 
     @final
     class ParamSpecKwargs:
         @property
-        def __origin__(self) -> ParamSpec: ...
+        def __origin__(self) -> ParamSpec: no_effects()
         if sys.version_info >= (3, 12):
-            def __new__(cls, origin: ParamSpec) -> Self: ...
+            def __new__(cls, origin: ParamSpec) -> Self: no_effects()
         else:
-            def __init__(self, origin: ParamSpec) -> None: ...
+            def __init__(self, origin: ParamSpec) -> None: no_effects()
 
-        def __eq__(self, other: object, /) -> bool: ...
+        def __eq__(self, other: object, /) -> bool: no_effects()
         __hash__: ClassVar[None]  # type: ignore[assignment]
 
     @final
     class ParamSpec:
         @property
-        def __name__(self) -> str: ...
+        def __name__(self) -> str: no_effects()
         @property
-        def __bound__(self) -> Any | None: ...  # AnnotationForm
+        def __bound__(self) -> Any | None: no_effects()  # AnnotationForm
         @property
-        def __covariant__(self) -> bool: ...
+        def __covariant__(self) -> bool: no_effects()
         @property
-        def __contravariant__(self) -> bool: ...
+        def __contravariant__(self) -> bool: no_effects()
         if sys.version_info >= (3, 12):
             @property
-            def __infer_variance__(self) -> bool: ...
+            def __infer_variance__(self) -> bool: no_effects()
         if sys.version_info >= (3, 13):
             @property
-            def __default__(self) -> Any: ...  # AnnotationForm
+            def __default__(self) -> Any: no_effects()  # AnnotationForm
         if sys.version_info >= (3, 13):
             def __new__(
                 cls,
@@ -348,7 +348,7 @@ if sys.version_info >= (3, 10):
                 contravariant: bool = False,
                 covariant: bool = False,
                 infer_variance: bool = False,
-            ) -> Self: ...
+            ) -> Self: no_effects()
         elif sys.version_info >= (3, 11):
             def __new__(
                 cls,
@@ -357,7 +357,7 @@ if sys.version_info >= (3, 10):
                 bound: Any | None = None,  # AnnotationForm
                 contravariant: bool = False,
                 covariant: bool = False,
-            ) -> Self: ...
+            ) -> Self: no_effects()
         else:
             def __init__(
                 self,
@@ -369,39 +369,39 @@ if sys.version_info >= (3, 10):
             ) -> None: no_effects()
 
         @property
-        def args(self) -> ParamSpecArgs: ...
+        def args(self) -> ParamSpecArgs: no_effects()
         @property
-        def kwargs(self) -> ParamSpecKwargs: ...
+        def kwargs(self) -> ParamSpecKwargs: no_effects()
         if sys.version_info >= (3, 11):
-            def __typing_subst__(self, arg: Any, /) -> Any: ...
-            def __typing_prepare_subst__(self, alias: Any, args: Any, /) -> tuple[Any, ...]: ...
+            def __typing_subst__(self, arg: Any, /) -> Any: no_effects()
+            def __typing_prepare_subst__(self, alias: Any, args: Any, /) -> tuple[Any, ...]: no_effects()
 
-        def __or__(self, right: Any, /) -> _SpecialForm: ...
-        def __ror__(self, left: Any, /) -> _SpecialForm: ...
+        def __or__(self, right: Any, /) -> _SpecialForm: no_effects()
+        def __ror__(self, left: Any, /) -> _SpecialForm: no_effects()
         if sys.version_info >= (3, 13):
-            def has_default(self) -> bool: ...
+            def has_default(self) -> bool: no_effects()
         if sys.version_info >= (3, 14):
             @property
-            def evaluate_default(self) -> EvaluateFunc | None: ...
+            def evaluate_default(self) -> EvaluateFunc | None: no_effects()
 
     Concatenate: _SpecialForm
     TypeAlias: _SpecialForm
     TypeGuard: _SpecialForm
 
     class NewType:
-        def __init__(self, name: str, tp: Any) -> None: ...  # AnnotationForm
+        def __init__(self, name: str, tp: Any) -> None: no_effects()  # AnnotationForm
         if sys.version_info >= (3, 11):
             @staticmethod
-            def __call__(x: _T, /) -> _T: ...
+            def __call__(x: _T, /) -> _T: no_effects()
         else:
-            def __call__(self, x: _T) -> _T: ...
+            def __call__(self, x: _T) -> _T: no_effects()
 
-        def __or__(self, other: Any) -> _SpecialForm: ...
-        def __ror__(self, other: Any) -> _SpecialForm: ...
+        def __or__(self, other: Any) -> _SpecialForm: no_effects()
+        def __ror__(self, other: Any) -> _SpecialForm: no_effects()
         __supertype__: type | NewType
 
 else:
-    def NewType(name: str, tp: Any) -> Any: ...
+    def NewType(name: str, tp: Any) -> Any: no_effects()
 
 _F = TypeVar("_F", bound=Callable[..., Any])
 _P = _ParamSpec("_P")
@@ -421,18 +421,18 @@ _TC = TypeVar("_TC", bound=type[object])
 def overload(func: _F) -> _F:
     no_effects()
 
-def no_type_check(arg: _F) -> _F: ...
-def no_type_check_decorator(decorator: Callable[_P, _T]) -> Callable[_P, _T]: ...
+def no_type_check(arg: _F) -> _F: no_effects()
+def no_type_check_decorator(decorator: Callable[_P, _T]) -> Callable[_P, _T]: no_effects()
 
 # This itself is only available during type checking
-def type_check_only(func_or_cls: _FT) -> _FT: ...
+def type_check_only(func_or_cls: _FT) -> _FT: no_effects()
 
 # Type aliases and type constructors
 
 @type_check_only
 class _Alias:
     # Class for defining generic aliases for library types.
-    def __getitem__(self, typeargs: Any) -> Any: ...
+    def __getitem__(self, typeargs: Any) -> Any: no_effects()
 
 List = _Alias()
 Dict = _Alias()
@@ -457,16 +457,16 @@ class _Generic:
 
     if sys.version_info >= (3, 10):
         @classmethod
-        def __class_getitem__(cls, args: TypeVar | ParamSpec | tuple[TypeVar | ParamSpec, ...]) -> _Final: ...
+        def __class_getitem__(cls, args: TypeVar | ParamSpec | tuple[TypeVar | ParamSpec, ...]) -> _Final: no_effects()
     else:
         @classmethod
-        def __class_getitem__(cls, args: TypeVar | tuple[TypeVar, ...]) -> _Final: ...
+        def __class_getitem__(cls, args: TypeVar | tuple[TypeVar, ...]) -> _Final: no_effects()
 
 Generic: type[_Generic]
 
 class _ProtocolMeta(ABCMeta):
     if sys.version_info >= (3, 12):
-        def __init__(cls, *args: Any, **kwargs: Any) -> None: ...
+        def __init__(cls, *args: Any, **kwargs: Any) -> None: no_effects()
 
 # Abstract base classes.
 
@@ -475,44 +475,44 @@ def runtime_checkable(cls: _TC) -> _TC: no_effects()
 class SupportsInt(Protocol, metaclass=ABCMeta):
     __slots__ = ()
     @abstractmethod
-    def __int__(self) -> int: ...
+    def __int__(self) -> int: no_effects()
 
 @runtime_checkable
 class SupportsFloat(Protocol, metaclass=ABCMeta):
     __slots__ = ()
     @abstractmethod
-    def __float__(self) -> float: ...
+    def __float__(self) -> float: no_effects()
 
 @runtime_checkable
 class SupportsComplex(Protocol, metaclass=ABCMeta):
     __slots__ = ()
     @abstractmethod
-    def __complex__(self) -> complex: ...
+    def __complex__(self) -> complex: no_effects()
 
 @runtime_checkable
 class SupportsBytes(Protocol, metaclass=ABCMeta):
     __slots__ = ()
     @abstractmethod
-    def __bytes__(self) -> bytes: ...
+    def __bytes__(self) -> bytes: no_effects()
 
 @runtime_checkable
 class SupportsIndex(Protocol, metaclass=ABCMeta):
     __slots__ = ()
     @abstractmethod
-    def __index__(self) -> int: ...
+    def __index__(self) -> int: no_effects()
 
 @runtime_checkable
 class SupportsAbs(Protocol[_T_co]):
     __slots__ = ()
     @abstractmethod
-    def __abs__(self) -> _T_co: ...
+    def __abs__(self) -> _T_co: no_effects()
 
 @runtime_checkable
 class SupportsRound(Protocol[_T_co]):
     __slots__ = ()
     @overload
     @abstractmethod
-    def __round__(self) -> int: ...
+    def __round__(self) -> int: no_effects()
     @overload
     @abstractmethod
     def __round__(self, ndigits: int, /) -> _T_co: ...
@@ -520,7 +520,7 @@ class SupportsRound(Protocol[_T_co]):
 @runtime_checkable
 class Sized(Protocol, metaclass=ABCMeta):
     @abstractmethod
-    def __len__(self) -> int: ...
+    def __len__(self) -> int: no_effects()
 
 @runtime_checkable
 class Hashable(Protocol, metaclass=ABCMeta):
@@ -528,23 +528,23 @@ class Hashable(Protocol, metaclass=ABCMeta):
     #   (for example, list vs. object). It's not obvious how to represent this. This class
     #   is currently mostly useless for static checking.
     @abstractmethod
-    def __hash__(self) -> int: ...
+    def __hash__(self) -> int: no_effects()
 
 @runtime_checkable
 class Iterable(Protocol[_T_co]):
     @abstractmethod
-    def __iter__(self) -> Iterator[_T_co]: ...
+    def __iter__(self) -> Iterator[_T_co]: no_effects()
 
 @runtime_checkable
 class Iterator(Iterable[_T_co], Protocol[_T_co]):
     @abstractmethod
-    def __next__(self) -> _T_co: ...
-    def __iter__(self) -> Iterator[_T_co]: ...
+    def __next__(self) -> _T_co: no_effects()
+    def __iter__(self) -> Iterator[_T_co]: no_effects()
 
 @runtime_checkable
 class Reversible(Iterable[_T_co], Protocol[_T_co]):
     @abstractmethod
-    def __reversed__(self) -> Iterator[_T_co]: ...
+    def __reversed__(self) -> Iterator[_T_co]: no_effects()
 
 _YieldT_co = TypeVar("_YieldT_co", covariant=True)
 _SendT_contra = TypeVar("_SendT_contra", contravariant=True, default=None)
@@ -651,155 +651,157 @@ class AsyncGenerator(AsyncIterator[_YieldT_co], Protocol[_YieldT_co, _SendT_cont
 class Container(Protocol[_T_co]):
     # This is generic more on vibes than anything else
     @abstractmethod
-    def __contains__(self, x: object, /) -> bool: ...
+    def __contains__(self, x: object, /) -> bool: no_effects()
 
 @runtime_checkable
 class Collection(Iterable[_T_co], Container[_T_co], Protocol[_T_co]):
     # Implement Sized (but don't have it as a base class).
     @abstractmethod
-    def __len__(self) -> int: ...
+    def __len__(self) -> int: no_effects()
 
 class Sequence(Reversible[_T_co], Collection[_T_co]):
     @overload
     @abstractmethod
-    def __getitem__(self, index: int) -> _T_co: ...
+    def __getitem__(self, index: int) -> _T_co: no_effects()
     @overload
     @abstractmethod
     def __getitem__(self, index: slice) -> Sequence[_T_co]: ...
     # Mixin methods
-    def index(self, value: Any, start: int = 0, stop: int = ...) -> int: ...
-    def count(self, value: Any) -> int: ...
-    def __contains__(self, value: object) -> bool: ...
-    def __iter__(self) -> Iterator[_T_co]: ...
-    def __reversed__(self) -> Iterator[_T_co]: ...
+    def index(self, value: Any, start: int = 0, stop: int = ...) -> int: no_effects()
+    def count(self, value: Any) -> int: no_effects()
+    def __contains__(self, value: object) -> bool: no_effects()
+    def __iter__(self) -> Iterator[_T_co]: no_effects()
+    def __reversed__(self) -> Iterator[_T_co]: no_effects()
 
 class MutableSequence(Sequence[_T]):
     @abstractmethod
-    def insert(self, index: int, value: _T) -> None: ...
+    def insert(self, index: int, value: _T) -> None: mutation()
     @overload
     @abstractmethod
-    def __getitem__(self, index: int) -> _T: ...
+    def __getitem__(self, index: int) -> _T: no_effects()
     @overload
     @abstractmethod
     def __getitem__(self, index: slice) -> MutableSequence[_T]: ...
     @overload
     @abstractmethod
-    def __setitem__(self, index: int, value: _T) -> None: ...
+    def __setitem__(self, index: int, value: _T) -> None: mutation()
     @overload
     @abstractmethod
     def __setitem__(self, index: slice, value: Iterable[_T]) -> None: ...
     @overload
     @abstractmethod
-    def __delitem__(self, index: int) -> None: ...
+    def __delitem__(self, index: int) -> None: mutation()
     @overload
     @abstractmethod
     def __delitem__(self, index: slice) -> None: ...
     # Mixin methods
-    def append(self, value: _T) -> None: ...
-    def clear(self) -> None: ...
-    def extend(self, values: Iterable[_T]) -> None: ...
-    def reverse(self) -> None: ...
-    def pop(self, index: int = -1) -> _T: ...
-    def remove(self, value: _T) -> None: ...
-    def __iadd__(self, values: Iterable[_T]) -> typing_extensions.Self: ...
+    def append(self, value: _T) -> None: mutation()
+    def clear(self) -> None: mutation()
+    def extend(self, values: Iterable[_T]) -> None: mutation()
+    def reverse(self) -> None: mutation()
+    def pop(self, index: int = -1) -> _T: mutation()
+    def remove(self, value: _T) -> None: mutation()
+    def __iadd__(self, values: Iterable[_T]) -> typing_extensions.Self: mutation()
 
 class AbstractSet(Collection[_T_co]):
     @abstractmethod
-    def __contains__(self, x: object) -> bool: ...
-    def _hash(self) -> int: ...
+    def __contains__(self, x: object) -> bool: no_effects()
+    def _hash(self) -> int: no_effects()
     # Mixin methods
-    def __le__(self, other: AbstractSet[Any]) -> bool: ...
-    def __lt__(self, other: AbstractSet[Any]) -> bool: ...
-    def __gt__(self, other: AbstractSet[Any]) -> bool: ...
-    def __ge__(self, other: AbstractSet[Any]) -> bool: ...
-    def __and__(self, other: AbstractSet[Any]) -> AbstractSet[_T_co]: ...
-    def __or__(self, other: AbstractSet[_T]) -> AbstractSet[_T_co | _T]: ...
-    def __sub__(self, other: AbstractSet[Any]) -> AbstractSet[_T_co]: ...
-    def __xor__(self, other: AbstractSet[_T]) -> AbstractSet[_T_co | _T]: ...
-    def __eq__(self, other: object) -> bool: ...
-    def isdisjoint(self, other: Iterable[Any]) -> bool: ...
+    def __le__(self, other: AbstractSet[Any]) -> bool: no_effects()
+    def __lt__(self, other: AbstractSet[Any]) -> bool: no_effects()
+    def __gt__(self, other: AbstractSet[Any]) -> bool: no_effects()
+    def __ge__(self, other: AbstractSet[Any]) -> bool: no_effects()
+    def __and__(self, other: AbstractSet[Any]) -> AbstractSet[_T_co]: no_effects()
+    def __or__(self, other: AbstractSet[_T]) -> AbstractSet[_T_co | _T]: no_effects()
+    def __sub__(self, other: AbstractSet[Any]) -> AbstractSet[_T_co]: no_effects()
+    def __xor__(self, other: AbstractSet[_T]) -> AbstractSet[_T_co | _T]: no_effects()
+    def __eq__(self, other: object) -> bool: no_effects()
+    def isdisjoint(self, other: Iterable[Any]) -> bool: no_effects()
 
 class MutableSet(AbstractSet[_T]):
     @abstractmethod
-    def add(self, value: _T) -> None: ...
+    def add(self, value: _T) -> None: mutation()
     @abstractmethod
-    def discard(self, value: _T) -> None: ...
+    def discard(self, value: _T) -> None: mutation()
     # Mixin methods
-    def clear(self) -> None: ...
-    def pop(self) -> _T: ...
-    def remove(self, value: _T) -> None: ...
-    def __ior__(self, it: AbstractSet[_T]) -> typing_extensions.Self: ...  # type: ignore[override,misc]
-    def __iand__(self, it: AbstractSet[Any]) -> typing_extensions.Self: ...
-    def __ixor__(self, it: AbstractSet[_T]) -> typing_extensions.Self: ...  # type: ignore[override,misc]
-    def __isub__(self, it: AbstractSet[Any]) -> typing_extensions.Self: ...
+    def clear(self) -> None: mutation()
+    def pop(self) -> _T: mutation()
+    def remove(self, value: _T) -> None: mutation()
+    def __ior__(self, it: AbstractSet[_T]) -> typing_extensions.Self: mutation()  # type: ignore[override,misc]
+    def __iand__(self, it: AbstractSet[Any]) -> typing_extensions.Self: mutation()
+    def __ixor__(self, it: AbstractSet[_T]) -> typing_extensions.Self: mutation()  # type: ignore[override,misc]
+    def __isub__(self, it: AbstractSet[Any]) -> typing_extensions.Self: mutation()
 
 class MappingView(Sized):
     __slots__ = ("_mapping",)
-    def __init__(self, mapping: Sized) -> None: ...  # undocumented
-    def __len__(self) -> int: ...
+    def __init__(self, mapping: Sized) -> None: no_effects()  # undocumented
+    def __len__(self) -> int: no_effects()
 
 class ItemsView(MappingView, AbstractSet[tuple[_KT_co, _VT_co]], Generic[_KT_co, _VT_co]):
-    def __init__(self, mapping: SupportsGetItemViewable[_KT_co, _VT_co]) -> None: ...  # undocumented
-    def __and__(self, other: Iterable[Any]) -> set[tuple[_KT_co, _VT_co]]: ...
-    def __rand__(self, other: Iterable[_T]) -> set[_T]: ...
-    def __contains__(self, item: tuple[object, object]) -> bool: ...  # type: ignore[override]
-    def __iter__(self) -> Iterator[tuple[_KT_co, _VT_co]]: ...
-    def __or__(self, other: Iterable[_T]) -> set[tuple[_KT_co, _VT_co] | _T]: ...
-    def __ror__(self, other: Iterable[_T]) -> set[tuple[_KT_co, _VT_co] | _T]: ...
-    def __sub__(self, other: Iterable[Any]) -> set[tuple[_KT_co, _VT_co]]: ...
-    def __rsub__(self, other: Iterable[_T]) -> set[_T]: ...
-    def __xor__(self, other: Iterable[_T]) -> set[tuple[_KT_co, _VT_co] | _T]: ...
-    def __rxor__(self, other: Iterable[_T]) -> set[tuple[_KT_co, _VT_co] | _T]: ...
+    def __init__(self, mapping: SupportsGetItemViewable[_KT_co, _VT_co]) -> None: no_effects()  # undocumented
+    def __and__(self, other: Iterable[Any]) -> set[tuple[_KT_co, _VT_co]]: no_effects()
+    def __rand__(self, other: Iterable[_T]) -> set[_T]: no_effects()
+    def __contains__(self, item: tuple[object, object]) -> bool: no_effects()  # type: ignore[override]
+    def __iter__(self) -> Iterator[tuple[_KT_co, _VT_co]]: no_effects()
+    def __or__(self, other: Iterable[_T]) -> set[tuple[_KT_co, _VT_co] | _T]: no_effects()
+    def __ror__(self, other: Iterable[_T]) -> set[tuple[_KT_co, _VT_co] | _T]: no_effects()
+    def __sub__(self, other: Iterable[Any]) -> set[tuple[_KT_co, _VT_co]]: no_effects()
+    def __rsub__(self, other: Iterable[_T]) -> set[_T]: no_effects()
+    def __xor__(self, other: Iterable[_T]) -> set[tuple[_KT_co, _VT_co] | _T]: no_effects()
+    def __rxor__(self, other: Iterable[_T]) -> set[tuple[_KT_co, _VT_co] | _T]: no_effects()
 
 class KeysView(MappingView, AbstractSet[_KT_co]):
-    def __init__(self, mapping: Viewable[_KT_co]) -> None: ...  # undocumented
-    def __and__(self, other: Iterable[Any]) -> set[_KT_co]: ...
-    def __rand__(self, other: Iterable[_T]) -> set[_T]: ...
-    def __contains__(self, key: object) -> bool: ...
-    def __iter__(self) -> Iterator[_KT_co]: ...
-    def __or__(self, other: Iterable[_T]) -> set[_KT_co | _T]: ...
-    def __ror__(self, other: Iterable[_T]) -> set[_KT_co | _T]: ...
-    def __sub__(self, other: Iterable[Any]) -> set[_KT_co]: ...
-    def __rsub__(self, other: Iterable[_T]) -> set[_T]: ...
-    def __xor__(self, other: Iterable[_T]) -> set[_KT_co | _T]: ...
-    def __rxor__(self, other: Iterable[_T]) -> set[_KT_co | _T]: ...
+    def __init__(self, mapping: Viewable[_KT_co]) -> None: no_effects()  # undocumented
+    def __and__(self, other: Iterable[Any]) -> set[_KT_co]: no_effects()
+    def __rand__(self, other: Iterable[_T]) -> set[_T]: no_effects()
+    def __contains__(self, key: object) -> bool: no_effects()
+    def __iter__(self) -> Iterator[_KT_co]: no_effects()
+    def __or__(self, other: Iterable[_T]) -> set[_KT_co | _T]: no_effects()
+    def __ror__(self, other: Iterable[_T]) -> set[_KT_co | _T]: no_effects()
+    def __sub__(self, other: Iterable[Any]) -> set[_KT_co]: no_effects()
+    def __rsub__(self, other: Iterable[_T]) -> set[_T]: no_effects()
+    def __xor__(self, other: Iterable[_T]) -> set[_KT_co | _T]: no_effects()
+    def __rxor__(self, other: Iterable[_T]) -> set[_KT_co | _T]: no_effects()
 
 class ValuesView(MappingView, Collection[_VT_co]):
-    def __init__(self, mapping: SupportsGetItemViewable[Any, _VT_co]) -> None: ...  # undocumented
-    def __contains__(self, value: object) -> bool: ...
-    def __iter__(self) -> Iterator[_VT_co]: ...
+    def __init__(self, mapping: SupportsGetItemViewable[Any, _VT_co]) -> None: no_effects()  # undocumented
+    def __contains__(self, value: object) -> bool: no_effects()
+    def __iter__(self) -> Iterator[_VT_co]: no_effects()
 
 class Mapping(Collection[_KT], Generic[_KT, _VT_co]):
     # TODO: We wish the key type could also be covariant, but that doesn't work,
     # see discussion in https://github.com/python/typing/pull/273.
     @abstractmethod
-    def __getitem__(self, key: _KT, /) -> _VT_co: ...
+    def __getitem__(self, key: _KT, /) -> _VT_co: no_effects()
     # Mixin methods
     @overload
-    def get(self, key: _KT, /) -> _VT_co | None: ...
+    def get(self, key: _KT, /) -> _VT_co | None:
+        no_effects()
+        no_effects()  # type: ignore[misc] # pyright: ignore[reportGeneralTypeIssues] # Covariant type as parameter
     @overload
     def get(self, key: _KT, /, default: _VT_co) -> _VT_co: ...  # type: ignore[misc] # pyright: ignore[reportGeneralTypeIssues] # Covariant type as parameter
     @overload
     def get(self, key: _KT, /, default: _T) -> _VT_co | _T: ...
-    def items(self) -> ItemsView[_KT, _VT_co]: ...
-    def keys(self) -> KeysView[_KT]: ...
-    def values(self) -> ValuesView[_VT_co]: ...
-    def __contains__(self, key: object, /) -> bool: ...
-    def __eq__(self, other: object, /) -> bool: ...
+    def items(self) -> ItemsView[_KT, _VT_co]: no_effects()
+    def keys(self) -> KeysView[_KT]: no_effects()
+    def values(self) -> ValuesView[_VT_co]: no_effects()
+    def __contains__(self, key: object, /) -> bool: no_effects()
+    def __eq__(self, other: object, /) -> bool: no_effects()
 
 class MutableMapping(Mapping[_KT, _VT]):
     @abstractmethod
-    def __setitem__(self, key: _KT, value: _VT, /) -> None: ...
+    def __setitem__(self, key: _KT, value: _VT, /) -> None: mutation()
     @abstractmethod
-    def __delitem__(self, key: _KT, /) -> None: ...
-    def clear(self) -> None: ...
+    def __delitem__(self, key: _KT, /) -> None: mutation()
+    def clear(self) -> None: mutation()
     @overload
-    def pop(self, key: _KT, /) -> _VT: ...
+    def pop(self, key: _KT, /) -> _VT: mutation()
     @overload
     def pop(self, key: _KT, /, default: _VT) -> _VT: ...
     @overload
     def pop(self, key: _KT, /, default: _T) -> _VT | _T: ...
-    def popitem(self) -> tuple[_KT, _VT]: ...
+    def popitem(self) -> tuple[_KT, _VT]: mutation()
     # This overload should be allowed only if the value type is compatible with None.
     #
     # Keep the following methods in line with MutableMapping.setdefault, modulo positional-only differences:
@@ -807,7 +809,7 @@ class MutableMapping(Mapping[_KT, _VT]):
     # -- collections.ChainMap.setdefault
     # -- weakref.WeakKeyDictionary.setdefault
     @overload
-    def setdefault(self: MutableMapping[_KT, _T | None], key: _KT, default: None = None, /) -> _T | None: ...
+    def setdefault(self: MutableMapping[_KT, _T | None], key: _KT, default: None = None, /) -> _T | None: mutation()
     @overload
     def setdefault(self, key: _KT, default: _VT, /) -> _VT: ...
     # 'update' used to take a Union, but using overloading is better.
@@ -831,7 +833,7 @@ class MutableMapping(Mapping[_KT, _VT]):
     # -- weakref.WeakValueDictionary.__ior__
     # -- weakref.WeakKeyDictionary.__ior__
     @overload
-    def update(self, m: SupportsKeysAndGetItem[_KT, _VT], /) -> None: ...
+    def update(self, m: SupportsKeysAndGetItem[_KT, _VT], /) -> None: mutation()
     @overload
     def update(self: SupportsGetItem[str, _VT], m: SupportsKeysAndGetItem[str, _VT], /, **kwargs: _VT) -> None: ...
     @overload
@@ -929,7 +931,7 @@ class TextIO(IO[str]):
     @property
     def newlines(self) -> Any: ...  # None, str or tuple
     @abstractmethod
-    def __enter__(self) -> TextIO: ...
+    def __enter__(self) -> TextIO: no_effects()
 
 ByteString: typing_extensions.TypeAlias = bytes | bytearray | memoryview
 
@@ -955,7 +957,7 @@ if sys.version_info >= (3, 14):
         include_extras: bool = False,
         *,
         format: Format | None = None,
-    ) -> dict[str, Any]: ...  # AnnotationForm
+    ) -> dict[str, Any]: no_effects()  # AnnotationForm
 
 else:
     def get_type_hints(
@@ -963,18 +965,20 @@ else:
         globalns: dict[str, Any] | None = None,
         localns: Mapping[str, Any] | None = None,
         include_extras: bool = False,
-    ) -> dict[str, Any]: ...  # AnnotationForm
+    ) -> dict[str, Any]: no_effects()  # AnnotationForm
 
-def get_args(tp: Any) -> tuple[Any, ...]: ...  # AnnotationForm
+def get_args(tp: Any) -> tuple[Any, ...]: no_effects()  # AnnotationForm
 
 if sys.version_info >= (3, 10):
     @overload
-    def get_origin(tp: ParamSpecArgs | ParamSpecKwargs) -> ParamSpec: ...
+    def get_origin(tp: ParamSpecArgs | ParamSpecKwargs) -> ParamSpec: no_effects()
     @overload
-    def get_origin(tp: UnionType) -> type[UnionType]: ...
+    def get_origin(tp: UnionType) -> type[UnionType]: no_effects()
 
 @overload
-def get_origin(tp: GenericAlias) -> type: ...
+def get_origin(tp: GenericAlias) -> type:
+    no_effects()
+    no_effects()  # AnnotationForm
 @overload
 def get_origin(tp: Any) -> Any | None: ...  # AnnotationForm
 @overload
@@ -985,11 +989,11 @@ def cast(typ: str, val: Any) -> Any: ...
 def cast(typ: object, val: Any) -> Any: ...
 
 if sys.version_info >= (3, 11):
-    def reveal_type(obj: _T, /) -> _T: ...
-    def assert_never(arg: Never, /) -> Never: ...
-    def assert_type(val: _T, typ: Any, /) -> _T: ...  # AnnotationForm
-    def clear_overloads() -> None: ...
-    def get_overloads(func: Callable[..., object]) -> Sequence[Callable[..., object]]: ...
+    def reveal_type(obj: _T, /) -> _T: no_effects()
+    def assert_never(arg: Never, /) -> Never: no_effects()
+    def assert_type(val: _T, typ: Any, /) -> _T: no_effects()  # AnnotationForm
+    def clear_overloads() -> None: no_effects()
+    def get_overloads(func: Callable[..., object]) -> Sequence[Callable[..., object]]: no_effects()
     def dataclass_transform(
         *,
         eq_default: bool = True,
@@ -998,7 +1002,7 @@ if sys.version_info >= (3, 11):
         frozen_default: bool = False,  # on 3.11, runtime accepts it as part of kwargs
         field_specifiers: tuple[type[Any] | Callable[..., Any], ...] = (),
         **kwargs: Any,
-    ) -> IdentityFunction: ...
+    ) -> IdentityFunction: no_effects()
 
 # Type constructors
 
@@ -1012,18 +1016,18 @@ class NamedTuple(tuple[Any, ...]):
         __orig_bases__: ClassVar[tuple[Any, ...]]
 
     @overload
-    def __init__(self, typename: str, fields: Iterable[tuple[str, Any]], /) -> None: ...
+    def __init__(self, typename: str, fields: Iterable[tuple[str, Any]], /) -> None: no_effects()
     @overload
     @typing_extensions.deprecated(
         "Creating a typing.NamedTuple using keyword arguments is deprecated and support will be removed in Python 3.15"
     )
     def __init__(self, typename: str, fields: None = None, /, **kwargs: Any) -> None: ...
     @classmethod
-    def _make(cls, iterable: Iterable[Any]) -> typing_extensions.Self: ...
-    def _asdict(self) -> dict[str, Any]: ...
-    def _replace(self, **kwargs: Any) -> typing_extensions.Self: ...
+    def _make(cls, iterable: Iterable[Any]) -> typing_extensions.Self: no_effects()
+    def _asdict(self) -> dict[str, Any]: no_effects()
+    def _replace(self, **kwargs: Any) -> typing_extensions.Self: no_effects()
     if sys.version_info >= (3, 13):
-        def __replace__(self, **kwargs: Any) -> typing_extensions.Self: ...
+        def __replace__(self, **kwargs: Any) -> typing_extensions.Self: no_effects()
 
 # Internal mypy fallback type for all typed dicts (does not exist at runtime)
 # N.B. Keep this mostly in sync with typing_extensions._TypedDict/mypy_extensions._TypedDict
@@ -1041,27 +1045,27 @@ class _TypedDict(Mapping[str, object], metaclass=ABCMeta):
         __readonly_keys__: ClassVar[frozenset[str]]
         __mutable_keys__: ClassVar[frozenset[str]]
 
-    def copy(self) -> typing_extensions.Self: ...
+    def copy(self) -> typing_extensions.Self: no_effects()
     # Using Never so that only calls using mypy plugin hook that specialize the signature
     # can go through.
-    def setdefault(self, k: _Never, default: object) -> object: ...
+    def setdefault(self, k: _Never, default: object) -> object: mutation()
     # Mypy plugin hook for 'pop' expects that 'default' has a type variable type.
-    def pop(self, k: _Never, default: _T = ...) -> object: ...  # pyright: ignore[reportInvalidTypeVarUse]
-    def update(self, m: typing_extensions.Self, /) -> None: ...
-    def __delitem__(self, k: _Never) -> None: ...
-    def items(self) -> dict_items[str, object]: ...
-    def keys(self) -> dict_keys[str, object]: ...
-    def values(self) -> dict_values[str, object]: ...
+    def pop(self, k: _Never, default: _T = ...) -> object: mutation()  # pyright: ignore[reportInvalidTypeVarUse]
+    def update(self, m: typing_extensions.Self, /) -> None: mutation()
+    def __delitem__(self, k: _Never) -> None: mutation()
+    def items(self) -> dict_items[str, object]: no_effects()
+    def keys(self) -> dict_keys[str, object]: no_effects()
+    def values(self) -> dict_values[str, object]: no_effects()
     @overload
-    def __or__(self, value: typing_extensions.Self, /) -> typing_extensions.Self: ...
+    def __or__(self, value: typing_extensions.Self, /) -> typing_extensions.Self: no_effects()
     @overload
     def __or__(self, value: dict[str, Any], /) -> dict[str, object]: ...
     @overload
-    def __ror__(self, value: typing_extensions.Self, /) -> typing_extensions.Self: ...
+    def __ror__(self, value: typing_extensions.Self, /) -> typing_extensions.Self: no_effects()
     @overload
     def __ror__(self, value: dict[str, Any], /) -> dict[str, object]: ...
     # supposedly incompatible definitions of __or__ and __ior__
-    def __ior__(self, value: typing_extensions.Self, /) -> typing_extensions.Self: ...  # type: ignore[misc]
+    def __ior__(self, value: typing_extensions.Self, /) -> typing_extensions.Self: mutation()  # type: ignore[misc]
 
 if sys.version_info >= (3, 14):
     from annotationlib import ForwardRef as ForwardRef
@@ -1074,7 +1078,7 @@ if sys.version_info >= (3, 14):
         locals: Mapping[str, Any] | None = None,
         type_params: tuple[TypeVar, ParamSpec, TypeVarTuple] | None = None,
         format: Format | None = None,
-    ) -> Any: ...  # AnnotationForm
+    ) -> Any: no_effects()  # AnnotationForm
 
 else:
     @final
@@ -1096,7 +1100,7 @@ else:
         __forward_is_class__: bool
         __forward_module__: Any | None
 
-        def __init__(self, arg: str, is_argument: bool = True, module: Any | None = None, *, is_class: bool = False) -> None: ...
+        def __init__(self, arg: str, is_argument: bool = True, module: Any | None = None, *, is_class: bool = False) -> None: no_effects()
 
         if sys.version_info >= (3, 13):
             @overload
@@ -1107,7 +1111,7 @@ else:
             )
             def _evaluate(
                 self, globalns: dict[str, Any] | None, localns: Mapping[str, Any] | None, *, recursive_guard: frozenset[str]
-            ) -> Any | None: ...  # AnnotationForm
+            ) -> Any | None: no_effects()  # AnnotationForm
             @overload
             def _evaluate(
                 self,
@@ -1116,7 +1120,7 @@ else:
                 type_params: tuple[TypeVar | ParamSpec | TypeVarTuple, ...],
                 *,
                 recursive_guard: frozenset[str],
-            ) -> Any | None: ...  # AnnotationForm
+            ) -> Any | None: no_effects()  # AnnotationForm
         elif sys.version_info >= (3, 12):
             def _evaluate(
                 self,
@@ -1125,22 +1129,22 @@ else:
                 type_params: tuple[TypeVar | ParamSpec | TypeVarTuple, ...] | None = None,
                 *,
                 recursive_guard: frozenset[str],
-            ) -> Any | None: ...  # AnnotationForm
+            ) -> Any | None: no_effects()  # AnnotationForm
         else:
             def _evaluate(
                 self, globalns: dict[str, Any] | None, localns: Mapping[str, Any] | None, recursive_guard: frozenset[str]
-            ) -> Any | None: ...  # AnnotationForm
+            ) -> Any | None: no_effects()  # AnnotationForm
 
-        def __eq__(self, other: object) -> bool: ...
-        def __hash__(self) -> int: ...
+        def __eq__(self, other: object) -> bool: no_effects()
+        def __hash__(self) -> int: no_effects()
         if sys.version_info >= (3, 11):
-            def __or__(self, other: Any) -> _SpecialForm: ...
-            def __ror__(self, other: Any) -> _SpecialForm: ...
+            def __or__(self, other: Any) -> _SpecialForm: no_effects()
+            def __ror__(self, other: Any) -> _SpecialForm: no_effects()
 
 if sys.version_info >= (3, 10):
-    def is_typeddict(tp: object) -> bool: ...
+    def is_typeddict(tp: object) -> bool: no_effects()
 
-def _type_repr(obj: object) -> str: ...
+def _type_repr(obj: object) -> str: no_effects()
 
 if sys.version_info >= (3, 12):
     _TypeParameter: typing_extensions.TypeAlias = (
@@ -1152,34 +1156,34 @@ if sys.version_info >= (3, 12):
         | typing_extensions.TypeVarTuple
     )
 
-    def override(method: _F, /) -> _F: ...
+    def override(method: _F, /) -> _F: no_effects()
     @final
     class TypeAliasType:
-        def __new__(cls, name: str, value: Any, *, type_params: tuple[_TypeParameter, ...] = ()) -> Self: ...
+        def __new__(cls, name: str, value: Any, *, type_params: tuple[_TypeParameter, ...] = ()) -> Self: no_effects()
         @property
-        def __value__(self) -> Any: ...  # AnnotationForm
+        def __value__(self) -> Any: no_effects()  # AnnotationForm
         @property
-        def __type_params__(self) -> tuple[_TypeParameter, ...]: ...
+        def __type_params__(self) -> tuple[_TypeParameter, ...]: no_effects()
         @property
-        def __parameters__(self) -> tuple[Any, ...]: ...  # AnnotationForm
+        def __parameters__(self) -> tuple[Any, ...]: no_effects()  # AnnotationForm
         @property
-        def __name__(self) -> str: ...
+        def __name__(self) -> str: no_effects()
         # It's writable on types, but not on instances of TypeAliasType.
         @property
-        def __module__(self) -> str | None: ...  # type: ignore[override]
-        def __getitem__(self, parameters: Any, /) -> GenericAlias: ...  # AnnotationForm
-        def __or__(self, right: Any, /) -> _SpecialForm: ...
-        def __ror__(self, left: Any, /) -> _SpecialForm: ...
+        def __module__(self) -> str | None: no_effects()  # type: ignore[override]
+        def __getitem__(self, parameters: Any, /) -> GenericAlias: no_effects()  # AnnotationForm
+        def __or__(self, right: Any, /) -> _SpecialForm: no_effects()
+        def __ror__(self, left: Any, /) -> _SpecialForm: no_effects()
         if sys.version_info >= (3, 14):
             @property
-            def evaluate_value(self) -> EvaluateFunc: ...
+            def evaluate_value(self) -> EvaluateFunc: no_effects()
 
 if sys.version_info >= (3, 13):
-    def is_protocol(tp: type, /) -> bool: ...
-    def get_protocol_members(tp: type, /) -> frozenset[str]: ...
+    def is_protocol(tp: type, /) -> bool: no_effects()
+    def get_protocol_members(tp: type, /) -> frozenset[str]: no_effects()
     @final
     @type_check_only
-    class _NoDefaultType: ...
+    class _NoDefaultType: no_effects()
 
     NoDefault: _NoDefaultType
     TypeIs: _SpecialForm
