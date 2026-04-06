@@ -242,4 +242,77 @@ mod tests {
         let out = &ErrorKind::UnsafeFunctionCall.error_string();
         assert_eq!(out, "unsafe-function-call");
     }
+
+    #[test]
+    fn test_safety_error_ordering_and_equality() {
+        use std::cmp::Ordering;
+
+        let range1 = TextRange::new(0u32.into(), 5u32.into());
+        let range2 = TextRange::new(10u32.into(), 15u32.into());
+
+        let err1 = SafetyError::new(ErrorKind::UnsafeFunctionCall, "foo".to_string(), range1);
+        let err2 = SafetyError::new(ErrorKind::UnsafeFunctionCall, "foo".to_string(), range2);
+        let err3 = SafetyError::new(ErrorKind::UnsafeFunctionCall, "foo".to_string(), range1);
+
+        assert_eq!(err1, err3);
+        assert_eq!(err1.partial_cmp(&err3), Some(Ordering::Equal));
+
+        assert!(err1 < err2);
+        assert_eq!(err1.partial_cmp(&err2), Some(Ordering::Less));
+
+        let err4 = SafetyError::new(ErrorKind::ExecCall, "foo".to_string(), range1);
+        assert_ne!(
+            err1, err4,
+            "different ErrorKind at same range should differ"
+        );
+    }
+
+    #[test]
+    fn test_error_metadata_serialize() {
+        let metadata: ErrorMetadata = "test_metadata".parse().unwrap();
+        let json = serde_json::to_string(&metadata).unwrap();
+        assert_eq!(json, "\"test_metadata\"");
+    }
+
+    #[test]
+    fn test_safety_error_from_unsafe_call_variants() {
+        use pyrefly_python::module_name::ModuleName;
+
+        let range = TextRange::default();
+
+        let method_eff = Effect::new(
+            EffectKind::MethodCall,
+            ModuleName::from_str("obj.method"),
+            range,
+        );
+        let err = SafetyError::from_unsafe_call(&method_eff).unwrap();
+        assert_eq!(err.kind, ErrorKind::UnsafeMethodCall);
+
+        let attr_eff = Effect::new(
+            EffectKind::ImportedTypeAttr,
+            ModuleName::from_str("cls.attr"),
+            range,
+        );
+        let err = SafetyError::from_unsafe_call(&attr_eff).unwrap();
+        assert_eq!(err.kind, ErrorKind::UnsafeMethodCall);
+
+        let dec_eff = Effect::new(
+            EffectKind::DecoratorCall,
+            ModuleName::from_str("deco"),
+            range,
+        );
+        let err = SafetyError::from_unsafe_call(&dec_eff).unwrap();
+        assert_eq!(err.kind, ErrorKind::UnsafeDecoratorCall);
+
+        let imp_dec_eff = Effect::new(
+            EffectKind::ImportedDecoratorCall,
+            ModuleName::from_str("deco"),
+            range,
+        );
+        let err = SafetyError::from_unsafe_call(&imp_dec_eff).unwrap();
+        assert_eq!(err.kind, ErrorKind::UnsafeDecoratorCall);
+
+        let raise_eff = Effect::new(EffectKind::Raise, ModuleName::from_str("err"), range);
+        assert!(SafetyError::from_unsafe_call(&raise_eff).is_err());
+    }
 }

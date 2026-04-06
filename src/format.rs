@@ -464,4 +464,33 @@ mod tests {
         // walrus operator parsed inside a context where it's valid
         check("(x := 5)", "x := Int(5)");
     }
+
+    #[test]
+    fn test_format_uncovered_binops_and_unary() {
+        check("a - b", "a - b");
+        check("a @ b", "a @ b");
+        check("a / b", "a / b");
+        check("a % b", "a % b");
+        check("a << b", "a << b");
+        check("a >> b", "a >> b");
+        check("a | b", "a | b");
+        check("a ^ b", "a ^ b");
+        check("a & b", "a & b");
+        check("+x", "+x");
+    }
+
+    #[test]
+    fn test_format_comprehensions_and_generators() {
+        check("{x for x in items}", "{x for x in items}");
+        check("{k: v for k, v in items}", "{k: v for (k, v) in items}");
+        check("(x for x in items)", "(x for x in items)");
+    }
+
+    #[test]
+    fn test_format_misc_uncovered_exprs() {
+        check("(a,)", "(a,)");
+        check("{**d}", "{**d}");
+        check("f(**kw)", "f(**kw)");
+        check("f'{x}'", "f\"...\"");
+    }
 }

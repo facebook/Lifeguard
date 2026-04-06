@@ -385,4 +385,74 @@ mod tests {
         let out = EffectKind::from_str("global-var-assign").unwrap();
         assert_eq!(out, EffectKind::GlobalVarAssign);
     }
+
+    #[test]
+    fn test_call_kind_unknown_call_effect() {
+        assert_eq!(
+            CallKind::Function.unknown_call_effect(),
+            EffectKind::UnknownFunctionCall
+        );
+        assert_eq!(
+            CallKind::Method.unknown_call_effect(),
+            EffectKind::UnknownMethodCall
+        );
+        assert_eq!(
+            CallKind::Decorator.unknown_call_effect(),
+            EffectKind::UnknownDecoratorCall
+        );
+    }
+
+    #[test]
+    fn test_call_data_has_any_tracked_args() {
+        let empty = CallData::empty();
+        assert!(!empty.has_any_tracked_args());
+
+        let with_indices = CallData::new(true, 1, Vec::new(), false);
+        assert!(with_indices.has_any_tracked_args());
+
+        let with_keywords = CallData::new(false, 0, vec![ModuleName::from_str("kwarg")], false);
+        assert!(with_keywords.has_any_tracked_args());
+
+        let with_expansion = CallData::new(false, 0, Vec::new(), true);
+        assert!(with_expansion.has_any_tracked_args());
+    }
+
+    #[test]
+    fn test_call_data_has_unsafe_keyword() {
+        let with_expansion = CallData::new(false, 0, Vec::new(), true);
+        assert!(with_expansion.has_unsafe_keyword("anything"));
+        assert!(with_expansion.has_unsafe_keywords());
+        assert!(!with_expansion.has_precise_keyword_tracking());
+
+        let with_names = CallData::new(false, 0, vec![ModuleName::from_str("foo")], false);
+        assert!(with_names.has_unsafe_keyword("foo"));
+        assert!(!with_names.has_unsafe_keyword("bar"));
+        assert!(with_names.has_unsafe_keywords());
+        assert!(with_names.has_precise_keyword_tracking());
+
+        let empty = CallData::empty();
+        assert!(!empty.has_unsafe_keyword("foo"));
+        assert!(!empty.has_unsafe_keywords());
+    }
+
+    #[test]
+    fn test_effect_table_merge_with_new_keys() {
+        use ruff_text_size::TextRange;
+
+        let range = TextRange::default();
+        let mod_a = ModuleName::from_str("mod_a");
+        let mod_b = ModuleName::from_str("mod_b");
+
+        let mut table1 = EffectTable::empty();
+        table1.insert(mod_a, Effect::new(EffectKind::FunctionCall, mod_a, range));
+
+        let mut table2 = EffectTable::empty();
+        table2.insert(mod_a, Effect::new(EffectKind::MethodCall, mod_a, range));
+        table2.insert(mod_b, Effect::new(EffectKind::Raise, mod_b, range));
+
+        table1.merge(&table2);
+
+        assert_eq!(table1.get(&mod_a).unwrap().len(), 2);
+        assert_eq!(table1.get(&mod_b).unwrap().len(), 1);
+    }
 }
