@@ -403,15 +403,15 @@ class _version_info(_UninstantiableStructseq, tuple[int, int, int, _ReleaseLevel
         __match_args__: Final = ("major", "minor", "micro", "releaselevel", "serial")
 
     @property
-    def major(self) -> int: ...
+    def major(self) -> int: no_effects()
     @property
-    def minor(self) -> int: ...
+    def minor(self) -> int: no_effects()
     @property
-    def micro(self) -> int: ...
+    def micro(self) -> int: no_effects()
     @property
-    def releaselevel(self) -> _ReleaseLevel: ...
+    def releaselevel(self) -> _ReleaseLevel: no_effects()
     @property
-    def serial(self) -> int: ...
+    def serial(self) -> int: no_effects()
 
 version_info: _version_info
 
@@ -502,7 +502,7 @@ def exc_info() -> OptExcInfo:
     Return information about the most recent exception caught by an except
     clause in the current stack frame or in an older stack frame.
     """
-    ...
+    no_effects()
 
 if sys.version_info >= (3, 11):
     def exception() -> BaseException | None:
@@ -527,14 +527,14 @@ def exit(status: _ExitCode = None, /) -> NoReturn:
     ...
 
 if sys.platform == "android":  # noqa: Y008
-    def getandroidapilevel() -> int: ...
+    def getandroidapilevel() -> int: no_effects()
 
 def getallocatedblocks() -> int:
     """Return the number of memory blocks currently allocated."""
-    ...
+    no_effects()
 def getdefaultencoding() -> Literal["utf-8"]:
     """Return the current default encoding used by the Unicode implementation."""
-    ...
+    no_effects()
 
 if sys.platform != "win32":
     def getdlopenflags() -> int:
@@ -543,14 +543,14 @@ if sys.platform != "win32":
 
         The flag constants are defined in the os module.
         """
-        ...
+        no_effects()
 
 def getfilesystemencoding() -> LiteralString:
     """Return the encoding used to convert Unicode filenames to OS filenames."""
-    ...
+    no_effects()
 def getfilesystemencodeerrors() -> LiteralString:
     """Return the error mode used Unicode to OS filename conversion."""
-    ...
+    no_effects()
 def getrefcount(object: Any, /) -> int:
     """
     Return the reference count of object.
@@ -559,7 +559,7 @@ def getrefcount(object: Any, /) -> int:
     because it includes the (temporary) reference as an argument to
     getrefcount().
     """
-    ...
+    no_effects()
 def getrecursionlimit() -> int:
     """
     Return the current value of the recursion limit.
@@ -568,24 +568,24 @@ def getrecursionlimit() -> int:
     stack.  This limit prevents infinite recursion from causing an overflow
     of the C stack and crashing Python.
     """
-    ...
+    no_effects()
 def getsizeof(obj: object, default: int = ...) -> int:
     """
     getsizeof(object [, default]) -> int
 
     Return the size of object in bytes.
     """
-    ...
+    no_effects()
 def getswitchinterval() -> float:
     """Return the current thread switch interval; see sys.setswitchinterval()."""
-    ...
+    no_effects()
 def getprofile() -> ProfileFunction | None:
     """
     Return the profiling function set with sys.setprofile.
 
     See the profiler chapter in the library manual.
     """
-    ...
+    no_effects()
 def setprofile(function: ProfileFunction | None, /) -> None:
     """
     setprofile(function)
@@ -600,7 +600,7 @@ def gettrace() -> TraceFunction | None:
 
     See the debugger chapter in the library manual.
     """
-    ...
+    no_effects()
 def settrace(function: TraceFunction | None, /) -> None:
     """
     settrace(function)
@@ -616,27 +616,27 @@ if sys.platform == "win32":
     @type_check_only
     class _WinVersion(_UninstantiableStructseq, tuple[int, int, int, int, str]):
         @property
-        def major(self) -> int: ...
+        def major(self) -> int: no_effects()
         @property
-        def minor(self) -> int: ...
+        def minor(self) -> int: no_effects()
         @property
-        def build(self) -> int: ...
+        def build(self) -> int: no_effects()
         @property
-        def platform(self) -> int: ...
+        def platform(self) -> int: no_effects()
         @property
-        def service_pack(self) -> str: ...
+        def service_pack(self) -> str: no_effects()
         @property
-        def service_pack_minor(self) -> int: ...
+        def service_pack_minor(self) -> int: no_effects()
         @property
-        def service_pack_major(self) -> int: ...
+        def service_pack_major(self) -> int: no_effects()
         @property
-        def suite_mask(self) -> int: ...
+        def suite_mask(self) -> int: no_effects()
         @property
-        def product_type(self) -> int: ...
+        def product_type(self) -> int: no_effects()
         @property
-        def platform_version(self) -> tuple[int, int, int]: ...
+        def platform_version(self) -> tuple[int, int, int]: no_effects()
 
-    def getwindowsversion() -> _WinVersion: ...
+    def getwindowsversion() -> _WinVersion: no_effects()
 
 @overload
 def intern(string: LiteralString, /) -> LiteralString:
@@ -662,13 +662,13 @@ def intern(string: str, /) -> str:
 __interactivehook__: Callable[[], object]
 
 if sys.version_info >= (3, 13):
-    def _is_gil_enabled() -> bool: ...
+    def _is_gil_enabled() -> bool: no_effects()
     def _clear_internal_caches() -> None: ...
-    def _is_interned(string: str, /) -> bool: ...
+    def _is_interned(string: str, /) -> bool: no_effects()
 
 def is_finalizing() -> bool:
     """Return True if Python is exiting."""
-    ...
+    no_effects()
 def breakpointhook(*args: Any, **kwargs: Any) -> Any:
     """
     breakpointhook(*args, **kws)
