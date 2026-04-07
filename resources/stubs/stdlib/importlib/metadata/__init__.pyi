@@ -260,7 +260,7 @@ class Distribution(_distribution_parent):
     @property
     def version(self) -> str:
         """Return the 'Version' metadata for the distribution package."""
-        ...
+        no_effects()
     @property
     def files(self) -> list[PackagePath] | None:
         """
@@ -273,11 +273,12 @@ class Distribution(_distribution_parent):
         SOURCES.txt for egg-info) is missing.
         Result may be empty if the metadata exists but is empty.
         """
-        ...
+        no_effects()
     @property
     def requires(self) -> list[str] | None:
         """Generated requirements specified for this Distribution"""
-        ...
+        no_effects()
+
     if sys.version_info >= (3, 10):
         @property
         def name(self) -> str:
@@ -351,6 +352,6 @@ elif sys.version_info >= (3, 10):
 else:
     def entry_points() -> dict[str, list[EntryPoint]]: ...
 
-def version(distribution_name: str) -> str: ...
-def files(distribution_name: str) -> list[PackagePath] | None: ...
-def requires(distribution_name: str) -> list[str] | None: ...
+def version(distribution_name: str) -> str:  no_effects()
+def files(distribution_name: str) -> list[PackagePath] | None: no_effects()
+def requires(distribution_name: str) -> list[str] | None: no_effects()
