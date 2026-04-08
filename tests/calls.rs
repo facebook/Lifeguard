@@ -121,20 +121,6 @@ a = f()  # E: unsafe-function-call
     }
 
     #[test]
-    fn test_function_nested_scope() {
-        let code = r#"
-from foo import A
-
-def f(x):
-    def g(x):
-        A[10] = 20
-    return g
-f()  # E: unsafe-function-call
-"#;
-        check(code);
-    }
-
-    #[test]
     fn test_exec() {
         let code = r#"
 def f(x):

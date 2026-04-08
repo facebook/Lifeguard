@@ -65,22 +65,17 @@ struct ImplicitImportContext<'a> {
     import_graph: &'a ImportGraph,
 }
 
-// Merge effects from all modules into a single effect table
+// Merge effects from all modules into a single effect table.
 //
-// If a function contains nested scopes, add all effects from within the function body to the
-// function's scope as well. We do this because in general it is very hard to tell when nested
-// scopes escape the function, so we assume that any effect within the body of the function is
-// possible to trigger when the function is called.
+// Class bodies within functions are eager: they execute when the enclosing function runs.
+// We bubble their effects to the nearest enclosing function scope so that calling the
+// function correctly surfaces those effects.
 //
-// The major use case for this is decorators defined like
-//     def dec:
-//       def f:
-//         ...  # code with side effects here
-//
-//       return f
-//
-// where we want to track the decorator as having side effects even though none are present
-// in its direct scope.
+// Nested function effects are NOT bubbled here. For regular function calls, the call
+// graph handles them: if a nested function is called within its parent, the FunctionCall
+// effect triggers check_call_body() to examine the nested function's effects. For
+// decorator calls, check_call_body separately checks nested function effects since
+// decorator application calls the returned function.
 fn merge_all_effects(analysis_map: &AnalysisMap) -> EffectTable {
     // Pre-allocate DashMap with estimated capacity (roughly 2 scopes per module)
     let num_modules = analysis_map.len();
@@ -95,11 +90,14 @@ fn merge_all_effects(analysis_map: &AnalysisMap) -> EffectTable {
             concurrent_table.entry(*scope).or_default().extend(effs);
         }
 
-        // Add nested scope effects to parent functions
+        // Bubble eager scope (class body) effects to their enclosing function.
+        // Nested function effects are NOT bubbled — the call graph handles them.
         for (scope, effects) in v.module_effects.effects.iter() {
             if let Some(parent) = v.definitions.enclosing_functions.get(scope) {
-                let effs = effects.iter().cloned();
-                concurrent_table.entry(*parent).or_default().extend(effs);
+                if !v.definitions.functions.contains(scope) {
+                    let effs = effects.iter().cloned();
+                    concurrent_table.entry(*parent).or_default().extend(effs);
+                }
             }
         }
     });
@@ -130,6 +128,18 @@ fn merge_all_classes(analysis_map: &mut AnalysisMap) -> ClassTable {
     });
 
     ClassTable::new(concurrent_table.into_iter().collect())
+}
+
+fn build_nested_functions_map(analysis_map: &AnalysisMap) -> AHashMap<ModuleName, Vec<ModuleName>> {
+    let mut map: AHashMap<ModuleName, Vec<ModuleName>> = AHashMap::new();
+    for (_, v) in analysis_map.iter() {
+        for (child, parent) in &v.definitions.enclosing_functions {
+            if v.definitions.functions.contains(child) && child != parent {
+                map.entry(*parent).or_default().push(*child);
+            }
+        }
+    }
+    map
 }
 
 fn merge_all_functions_and_methods(
@@ -772,6 +782,9 @@ struct ProjectInfo {
     re_exports: AHashSet<ModuleName>,
     // Mapping of all methods called on imported objects
     methods: AHashMap<ModuleName, ModuleName>,
+    // Reverse mapping: parent function → nested function scopes.
+    // Used by check_call_body to check nested function effects for decorator calls.
+    nested_functions: AHashMap<ModuleName, Vec<ModuleName>>,
 }
 
 impl ProjectInfo {
@@ -793,6 +806,11 @@ impl ProjectInfo {
             get_all_safe_re_exports(&effect_table, &mut re_exports);
             re_exports
         });
+        // Build reverse mapping: parent function → nested function scopes.
+        // Only includes nested functions (not class scopes).
+        let nested_functions = time("    Building nested function map", || {
+            build_nested_functions_map(&analysis_map)
+        });
         Self {
             analysis_map,
             effect_table,
@@ -800,6 +818,7 @@ impl ProjectInfo {
             functions,
             re_exports,
             methods,
+            nested_functions,
         }
     }
 
@@ -1079,17 +1098,15 @@ impl ProjectInfo {
             // This function is not in the function table so we cannot find effects for it.
             return Ok(true);
         };
-        let Some(effs) = self.effect_table.get(&func) else {
-            // This function has no effects and is therefore safe
-            state.mark_safe(&func);
-            return Ok(true);
-        };
-
-        // Call param mutation is orthogonal to function safety; we always need to check for it
-        // even if the function safety is cached.
-        self.check_call_params(call, effs, state);
-
         let is_cross_module_call = *call.caller_module != *call_module;
+
+        let effs = self.effect_table.get(&func);
+
+        if let Some(effs) = effs {
+            // Call param mutation is orthogonal to function safety; we always need to check for it
+            // even if the function safety is cached.
+            self.check_call_params(call, effs, state);
+        }
 
         if let Some(safe) = state.function_safety.get(&func).map(|r| *r) {
             let ret = match safe {
@@ -1101,61 +1118,91 @@ impl ProjectInfo {
         }
 
         let mut ret = true;
-        for eff in effs {
-            if SafetyError::from_effect(eff).is_some() {
-                // We have an effect that translates unconditionally to an error, so mark the
-                // function unsafe
-                state.mark_unsafe(&func);
-                ret = false;
-            } else if eff.kind.is_runnable() {
-                if call.stack.contains(&eff.name) {
-                    // We have a recursive function call; mark it unsafe
+
+        if let Some(effs) = effs {
+            for eff in effs {
+                if SafetyError::from_effect(eff).is_some() {
+                    // We have an effect that translates unconditionally to an error, so mark the
+                    // function unsafe
                     state.mark_unsafe(&func);
                     ret = false;
+                } else if eff.kind.is_runnable() {
+                    if call.stack.contains(&eff.name) {
+                        // We have a recursive function call; mark it unsafe
+                        state.mark_unsafe(&func);
+                        ret = false;
+                    } else {
+                        call.stack.push(eff.name);
+                        let mut child_call = Call {
+                            caller_module: call.caller_module,
+                            effect: eff,
+                            func: eff.name,
+                            stack: std::mem::take(&mut call.stack),
+                        };
+                        if !self.check_call_safety(&mut child_call, state, false)? {
+                            // This function has called an unsafe function; mark it unsafe.
+                            state.mark_unsafe(&func);
+                            // Do not return at the first error because we might miss some transitive
+                            // calls.
+                            ret = false;
+                        }
+                        call.stack = child_call.stack;
+                        call.stack.pop();
+                    }
                 } else {
-                    call.stack.push(eff.name);
+                    match eff.kind {
+                        EffectKind::ImportedVarMutation => {
+                            // We mark this call as unsafe but do not add an error
+                            // as this is not call is not happening at global scope.
+                            // If this callable is called, we will add the error there.
+                            state.mark_unsafe(&func);
+                            ret = false;
+                        }
+                        EffectKind::GlobalVarAssign | EffectKind::GlobalVarMutation => {
+                            // This function is attempting to mutate a global variable, and so is only safe
+                            // if being called from its own module.
+                            // NOTE: unsafe-if-imported should not overwrite unsafe, so we check the
+                            // cached state first.
+                            let is_already_unsafe = state
+                                .function_safety
+                                .get(&func)
+                                .is_some_and(|v| *v == FunctionSafety::Unsafe);
+                            if !is_already_unsafe {
+                                state.mark_unsafe_if_imported(&func);
+                                if is_cross_module_call {
+                                    ret = false;
+                                }
+                            }
+                        }
+                        _ => (),
+                    }
+                }
+            }
+        }
+
+        // For parameterized decorator calls like @register("name"), Python calls
+        // register("name") which returns a function, then calls that returned function
+        // with the decorated class/function. So the nested function's effects execute
+        // at import time. We check each nested function via check_call_body to get
+        // full transitive call graph analysis.
+        if self.is_parameterized_decorator_call(call) {
+            if let Some(children) = self.nested_functions.get(&func) {
+                for child in children {
+                    // Use a FunctionCall effect for the child so we don't re-enter the
+                    // parameterized decorator path (which would cause infinite recursion).
+                    let child_effect =
+                        Effect::new(EffectKind::FunctionCall, *child, call.effect.range);
                     let mut child_call = Call {
                         caller_module: call.caller_module,
-                        effect: eff,
-                        func: eff.name,
+                        effect: &child_effect,
+                        func: *child,
                         stack: std::mem::take(&mut call.stack),
                     };
-                    if !self.check_call_safety(&mut child_call, state, false)? {
-                        // This function has called an unsafe function; mark it unsafe.
+                    if !self.check_call_body(&mut child_call, state)? {
                         state.mark_unsafe(&func);
-                        // Do not return at the first error because we might miss some transitive
-                        // calls.
                         ret = false;
                     }
                     call.stack = child_call.stack;
-                    call.stack.pop();
-                }
-            } else {
-                match eff.kind {
-                    EffectKind::ImportedVarMutation => {
-                        // We mark this call as unsafe but do not add an error
-                        // as this is not call is not happening at global scope.
-                        // If this callable is called, we will add the error there.
-                        state.mark_unsafe(&func);
-                        ret = false;
-                    }
-                    EffectKind::GlobalVarAssign | EffectKind::GlobalVarMutation => {
-                        // This function is attempting to mutate a global variable, and so is only safe
-                        // if being called from its own module.
-                        // NOTE: unsafe-if-imported should not overwrite unsafe, so we check the
-                        // cached state first.
-                        let is_already_unsafe = state
-                            .function_safety
-                            .get(&func)
-                            .is_some_and(|v| *v == FunctionSafety::Unsafe);
-                        if !is_already_unsafe {
-                            state.mark_unsafe_if_imported(&func);
-                            if is_cross_module_call {
-                                ret = false;
-                            }
-                        }
-                    }
-                    _ => (),
                 }
             }
         }
@@ -1165,5 +1212,12 @@ impl ProjectInfo {
             state.mark_safe(&func);
         }
         Ok(ret)
+    }
+
+    fn is_parameterized_decorator_call(&self, call: &Call) -> bool {
+        matches!(
+            call.effect.kind,
+            EffectKind::DecoratorCall | EffectKind::ImportedDecoratorCall
+        ) && matches!(call.effect.data, EffectData::Call(_))
     }
 }

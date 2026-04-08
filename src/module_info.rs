@@ -358,8 +358,10 @@ impl<'a> CombinedDefinitionClassBuilder<'a> {
         self.cursor.enter_class_scope(cls);
         let scope = self.cursor.scope();
 
-        // Record for DefinitionTable
-        if let Some(parent) = self.cursor.enclosing_function_scope() {
+        // Class bodies are eager: they execute when the class statement is reached.
+        // If the class is inside a function, its body executes when that function
+        // runs, so bubble the class's effects to the nearest enclosing function.
+        if let Some(parent) = self.cursor.nearest_function_scope() {
             self.enclosing_functions.insert(scope, parent);
         }
 

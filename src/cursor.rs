@@ -220,6 +220,21 @@ impl Cursor {
             .position(|s| s.kind == ScopeKind::Function)?;
         Some(self.qualified_scopes[i])
     }
+
+    /// Get the name of the nearest (innermost) enclosing function scope,
+    /// excluding the current scope itself.
+    ///
+    /// Used to determine which function a class body's effects should be
+    /// attributed to: class bodies are eager, so their effects execute when
+    /// the immediately enclosing function is called.
+    pub fn nearest_function_scope(&self) -> Option<ModuleName> {
+        for i in (0..self.scopes.len().saturating_sub(1)).rev() {
+            if self.scopes[i].kind == ScopeKind::Function {
+                return Some(self.qualified_scopes[i]);
+            }
+        }
+        None
+    }
 }
 
 #[cfg(test)]

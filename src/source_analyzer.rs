@@ -558,7 +558,7 @@ impl<'a> SourceAnalyzer<'a> {
             if is_mutating {
                 let param_name = ModuleName::from_name(&res.name);
                 let eff = Effect::new(EffectKind::ParamMethodCall, param_name, range);
-                self.add_effect(eff, output);
+                self.add_param_effect(res, eff, output);
             }
         };
 
@@ -763,7 +763,7 @@ impl<'a> SourceAnalyzer<'a> {
         if res.definition.is_param() {
             let name = ModuleName::from_name(&res.name);
             let eff = Effect::new(EffectKind::ParamMethodCall, name, obj.range());
-            self.add_effect(eff, output);
+            self.add_param_effect(&res, eff, output);
         };
     }
 
@@ -834,7 +834,7 @@ impl<'a> SourceAnalyzer<'a> {
                 Expr::Subscript(e) => self.check_subscript(e, output),
                 Expr::Attribute(_) if res.definition.is_param() => {
                     let eff = Effect::new(EffectKind::ParamMethodCall, name, target.range());
-                    self.add_effect(eff, output);
+                    self.add_param_effect(&res, eff, output);
                 }
                 _ => {}
             }
@@ -927,10 +927,23 @@ impl<'a> SourceAnalyzer<'a> {
             // Add decorator to called_functions so its nested imports are tracked
             output.called_functions.insert(fname);
 
-            let eff = if res.is_import() {
-                Effect::new(EffectKind::ImportedDecoratorCall, fname, dec.range)
+            let kind = if res.is_import() {
+                EffectKind::ImportedDecoratorCall
             } else {
-                Effect::new(EffectKind::DecoratorCall, fname, dec.range)
+                EffectKind::DecoratorCall
+            };
+            // For parameterized decorators like @register("name"), the returned
+            // function is called by Python's decorator machinery, so we attach
+            // CallData to signal that nested function effects should be checked.
+            let eff = if args.is_some() {
+                Effect::with_data(
+                    kind,
+                    fname,
+                    dec.range,
+                    EffectData::Call(Box::new(CallData::empty())),
+                )
+            } else {
+                Effect::new(kind, fname, dec.range)
             };
             self.add_effect(eff, output);
         }
@@ -1325,6 +1338,15 @@ impl<'a> SourceAnalyzer<'a> {
 
     fn add_effect(&self, eff: Effect, output: &mut ModuleEffects) {
         output.add_effect(self.cursor.scope(), eff);
+    }
+
+    /// Record a ParamMethodCall effect in the scope where the parameter was defined.
+    /// When a nested function mutates a captured parameter from an enclosing
+    /// function, the effect must be attributed to the enclosing function's scope
+    /// so that check_call_params can match the param name to the function's
+    /// parameter list.
+    fn add_param_effect(&self, res: &ResolvedName, eff: Effect, output: &mut ModuleEffects) {
+        output.add_effect(res.scope, eff);
     }
 }
 
