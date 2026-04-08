@@ -20,7 +20,7 @@ def dumps(
     default: Callable[[Any], Any] | None = None,
     sort_keys: bool = False,
     **kwds: Any,
-) -> str: ...
+) -> str: no_effects()
 def dump(
     obj: Any,
     fp: SupportsWrite[str],
@@ -35,7 +35,7 @@ def dump(
     default: Callable[[Any], Any] | None = None,
     sort_keys: bool = False,
     **kwds: Any,
-) -> None: ...
+) -> None: no_effects()
 def loads(
     s: str | bytes | bytearray,
     *,
@@ -46,7 +46,7 @@ def loads(
     parse_constant: Callable[[str], Any] | None = None,
     object_pairs_hook: Callable[[list[tuple[Any, Any]]], Any] | None = None,
     **kwds: Any,
-) -> Any: ...
+) -> Any: no_effects()
 def load(
     fp: SupportsRead[str | bytes],
     *,
@@ -57,5 +57,5 @@ def load(
     parse_constant: Callable[[str], Any] | None = None,
     object_pairs_hook: Callable[[list[tuple[Any, Any]]], Any] | None = None,
     **kwds: Any,
-) -> Any: ...
-def detect_encoding(b: bytes | bytearray) -> str: ...  # undocumented
+) -> Any: no_effects()
+def detect_encoding(b: bytes | bytearray) -> str: no_effects()  # undocumented

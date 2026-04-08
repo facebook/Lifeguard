@@ -8,22 +8,22 @@ HAS_UTF8: Final[Pattern[bytes]]  # undocumented
 ESCAPE_DCT: Final[dict[str, str]]  # undocumented
 INFINITY: Final[float]  # undocumented
 
-def py_encode_basestring(s: str) -> str: ...  # undocumented
-def py_encode_basestring_ascii(s: str) -> str: ...  # undocumented
+def py_encode_basestring(s: str) -> str: no_effects()  # undocumented
+def py_encode_basestring_ascii(s: str) -> str: no_effects()  # undocumented
 def encode_basestring(s: str, /) -> str:
     """
     encode_basestring(string) -> string
 
     Return a JSON representation of a Python string
     """
-    ...
+    no_effects()
 def encode_basestring_ascii(s: str, /) -> str:
     """
     encode_basestring_ascii(string) -> string
 
     Return an ASCII-only JSON representation of a Python string
     """
-    ...
+    no_effects()
 
 class JSONEncoder:
     item_separator: str
@@ -46,7 +46,7 @@ class JSONEncoder:
         indent: int | str | None = None,
         separators: tuple[str, str] | None = None,
         default: Callable[..., Any] | None = None,
-    ) -> None: ...
-    def default(self, o: Any) -> Any: ...
-    def encode(self, o: Any) -> str: ...
-    def iterencode(self, o: Any, _one_shot: bool = False) -> Iterator[str]: ...
+    ) -> None: no_effects()
+    def default(self, o: Any) -> Any: no_effects()
+    def encode(self, o: Any) -> str: no_effects()
+    def iterencode(self, o: Any, _one_shot: bool = False) -> Iterator[str]: no_effects()

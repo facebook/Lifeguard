@@ -9,7 +9,7 @@ class JSONDecodeError(ValueError):
     pos: int
     lineno: int
     colno: int
-    def __init__(self, msg: str, doc: str, pos: int) -> None: ...
+    def __init__(self, msg: str, doc: str, pos: int) -> None: no_effects()
 
 class JSONDecoder:
     object_hook: Callable[[dict[str, Any]], Any]
@@ -27,6 +27,6 @@ class JSONDecoder:
         parse_constant: Callable[[str], Any] | None = None,
         strict: bool = True,
         object_pairs_hook: Callable[[list[tuple[str, Any]]], Any] | None = None,
-    ) -> None: ...
-    def decode(self, s: str, _w: Callable[..., Any] = ...) -> Any: ...  # _w is undocumented
-    def raw_decode(self, s: str, idx: int = 0) -> tuple[Any, int]: ...
+    ) -> None: no_effects()
+    def decode(self, s: str, _w: Callable[..., Any] = ...) -> Any: no_effects()  # _w is undocumented
+    def raw_decode(self, s: str, idx: int = 0) -> tuple[Any, int]: no_effects()
