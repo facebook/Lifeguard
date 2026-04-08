@@ -264,33 +264,46 @@ class Warning(Exception): ...
 
 class Connection:
     @property
-    def DataError(self) -> type[DataError]: ...
+    def DataError(self) -> type[DataError]:
+        no_effects()
     @property
-    def DatabaseError(self) -> type[DatabaseError]: ...
+    def DatabaseError(self) -> type[DatabaseError]:
+        no_effects()
     @property
-    def Error(self) -> type[Error]: ...
+    def Error(self) -> type[Error]:
+        no_effects()
     @property
-    def IntegrityError(self) -> type[IntegrityError]: ...
+    def IntegrityError(self) -> type[IntegrityError]:
+        no_effects()
     @property
-    def InterfaceError(self) -> type[InterfaceError]: ...
+    def InterfaceError(self) -> type[InterfaceError]:
+        no_effects()
     @property
-    def InternalError(self) -> type[InternalError]: ...
+    def InternalError(self) -> type[InternalError]:
+        no_effects()
     @property
-    def NotSupportedError(self) -> type[NotSupportedError]: ...
+    def NotSupportedError(self) -> type[NotSupportedError]:
+        no_effects()
     @property
-    def OperationalError(self) -> type[OperationalError]: ...
+    def OperationalError(self) -> type[OperationalError]:
+        no_effects()
     @property
-    def ProgrammingError(self) -> type[ProgrammingError]: ...
+    def ProgrammingError(self) -> type[ProgrammingError]:
+        no_effects()
     @property
-    def Warning(self) -> type[Warning]: ...
+    def Warning(self) -> type[Warning]:
+        no_effects()
     @property
-    def in_transaction(self) -> bool: ...
+    def in_transaction(self) -> bool:
+        no_effects()
     isolation_level: str | None  # one of '', 'DEFERRED', 'IMMEDIATE' or 'EXCLUSIVE'
     @property
-    def total_changes(self) -> int: ...
+    def total_changes(self) -> int:
+        no_effects()
     if sys.version_info >= (3, 12):
         @property
-        def autocommit(self) -> int: ...
+        def autocommit(self) -> int:
+            no_effects()
         @autocommit.setter
         def autocommit(self, val: int) -> None: ...
     row_factory: Any
@@ -307,7 +320,8 @@ class Connection:
             cached_statements: int = ...,
             uri: bool = ...,
             autocommit: bool = ...,
-        ) -> None: ...
+        ) -> None:
+            unsafe()
     else:
         def __init__(
             self,
@@ -319,21 +333,27 @@ class Connection:
             factory: type[Connection] | None = ...,
             cached_statements: int = ...,
             uri: bool = ...,
-        ) -> None: ...
+        ) -> None:
+            unsafe()
 
-    def close(self) -> None: ...
+    def close(self) -> None:
+        unsafe()
     if sys.version_info >= (3, 11):
-        def blobopen(self, table: str, column: str, row: int, /, *, readonly: bool = False, name: str = "main") -> Blob: ...
+        def blobopen(self, table: str, column: str, row: int, /, *, readonly: bool = False, name: str = "main") -> Blob:
+            unsafe()
 
-    def commit(self) -> None: ...
-    def create_aggregate(self, name: str, n_arg: int, aggregate_class: Callable[[], _AggregateProtocol]) -> None: ...
+    def commit(self) -> None:
+        unsafe()
+    def create_aggregate(self, name: str, n_arg: int, aggregate_class: Callable[[], _AggregateProtocol]) -> None:
+        unsafe()
     if sys.version_info >= (3, 11):
         # num_params determines how many params will be passed to the aggregate class. We provide an overload
         # for the case where num_params = 1, which is expected to be the common case.
         @overload
         def create_window_function(
             self, name: str, num_params: Literal[1], aggregate_class: Callable[[], _SingleParamWindowAggregateClass] | None, /
-        ) -> None: ...
+        ) -> None:
+            unsafe()
         # And for num_params = -1, which means the aggregate must accept any number of parameters.
         @overload
         def create_window_function(
@@ -344,36 +364,52 @@ class Connection:
             self, name: str, num_params: int, aggregate_class: Callable[[], _WindowAggregateClass] | None, /
         ) -> None: ...
 
-    def create_collation(self, name: str, callback: Callable[[str, str], int | SupportsIndex] | None, /) -> None: ...
+    def create_collation(self, name: str, callback: Callable[[str, str], int | SupportsIndex] | None, /) -> None:
+        unsafe()
     def create_function(
         self, name: str, narg: int, func: Callable[..., _SqliteData] | None, *, deterministic: bool = False
-    ) -> None: ...
+    ) -> None:
+        unsafe()
     @overload
-    def cursor(self, factory: None = None) -> Cursor: ...
+    def cursor(self, factory: None = None) -> Cursor:
+        unsafe()
     @overload
     def cursor(self, factory: Callable[[Connection], _CursorT]) -> _CursorT: ...
-    def execute(self, sql: str, parameters: _Parameters = ..., /) -> Cursor: ...
-    def executemany(self, sql: str, parameters: Iterable[_Parameters], /) -> Cursor: ...
-    def executescript(self, sql_script: str, /) -> Cursor: ...
-    def interrupt(self) -> None: ...
+    def execute(self, sql: str, parameters: _Parameters = ..., /) -> Cursor:
+        unsafe()
+    def executemany(self, sql: str, parameters: Iterable[_Parameters], /) -> Cursor:
+        unsafe()
+    def executescript(self, sql_script: str, /) -> Cursor:
+        unsafe()
+    def interrupt(self) -> None:
+        unsafe()
     if sys.version_info >= (3, 13):
-        def iterdump(self, *, filter: str | None = None) -> Generator[str, None, None]: ...
+        def iterdump(self, *, filter: str | None = None) -> Generator[str, None, None]:
+            unsafe()
     else:
-        def iterdump(self) -> Generator[str, None, None]: ...
+        def iterdump(self) -> Generator[str, None, None]:
+            unsafe()
 
-    def rollback(self) -> None: ...
+    def rollback(self) -> None:
+        unsafe()
     def set_authorizer(
         self, authorizer_callback: Callable[[int, str | None, str | None, str | None, str | None], int] | None
-    ) -> None: ...
-    def set_progress_handler(self, progress_handler: Callable[[], int | None] | None, n: int) -> None: ...
-    def set_trace_callback(self, trace_callback: Callable[[str], object] | None) -> None: ...
+    ) -> None:
+        unsafe()
+    def set_progress_handler(self, progress_handler: Callable[[], int | None] | None, n: int) -> None:
+        unsafe()
+    def set_trace_callback(self, trace_callback: Callable[[str], object] | None) -> None:
+        unsafe()
     # enable_load_extension and load_extension is not available on python distributions compiled
     # without sqlite3 loadable extension support. see footnotes https://docs.python.org/3/library/sqlite3.html#f1
-    def enable_load_extension(self, enable: bool, /) -> None: ...
+    def enable_load_extension(self, enable: bool, /) -> None:
+        unsafe()
     if sys.version_info >= (3, 12):
-        def load_extension(self, name: str, /, *, entrypoint: str | None = None) -> None: ...
+        def load_extension(self, name: str, /, *, entrypoint: str | None = None) -> None:
+            unsafe()
     else:
-        def load_extension(self, name: str, /) -> None: ...
+        def load_extension(self, name: str, /) -> None:
+            unsafe()
 
     def backup(
         self,
@@ -383,70 +419,109 @@ class Connection:
         progress: Callable[[int, int, int], object] | None = None,
         name: str = "main",
         sleep: float = 0.25,
-    ) -> None: ...
+    ) -> None:
+        unsafe()
     if sys.version_info >= (3, 11):
-        def setlimit(self, category: int, limit: int, /) -> int: ...
-        def getlimit(self, category: int, /) -> int: ...
-        def serialize(self, *, name: str = "main") -> bytes: ...
-        def deserialize(self, data: ReadableBuffer, /, *, name: str = "main") -> None: ...
+        def setlimit(self, category: int, limit: int, /) -> int:
+            unsafe()
+        def getlimit(self, category: int, /) -> int:
+            no_effects()
+        def serialize(self, *, name: str = "main") -> bytes:
+            no_effects()
+        def deserialize(self, data: ReadableBuffer, /, *, name: str = "main") -> None:
+            unsafe()
     if sys.version_info >= (3, 12):
-        def getconfig(self, op: int, /) -> bool: ...
-        def setconfig(self, op: int, enable: bool = True, /) -> bool: ...
+        def getconfig(self, op: int, /) -> bool:
+            no_effects()
+        def setconfig(self, op: int, enable: bool = True, /) -> bool:
+            unsafe()
 
-    def __call__(self, sql: str, /) -> _Statement: ...
-    def __enter__(self) -> Self: ...
+    def __call__(self, sql: str, /) -> _Statement:
+        unsafe()
+    def __enter__(self) -> Self:
+        no_effects()
     def __exit__(
         self, type: type[BaseException] | None, value: BaseException | None, traceback: TracebackType | None, /
-    ) -> Literal[False]: ...
+    ) -> Literal[False]:
+        unsafe()
 
 class Cursor:
     arraysize: int
     @property
-    def connection(self) -> Connection: ...
+    def connection(self) -> Connection:
+        no_effects()
     # May be None, but using `| MaybeNone` (`| Any`) instead to avoid slightly annoying false positives.
     @property
-    def description(self) -> tuple[tuple[str, None, None, None, None, None, None], ...] | MaybeNone: ...
+    def description(self) -> tuple[tuple[str, None, None, None, None, None, None], ...] | MaybeNone:
+        no_effects()
     @property
-    def lastrowid(self) -> int | None: ...
+    def lastrowid(self) -> int | None:
+        no_effects()
     row_factory: Callable[[Cursor, Row], object] | None
     @property
-    def rowcount(self) -> int: ...
-    def __init__(self, cursor: Connection, /) -> None: ...
-    def close(self) -> None: ...
-    def execute(self, sql: str, parameters: _Parameters = (), /) -> Self: ...
-    def executemany(self, sql: str, seq_of_parameters: Iterable[_Parameters], /) -> Self: ...
-    def executescript(self, sql_script: str, /) -> Cursor: ...
-    def fetchall(self) -> list[Any]: ...
-    def fetchmany(self, size: int | None = 1) -> list[Any]: ...
+    def rowcount(self) -> int:
+        no_effects()
+    def __init__(self, cursor: Connection, /) -> None:
+        no_effects()
+    def close(self) -> None:
+        unsafe()
+    def execute(self, sql: str, parameters: _Parameters = (), /) -> Self:
+        unsafe()
+    def executemany(self, sql: str, seq_of_parameters: Iterable[_Parameters], /) -> Self:
+        unsafe()
+    def executescript(self, sql_script: str, /) -> Cursor:
+        unsafe()
+    def fetchall(self) -> list[Any]:
+        unsafe()
+    def fetchmany(self, size: int | None = 1) -> list[Any]:
+        unsafe()
     # Returns either a row (as created by the row_factory) or None, but
     # putting None in the return annotation causes annoying false positives.
-    def fetchone(self) -> Any: ...
-    def setinputsizes(self, sizes: Unused, /) -> None: ...  # does nothing
-    def setoutputsize(self, size: Unused, column: Unused = None, /) -> None: ...  # does nothing
-    def __iter__(self) -> Self: ...
-    def __next__(self) -> Any: ...
+    def fetchone(self) -> Any:
+        unsafe()
+    def setinputsizes(self, sizes: Unused, /) -> None:  # does nothing
+        no_effects()
+    def setoutputsize(self, size: Unused, column: Unused = None, /) -> None:  # does nothing
+        no_effects()
+    def __iter__(self) -> Self:
+        unsafe()
+    def __next__(self) -> Any:
+        unsafe()
 
 @final
 class PrepareProtocol:
-    def __init__(self, *args: object, **kwargs: object) -> None: ...
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        no_effects()
 
 class Row(Sequence[Any]):
-    def __new__(cls, cursor: Cursor, data: tuple[Any, ...], /) -> Self: ...
-    def keys(self) -> list[str]: ...
+    def __new__(cls, cursor: Cursor, data: tuple[Any, ...], /) -> Self:
+        no_effects()
+    def keys(self) -> list[str]:
+        no_effects()
     @overload
-    def __getitem__(self, key: int | str, /) -> Any: ...
+    def __getitem__(self, key: int | str, /) -> Any:
+        no_effects()
     @overload
     def __getitem__(self, key: slice, /) -> tuple[Any, ...]: ...
-    def __hash__(self) -> int: ...
-    def __iter__(self) -> Iterator[Any]: ...
-    def __len__(self) -> int: ...
+    def __hash__(self) -> int:
+        no_effects()
+    def __iter__(self) -> Iterator[Any]:
+        no_effects()
+    def __len__(self) -> int:
+        no_effects()
     # These return NotImplemented for anything that is not a Row.
-    def __eq__(self, value: object, /) -> bool: ...
-    def __ge__(self, value: object, /) -> bool: ...
-    def __gt__(self, value: object, /) -> bool: ...
-    def __le__(self, value: object, /) -> bool: ...
-    def __lt__(self, value: object, /) -> bool: ...
-    def __ne__(self, value: object, /) -> bool: ...
+    def __eq__(self, value: object, /) -> bool:
+        no_effects()
+    def __ge__(self, value: object, /) -> bool:
+        no_effects()
+    def __gt__(self, value: object, /) -> bool:
+        no_effects()
+    def __le__(self, value: object, /) -> bool:
+        no_effects()
+    def __lt__(self, value: object, /) -> bool:
+        no_effects()
+    def __ne__(self, value: object, /) -> bool:
+        no_effects()
 
 # This class is not exposed. It calls itself sqlite3.Statement.
 @final
@@ -456,14 +531,24 @@ class _Statement: ...
 if sys.version_info >= (3, 11):
     @final
     class Blob:
-        def close(self) -> None: ...
-        def read(self, length: int = -1, /) -> bytes: ...
-        def write(self, data: ReadableBuffer, /) -> None: ...
-        def tell(self) -> int: ...
+        def close(self) -> None:
+            unsafe()
+        def read(self, length: int = -1, /) -> bytes:
+            unsafe()
+        def write(self, data: ReadableBuffer, /) -> None:
+            unsafe()
+        def tell(self) -> int:
+            no_effects()
         # whence must be one of os.SEEK_SET, os.SEEK_CUR, os.SEEK_END
-        def seek(self, offset: int, origin: int = 0, /) -> None: ...
-        def __len__(self) -> int: ...
-        def __enter__(self) -> Self: ...
-        def __exit__(self, type: object, val: object, tb: object, /) -> Literal[False]: ...
-        def __getitem__(self, key: SupportsIndex | slice, /) -> int: ...
-        def __setitem__(self, key: SupportsIndex | slice, value: int, /) -> None: ...
+        def seek(self, offset: int, origin: int = 0, /) -> None:
+            unsafe()
+        def __len__(self) -> int:
+            no_effects()
+        def __enter__(self) -> Self:
+            no_effects()
+        def __exit__(self, type: object, val: object, tb: object, /) -> Literal[False]:
+            unsafe()
+        def __getitem__(self, key: SupportsIndex | slice, /) -> int:
+            unsafe()
+        def __setitem__(self, key: SupportsIndex | slice, value: int, /) -> None:
+            unsafe()

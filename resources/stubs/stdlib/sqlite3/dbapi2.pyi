@@ -215,7 +215,8 @@ if sys.version_info < (3, 14):
 if sys.version_info < (3, 12):
     if sys.version_info >= (3, 10):
         # deprecation wrapper that has a different name for the argument...
-        def enable_shared_cache(enable: int) -> None: ...
+        def enable_shared_cache(enable: int) -> None:
+            unsafe()
     else:
         from _sqlite3 import enable_shared_cache as enable_shared_cache
 
@@ -229,9 +230,12 @@ Date = date
 Time = time
 Timestamp = datetime
 
-def DateFromTicks(ticks: float) -> Date: ...
-def TimeFromTicks(ticks: float) -> Time: ...
-def TimestampFromTicks(ticks: float) -> Timestamp: ...
+def DateFromTicks(ticks: float) -> Date:
+    no_effects()
+def TimeFromTicks(ticks: float) -> Time:
+    no_effects()
+def TimestampFromTicks(ticks: float) -> Timestamp:
+    no_effects()
 
 if sys.version_info < (3, 14):
     # Deprecated in 3.12, removed in 3.14.
