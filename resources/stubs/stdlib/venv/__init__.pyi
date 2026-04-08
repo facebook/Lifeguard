@@ -28,7 +28,7 @@ class EnvBuilder:
             upgrade_deps: bool = False,
             *,
             scm_ignore_files: Iterable[str] = ...,
-        ) -> None: ...
+        ) -> None: no_effects()
     else:
         def __init__(
             self,
@@ -39,24 +39,24 @@ class EnvBuilder:
             with_pip: bool = False,
             prompt: str | None = None,
             upgrade_deps: bool = False,
-        ) -> None: ...
+        ) -> None: no_effects()
 
-    def create(self, env_dir: StrOrBytesPath) -> None: ...
-    def clear_directory(self, path: StrOrBytesPath) -> None: ...  # undocumented
-    def ensure_directories(self, env_dir: StrOrBytesPath) -> SimpleNamespace: ...
-    def create_configuration(self, context: SimpleNamespace) -> None: ...
+    def create(self, env_dir: StrOrBytesPath) -> None: unsafe()
+    def clear_directory(self, path: StrOrBytesPath) -> None: unsafe()  # undocumented
+    def ensure_directories(self, env_dir: StrOrBytesPath) -> SimpleNamespace: unsafe()
+    def create_configuration(self, context: SimpleNamespace) -> None: unsafe()
     def symlink_or_copy(
         self, src: StrOrBytesPath, dst: StrOrBytesPath, relative_symlinks_ok: bool = False
-    ) -> None: ...  # undocumented
-    def setup_python(self, context: SimpleNamespace) -> None: ...
-    def _setup_pip(self, context: SimpleNamespace) -> None: ...  # undocumented
-    def setup_scripts(self, context: SimpleNamespace) -> None: ...
-    def post_setup(self, context: SimpleNamespace) -> None: ...
-    def replace_variables(self, text: str, context: SimpleNamespace) -> str: ...  # undocumented
-    def install_scripts(self, context: SimpleNamespace, path: str) -> None: ...
-    def upgrade_dependencies(self, context: SimpleNamespace) -> None: ...
+    ) -> None: unsafe()  # undocumented
+    def setup_python(self, context: SimpleNamespace) -> None: unsafe()
+    def _setup_pip(self, context: SimpleNamespace) -> None: unsafe()  # undocumented
+    def setup_scripts(self, context: SimpleNamespace) -> None: unsafe()
+    def post_setup(self, context: SimpleNamespace) -> None: no_effects()
+    def replace_variables(self, text: str, context: SimpleNamespace) -> str: no_effects()  # undocumented
+    def install_scripts(self, context: SimpleNamespace, path: str) -> None: unsafe()
+    def upgrade_dependencies(self, context: SimpleNamespace) -> None: unsafe()
     if sys.version_info >= (3, 13):
-        def create_git_ignore_file(self, context: SimpleNamespace) -> None: ...
+        def create_git_ignore_file(self, context: SimpleNamespace) -> None: unsafe()
 
 if sys.version_info >= (3, 13):
     def create(
@@ -69,7 +69,7 @@ if sys.version_info >= (3, 13):
         upgrade_deps: bool = False,
         *,
         scm_ignore_files: Iterable[str] = ...,
-    ) -> None: ...
+    ) -> None: unsafe()
 
 else:
     def create(
@@ -80,6 +80,6 @@ else:
         with_pip: bool = False,
         prompt: str | None = None,
         upgrade_deps: bool = False,
-    ) -> None: ...
+    ) -> None: unsafe()
 
-def main(args: Sequence[str] | None = None) -> None: ...
+def main(args: Sequence[str] | None = None) -> None: unsafe()
