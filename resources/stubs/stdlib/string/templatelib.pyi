@@ -9,12 +9,12 @@ class Template:  # TODO: consider making `Template` generic on `TypeVarTuple`
     strings: tuple[str, ...]
     interpolations: tuple[Interpolation, ...]
 
-    def __new__(cls, *args: str | Interpolation) -> Template: ...
-    def __iter__(self) -> Iterator[str | Interpolation]: ...
-    def __add__(self, other: Template | str) -> Template: ...
-    def __class_getitem__(cls, item: Any, /) -> GenericAlias: ...
+    def __new__(cls, *args: str | Interpolation) -> Template: no_effects()
+    def __iter__(self) -> Iterator[str | Interpolation]: no_effects()
+    def __add__(self, other: Template | str) -> Template: no_effects()
+    def __class_getitem__(cls, item: Any, /) -> GenericAlias: no_effects()
     @property
-    def values(self) -> tuple[Any, ...]: ...  # Tuple of interpolation values, which can have any type
+    def values(self) -> tuple[Any, ...]: no_effects()  # Tuple of interpolation values, which can have any type
 
 @final
 class Interpolation:
@@ -27,5 +27,5 @@ class Interpolation:
 
     def __new__(
         cls, value: Any, expression: str = "", conversion: Literal["a", "r", "s"] | None = None, format_spec: str = ""
-    ) -> Interpolation: ...
-    def __class_getitem__(cls, item: Any, /) -> GenericAlias: ...
+    ) -> Interpolation: no_effects()
+    def __class_getitem__(cls, item: Any, /) -> GenericAlias: no_effects()
