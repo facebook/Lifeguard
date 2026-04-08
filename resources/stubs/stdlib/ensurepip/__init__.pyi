@@ -1,6 +1,6 @@
 __all__ = ["version", "bootstrap"]
 
-def version() -> str: ...
+def version() -> str: no_effects()
 def bootstrap(
     *,
     root: str | None = None,
@@ -9,4 +9,4 @@ def bootstrap(
     altinstall: bool = False,
     default_pip: bool = False,
     verbosity: int = 0,
-) -> None: ...
+) -> None: unsafe()
