@@ -21,7 +21,7 @@ COLS: int
 COLORS: int
 COLOR_PAIRS: int
 
-def wrapper(func: Callable[Concatenate[window, _P], _T], /, *arg: _P.args, **kwds: _P.kwargs) -> _T: ...
+def wrapper(func: Callable[Concatenate[window, _P], _T], /, *arg: _P.args, **kwds: _P.kwargs) -> _T: unsafe()
 
 # At runtime this class is unexposed and calls itself curses.ncurses_version.
 # That name would conflict with the actual curses.ncurses_version, which is
@@ -33,8 +33,8 @@ class _ncurses_version(structseq[int], tuple[int, int, int]):
         __match_args__: Final = ("major", "minor", "patch")
 
     @property
-    def major(self) -> int: ...
+    def major(self) -> int: no_effects()
     @property
-    def minor(self) -> int: ...
+    def minor(self) -> int: no_effects()
     @property
-    def patch(self) -> int: ...
+    def patch(self) -> int: no_effects()
