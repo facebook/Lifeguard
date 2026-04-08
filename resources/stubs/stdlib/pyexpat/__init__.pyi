@@ -19,18 +19,18 @@ _Model: TypeAlias = tuple[int, int, str | None, tuple[Any, ...]]
 
 @final
 class XMLParserType:
-    def Parse(self, data: str | ReadableBuffer, isfinal: bool = False, /) -> int: ...
-    def ParseFile(self, file: SupportsRead[bytes], /) -> int: ...
-    def SetBase(self, base: str, /) -> None: ...
-    def GetBase(self) -> str | None: ...
-    def GetInputContext(self) -> bytes | None: ...
-    def ExternalEntityParserCreate(self, context: str | None, encoding: str = ..., /) -> XMLParserType: ...
-    def SetParamEntityParsing(self, flag: int, /) -> int: ...
-    def UseForeignDTD(self, flag: bool = True, /) -> None: ...
-    def GetReparseDeferralEnabled(self) -> bool: ...
-    def SetReparseDeferralEnabled(self, enabled: bool, /) -> None: ...
+    def Parse(self, data: str | ReadableBuffer, isfinal: bool = False, /) -> int: mutation()
+    def ParseFile(self, file: SupportsRead[bytes], /) -> int: unsafe()
+    def SetBase(self, base: str, /) -> None: mutation()
+    def GetBase(self) -> str | None: no_effects()
+    def GetInputContext(self) -> bytes | None: no_effects()
+    def ExternalEntityParserCreate(self, context: str | None, encoding: str = ..., /) -> XMLParserType: no_effects()
+    def SetParamEntityParsing(self, flag: int, /) -> int: mutation()
+    def UseForeignDTD(self, flag: bool = True, /) -> None: mutation()
+    def GetReparseDeferralEnabled(self) -> bool: no_effects()
+    def SetReparseDeferralEnabled(self, enabled: bool, /) -> None: mutation()
     @property
-    def intern(self) -> dict[str, str]: ...
+    def intern(self) -> dict[str, str]: no_effects()
     buffer_size: int
     buffer_text: bool
     buffer_used: int
@@ -72,11 +72,11 @@ class XMLParserType:
     ExternalEntityRefHandler: Callable[[str, str | None, str | None, str | None], int] | None
     SkippedEntityHandler: Callable[[str, bool], Any] | None
 
-def ErrorString(code: int, /) -> str: ...
+def ErrorString(code: int, /) -> str: no_effects()
 
 # intern is undocumented
 def ParserCreate(
     encoding: str | None = None, namespace_separator: str | None = None, intern: dict[str, Any] | None = None
-) -> XMLParserType: ...
+) -> XMLParserType: no_effects()
 
 expat_CAPI: CapsuleType
