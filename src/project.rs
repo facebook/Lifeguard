@@ -174,7 +174,10 @@ fn merge_all_functions_and_methods(
     )
 }
 
-fn get_all_safe_re_exports(effect_table: &EffectTable, re_exports: &mut AHashSet<ModuleName>) {
+fn get_all_safe_re_exports(
+    effect_table: &EffectTable,
+    re_exports: &mut AHashMap<ModuleName, ModuleName>,
+) {
     let unsafe_re_exports = effect_table
         .values()
         .flatten()
@@ -790,7 +793,7 @@ struct ProjectInfo {
     classes: ClassTable,
     // Mappings of functions to the containing module
     functions: AHashMap<ModuleName, ModuleName>,
-    re_exports: AHashSet<ModuleName>,
+    re_exports: AHashMap<ModuleName, ModuleName>,
     // Mapping of all methods called on imported objects
     methods: AHashMap<ModuleName, ModuleName>,
     // Reverse mapping: parent function → nested function scopes.
@@ -810,9 +813,9 @@ impl ProjectInfo {
             merge_all_classes(&mut analysis_map)
         });
         let re_exports = time("    Getting re-exports", || {
-            let mut re_exports = exports
+            let mut re_exports: AHashMap<ModuleName, ModuleName> = exports
                 .get_re_exports()
-                .map(|(name, _)| name.as_module_name())
+                .map(|(name, (original, _))| (name.as_module_name(), original.as_module_name()))
                 .collect();
             get_all_safe_re_exports(&effect_table, &mut re_exports);
             re_exports
@@ -833,6 +836,22 @@ impl ProjectInfo {
         }
     }
 
+    /// Resolve a name through the re-exports table, following chains
+    /// (e.g. baz.Foo → bar.Foo → foo.Foo). Returns the original definition
+    /// name, or the name unchanged if it is not a re-export. Bails out of
+    /// cycles (e.g. `from b import X` / `from a import X`).
+    fn resolve_re_export(&self, name: &ModuleName) -> ModuleName {
+        let mut current = *name;
+        let mut seen = AHashSet::new();
+        while let Some(&original) = self.re_exports.get(&current) {
+            if !seen.insert(current) {
+                break;
+            }
+            current = original;
+        }
+        current
+    }
+
     pub fn contains_callable(&self, name: &ModuleName) -> bool {
         if self.functions.contains_key(name) || self.classes.contains(name) {
             return true;
@@ -841,7 +860,7 @@ impl ProjectInfo {
         if self.functions.contains_key(&call_name) || self.classes.contains(&call_name) {
             true
         } else {
-            self.re_exports.contains(&call_name)
+            self.re_exports.contains_key(&call_name)
         }
     }
 
@@ -943,6 +962,7 @@ impl ProjectInfo {
             } else if eff.kind == EffectKind::ImportedTypeAttr {
                 // Check if this is a property access
                 if let Some((typ, attr)) = eff.name.split_attr() {
+                    let typ = self.resolve_re_export(&typ);
                     if let Some(field) = self
                         .classes
                         .lookup(&typ)
@@ -1024,11 +1044,15 @@ impl ProjectInfo {
     }
 
     fn check_call(&self, call: &mut Call, state: &GlobalAnalysisState) -> Result<bool> {
-        if self.classes.contains(&call.func) {
+        // Resolve re-exports to their original name so that class/function
+        // lookups find the actual definition (e.g. bar.Foo → foo.Foo).
+        let resolved_func = self.resolve_re_export(&call.func);
+        let mut resolved_call = call.clone_with_name(resolved_func);
+        if self.classes.contains(&resolved_call.func) {
             // This is a class constructor
-            self.check_constructor_call(call, state)
+            self.check_constructor_call(&resolved_call, state)
         } else {
-            self.check_call_body(call, state)
+            self.check_call_body(&mut resolved_call, state)
         }
     }
 

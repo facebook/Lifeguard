@@ -222,8 +222,7 @@ import importlib
 from importlib import import_module
 
 a = importlib.import_module("sys")
-# This depends on a chain of import aliases which we don't handle well
-b = importlib.__import__("math") # TODO: unsafe-function-call
+b = importlib.__import__("math") # E: unsafe-function-call
 
 import_module("bar")
 "#;
@@ -477,5 +476,97 @@ import_module("..bar", package="foo.baz")
 foo.bar.f()
 "#;
         check_all(vec![("foo.bar", foo_bar), ("__main__", __main__)]);
+    }
+
+    #[test]
+    fn test_reexported_unsafe_class() {
+        let foo = r#"
+class Foo:
+    def __init__(self) -> None:
+        raise Exception
+"#;
+        let bar = r#"
+from foo import Foo
+"#;
+        let baz = r#"
+from bar import Foo
+x = Foo()  # E: unsafe-function-call
+"#;
+        check_all(vec![("foo", foo), ("bar", bar), ("baz", baz)]);
+    }
+
+    #[test]
+    fn test_reexported_safe_class() {
+        let foo = r#"
+class Foo:
+    def __init__(self) -> None:
+        pass
+"#;
+        let bar = r#"
+from foo import Foo
+"#;
+        let baz = r#"
+from bar import Foo
+x = Foo()
+"#;
+        check_all(vec![("foo", foo), ("bar", bar), ("baz", baz)]);
+    }
+
+    #[test]
+    fn test_reexported_chain_unsafe_class() {
+        let foo = r#"
+class Foo:
+    def __init__(self) -> None:
+        raise Exception
+"#;
+        let bar = r#"
+from foo import Foo
+"#;
+        let baz = r#"
+from bar import Foo
+"#;
+        let consumer = r#"
+from baz import Foo
+x = Foo()  # E: unsafe-function-call
+"#;
+        check_all(vec![
+            ("foo", foo),
+            ("bar", bar),
+            ("baz", baz),
+            ("consumer", consumer),
+        ]);
+    }
+
+    #[test]
+    fn test_reexport_cycle_terminates() {
+        // `a.X` and `b.X` re-export each other with no real definition.
+        // resolve_re_export must break out of the cycle rather than spin.
+        let a = r#"
+from b import X
+"#;
+        let b = r#"
+from a import X
+"#;
+        let main = r#"
+from a import X
+x = X()
+"#;
+        check_all(vec![("a", a), ("b", b), ("main", main)]);
+    }
+
+    #[test]
+    fn test_reexported_unsafe_function() {
+        let foo = r#"
+def f():
+    raise Exception
+"#;
+        let bar = r#"
+from foo import f
+"#;
+        let baz = r#"
+from bar import f
+f()  # E: unsafe-function-call
+"#;
+        check_all(vec![("foo", foo), ("bar", bar), ("baz", baz)]);
     }
 }
