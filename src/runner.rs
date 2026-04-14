@@ -29,12 +29,18 @@ pub struct Options {
     pub sorted_output: bool,
 }
 
-/// Process a source map and run the full analysis pipeline.
-pub fn process_source_map(
-    src_map: &SourceMap,
-    root_dir: &std::path::Path,
-    options: &Options,
-) -> Result<LifeGuardAnalysis> {
+/// Intermediate results from the analysis pipeline, before final output generation.
+pub struct PipelineResult {
+    pub sources: Sources,
+    pub safety_map: project::SafetyMap,
+    pub import_graph: ImportGraph,
+    pub exports: crate::exports::Exports,
+    pub side_effect_imports: project::SideEffectMap,
+}
+
+/// Run the analysis pipeline up to (but not including) final output generation.
+/// Returns intermediate results that can be consumed by different output formats.
+pub fn run_pipeline(src_map: &SourceMap, root_dir: &std::path::Path) -> Result<PipelineResult> {
     let sys_info = crate::pyrefly::sys_info::SysInfo::lg_default();
 
     let sources = time("Building sources", || {
@@ -46,16 +52,14 @@ pub fn process_source_map(
     });
     report_memory("After creating import graph and exports");
 
-    let (analysis_output, side_effect_imports, parse_errors) = time("Analyzing AST", || {
+    let (safety_map, side_effect_imports, parse_errors) = time("Analyzing AST", || {
         project::run_analysis(&sources, &exports, &import_graph, &sys_info)
     });
     report_memory("After analyzing AST");
 
     // Surface parse errors in the safety map so they appear in the final output.
-    // This activates the existing SafetyResult::AnalysisError handling in
-    // LifeGuardAnalysis::new (adds to failing_modules) and write_verbose.
     for entry in parse_errors.iter() {
-        analysis_output.insert(
+        safety_map.insert(
             *entry.key(),
             module_safety::SafetyResult::AnalysisError(anyhow::anyhow!(
                 "Parse error: {}",
@@ -64,15 +68,39 @@ pub fn process_source_map(
         );
     }
 
+    Ok(PipelineResult {
+        sources,
+        safety_map,
+        import_graph,
+        exports,
+        side_effect_imports,
+    })
+}
+
+/// Process a source map and run the full analysis pipeline.
+pub fn process_source_map(
+    src_map: &SourceMap,
+    root_dir: &std::path::Path,
+    options: &Options,
+) -> Result<LifeGuardAnalysis> {
+    let result = run_pipeline(src_map, root_dir)?;
+    let PipelineResult {
+        sources,
+        safety_map,
+        import_graph,
+        exports,
+        side_effect_imports,
+    } = result;
+
     if let Some(out) = &options.verbose_output_path {
         println!("Writing verbose output to {}", out.display());
         let verbose_file = std::fs::File::create(out)?;
         let mut writer = BufWriter::new(verbose_file);
-        write_verbose(&mut writer, &analysis_output, &sources)?;
+        write_verbose(&mut writer, &safety_map, &sources)?;
     }
 
     let lifeguard_output = time("Creating analysis object", || {
-        let mut analysis = LifeGuardAnalysis::new(analysis_output, import_graph, &exports, options);
+        let mut analysis = LifeGuardAnalysis::new(safety_map, import_graph, &exports, options);
         analysis.propagate_side_effect_imports(&side_effect_imports);
         analysis
     });
