@@ -9,6 +9,7 @@ use anyhow::Result;
 use clap::Parser;
 use clap::Subcommand;
 use lifeguard::commands::analyze::AnalyzeArgs;
+use lifeguard::commands::analyze_library::AnalyzeLibraryArgs;
 use lifeguard::commands::gen_source_db::GenSourceDbArgs;
 use lifeguard::commands::run_tree::RunTreeArgs;
 use lifeguard::commands::show_effects::ShowEffectsArgs;
@@ -27,6 +28,8 @@ struct Cli {
 enum Commands {
     /// [Default Behavior] Analyze a source DB to determine which modules can be safely lazily imported
     Analyze(AnalyzeArgs),
+    /// Analyze a Python library and output a cache file for map-reduce analysis
+    AnalyzeLibrary(AnalyzeLibraryArgs),
     /// Analyze all Python files in a directory tree
     RunTree(RunTreeArgs),
     /// Dump effects for a single Python file (.py or .pyi)
@@ -42,6 +45,7 @@ fn main() -> Result<()> {
 
     match args.command {
         Some(Commands::Analyze(args)) => lifeguard::commands::analyze::run(args),
+        Some(Commands::AnalyzeLibrary(args)) => lifeguard::commands::analyze_library::run(args),
         Some(Commands::RunTree(args)) => lifeguard::commands::run_tree::run(args),
         Some(Commands::ShowEffects(args)) => lifeguard::commands::show_effects::run(args),
         Some(Commands::GenSourceDb(args)) => lifeguard::commands::gen_source_db::run(args),

@@ -9,6 +9,7 @@
 pub mod analyzer;
 pub mod bindings;
 pub mod builtins;
+pub mod cache;
 pub mod class;
 pub mod commands;
 pub mod cursor;
