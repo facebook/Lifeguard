@@ -12,6 +12,7 @@ use std::str::FromStr;
 use anyhow::Result;
 use anyhow::anyhow;
 use ruff_text_size::TextRange;
+use serde::Deserialize;
 use serde::Serialize;
 use serde::Serializer;
 use starlark_map::Equivalent;
@@ -40,7 +41,18 @@ impl From<StrRef<'_>> for String {
     }
 }
 
-#[derive(Debug, Eq, PartialEq, PartialOrd, Ord, Hash, Copy, Clone, Serialize)]
+#[derive(
+    Debug,
+    Eq,
+    PartialEq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Copy,
+    Clone,
+    Serialize,
+    Deserialize
+)]
 #[serde(rename_all = "kebab-case")]
 pub enum ErrorKind {
     /// Decorator is being called eagerly and it's not known to be safe.

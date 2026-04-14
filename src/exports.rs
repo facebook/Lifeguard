@@ -19,6 +19,8 @@ use ruff_python_ast::Expr;
 use ruff_python_ast::Stmt;
 use ruff_python_ast::name::Name;
 use ruff_text_size::TextRange;
+use serde::Deserialize;
+use serde::Serialize;
 
 use crate::imports::ImportGraph;
 use crate::module_parser::ParsedModule;
@@ -30,7 +32,7 @@ use crate::pyrefly::sys_info::SysInfo;
 use crate::traits::ExprExt;
 use crate::traits::ModuleNameExt;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum ExportType {
     Class,
     Function,
@@ -230,6 +232,16 @@ impl Exports {
 
     pub fn resolve_imported_name(&self, name: &Attribute) -> Option<Attribute> {
         self.re_exports.get(name).map(|(imp, _)| imp).cloned()
+    }
+
+    /// Iterate over all `__all__` entries across modules.
+    pub fn iter_all(&self) -> impl Iterator<Item = (&ModuleName, &Vec<Name>)> {
+        self.all.iter()
+    }
+
+    /// Iterate over all return type mappings (function -> return type class).
+    pub fn iter_return_types(&self) -> impl Iterator<Item = (&ModuleName, &ModuleName)> {
+        self.return_types.iter()
     }
 
     pub fn get_definition_source_name(&self, name: &Attribute) -> Option<Attribute> {
