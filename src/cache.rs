@@ -25,7 +25,7 @@ use crate::project::SafetyMap;
 use crate::project::SideEffectMap;
 use crate::traits::ModuleNameExt;
 
-const CACHE_VERSION: u32 = 1;
+const CACHE_VERSION: u32 = 2;
 
 /// Cached analysis results for a single Python library.
 /// Contains all information needed to merge with other libraries
@@ -140,19 +140,17 @@ impl LibraryCache {
         }
     }
 
-    /// Write the cache to a JSON file.
+    /// Write the cache to a binary file using postcard.
     pub fn write_to_file(&self, path: &Path) -> anyhow::Result<()> {
-        let file = std::fs::File::create(path)?;
-        let writer = std::io::BufWriter::new(file);
-        serde_json::to_writer(writer, self)?;
+        let bytes = postcard::to_allocvec(self)?;
+        std::fs::write(path, bytes)?;
         Ok(())
     }
 
-    /// Read a cache from a JSON file.
+    /// Read a cache from a binary file using postcard.
     pub fn read_from_file(path: &Path) -> anyhow::Result<Self> {
-        // Read to string first so serde can borrow &str for ModuleName deserialization.
-        let content = std::fs::read_to_string(path)?;
-        let cache: Self = serde_json::from_str(&content)?;
+        let bytes = std::fs::read(path)?;
+        let cache: Self = postcard::from_bytes(&bytes)?;
         if cache.version != CACHE_VERSION {
             anyhow::bail!(
                 "Cache version mismatch: expected {}, got {}",
@@ -490,8 +488,8 @@ mod tests {
         let side_effect_imports: SideEffectMap = AHashMap::new();
 
         let cache = LibraryCache::build(&safety_map, &import_graph, &exports, &side_effect_imports);
-        let json = serde_json::to_string(&cache).unwrap();
-        let loaded: LibraryCache = serde_json::from_str(&json).unwrap();
+        let bytes = postcard::to_allocvec(&cache).unwrap();
+        let loaded: LibraryCache = postcard::from_bytes(&bytes).unwrap();
 
         assert_eq!(loaded.version, CACHE_VERSION);
         assert_eq!(loaded.modules.len(), 2);
@@ -524,8 +522,8 @@ mod tests {
         let side_effect_imports: SideEffectMap = AHashMap::new();
 
         let cache = LibraryCache::build(&safety_map, &import_graph, &exports, &side_effect_imports);
-        let json = serde_json::to_string(&cache).unwrap();
-        let loaded: LibraryCache = serde_json::from_str(&json).unwrap();
+        let bytes = postcard::to_allocvec(&cache).unwrap();
+        let loaded: LibraryCache = postcard::from_bytes(&bytes).unwrap();
 
         let broken = loaded
             .modules
@@ -548,8 +546,8 @@ mod tests {
 
         let cache = LibraryCache::build(&safety_map, &import_graph, &exports, &side_effect_imports);
 
-        let bytes = serde_json::to_vec(&cache).unwrap();
-        let loaded: LibraryCache = serde_json::from_slice(&bytes).unwrap();
+        let bytes = postcard::to_allocvec(&cache).unwrap();
+        let loaded: LibraryCache = postcard::from_bytes(&bytes).unwrap();
 
         assert_eq!(loaded.version, CACHE_VERSION);
         assert_eq!(loaded.modules.len(), 1);
@@ -590,9 +588,9 @@ mod tests {
         let foo = cache.modules.iter().find(|m| m.name == mn("foo")).unwrap();
         assert!(foo.imports.contains(&mn("bar")));
 
-        // Round-trip through JSON
-        let json = serde_json::to_string(&cache).unwrap();
-        let loaded: LibraryCache = serde_json::from_str(&json).unwrap();
+        // Round-trip through postcard
+        let bytes = postcard::to_allocvec(&cache).unwrap();
+        let loaded: LibraryCache = postcard::from_bytes(&bytes).unwrap();
         assert_eq!(loaded.modules.len(), 2);
     }
 
@@ -612,8 +610,8 @@ mod tests {
         let side_effect_imports: SideEffectMap = AHashMap::new();
 
         let cache = LibraryCache::build(&safety_map, &import_graph, &exports, &side_effect_imports);
-        let json = serde_json::to_string(&cache).unwrap();
-        let loaded: LibraryCache = serde_json::from_str(&json).unwrap();
+        let bytes = postcard::to_allocvec(&cache).unwrap();
+        let loaded: LibraryCache = postcard::from_bytes(&bytes).unwrap();
 
         let exec_mod = loaded
             .modules
@@ -645,8 +643,8 @@ mod tests {
         side_effect_imports.insert(mn("a"), se);
 
         let cache = LibraryCache::build(&safety_map, &import_graph, &exports, &side_effect_imports);
-        let json = serde_json::to_string(&cache).unwrap();
-        let loaded: LibraryCache = serde_json::from_str(&json).unwrap();
+        let bytes = postcard::to_allocvec(&cache).unwrap();
+        let loaded: LibraryCache = postcard::from_bytes(&bytes).unwrap();
 
         let a = loaded.modules.iter().find(|m| m.name == mn("a")).unwrap();
         assert!(a.side_effect_imports.contains(&mn("unused_dep")));

@@ -91,6 +91,10 @@ mod tests {
     // Phase 2: Dependency cache merging tests
     // -----------------------------------------------------------------------
 
+    use lifeguard::cache::CachedModule;
+    use lifeguard::cache::CachedSafety;
+    use lifeguard::cache::LibraryCache;
+
     const ISO_DIR: &str = "test_dep_cache_merge";
     const SAMPLE_LIB: &str =
         "fbcode//safer_lazy_imports/lifeguard/testdata/sample_project:sample_lib";
@@ -118,12 +122,8 @@ mod tests {
         String::from_utf8(output.stdout).unwrap().trim().to_string()
     }
 
-    /// Run analyze-library and return the parsed cache JSON.
-    fn run_analyze_library(
-        db_path: &str,
-        cache_path: &Path,
-        dep_caches: &[&Path],
-    ) -> serde_json::Value {
+    /// Run analyze-library and return the parsed cache.
+    fn run_analyze_library(db_path: &str, cache_path: &Path, dep_caches: &[&Path]) -> LibraryCache {
         let mut args = vec![
             "--isolation-dir".to_string(),
             ISO_DIR.to_string(),
@@ -148,24 +148,19 @@ mod tests {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),
         );
-        let content = std::fs::read_to_string(cache_path).expect("Failed to read cache output");
-        serde_json::from_str(&content).expect("Failed to parse cache JSON")
+        LibraryCache::read_from_file(cache_path).expect("Failed to read cache output")
     }
 
-    fn get_module_names(cache: &serde_json::Value) -> Vec<String> {
-        cache["modules"]
-            .as_array()
-            .unwrap()
+    fn get_module_names(cache: &LibraryCache) -> Vec<String> {
+        cache
+            .modules
             .iter()
-            .map(|m| m["name"].as_str().unwrap().to_string())
+            .map(|m| m.name.as_str().to_string())
             .collect()
     }
 
-    fn is_module_safe(module: &serde_json::Value) -> bool {
-        module["safety"]
-            .get("Ok")
-            .and_then(|ok| ok["errors"].as_array())
-            .is_some_and(|errs| errs.is_empty())
+    fn is_cached_module_safe(module: &CachedModule) -> bool {
+        matches!(&module.safety, CachedSafety::Ok(s) if s.is_safe())
     }
 
     /// Test 1: Baseline — analyze sample_lib (no deps).
@@ -178,7 +173,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let db_path = build_source_db_no_deps(SAMPLE_LIB);
 
-        let cache_path = tmp.path().join("sample_lib_cache.json");
+        let cache_path = tmp.path().join("sample_lib_cache.bin");
         let cache = run_analyze_library(&db_path, &cache_path, &[]);
 
         let names = get_module_names(&cache);
@@ -197,13 +192,15 @@ mod tests {
             );
         }
 
-        let safe_mod = cache["modules"]
-            .as_array()
-            .unwrap()
+        let safe_mod = cache
+            .modules
             .iter()
-            .find(|m| m["name"].as_str().unwrap().contains("safe_module"))
+            .find(|m| m.name.as_str().contains("safe_module"))
             .unwrap();
-        assert!(is_module_safe(safe_mod), "safe_module should be safe");
+        assert!(
+            is_cached_module_safe(safe_mod),
+            "safe_module should be safe"
+        );
     }
 
     /// Test 2: Analyze sample_project-library (1 own src) with sample_lib cache as dep.
@@ -218,13 +215,13 @@ mod tests {
 
         // --- Step 1: Build sample_lib cache ---
         let lib_db_path = build_source_db_no_deps(SAMPLE_LIB);
-        let lib_cache_path = tmp.path().join("sample_lib_cache.json");
+        let lib_cache_path = tmp.path().join("sample_lib_cache.bin");
         let lib_cache = run_analyze_library(&lib_db_path, &lib_cache_path, &[]);
         assert_eq!(get_module_names(&lib_cache).len(), 5);
 
         // --- Step 2: Analyze sample_project-library's own sources only ---
         let proj_db_path = build_source_db_no_deps(SAMPLE_PROJECT_LIB);
-        let merged_cache_path = tmp.path().join("merged_cache.json");
+        let merged_cache_path = tmp.path().join("merged_cache.bin");
         let merged_cache =
             run_analyze_library(&proj_db_path, &merged_cache_path, &[&lib_cache_path]);
 
@@ -238,18 +235,16 @@ mod tests {
         );
 
         // --- Step 3: Verify safety matches between dep cache and merged output ---
-        // The 5 dep modules should have the same safety in both caches
-        let lib_modules = lib_cache["modules"].as_array().unwrap();
-        let merged_modules = merged_cache["modules"].as_array().unwrap();
-        for lib_mod in lib_modules {
-            let lib_name = lib_mod["name"].as_str().unwrap();
-            let merged_mod = merged_modules
+        for lib_mod in &lib_cache.modules {
+            let lib_name = lib_mod.name.as_str();
+            let merged_mod = merged_cache
+                .modules
                 .iter()
-                .find(|m| m["name"].as_str().unwrap() == lib_name)
+                .find(|m| m.name.as_str() == lib_name)
                 .unwrap_or_else(|| panic!("Module {lib_name} missing from merged cache"));
             assert_eq!(
-                is_module_safe(lib_mod),
-                is_module_safe(merged_mod),
+                is_cached_module_safe(lib_mod),
+                is_cached_module_safe(merged_mod),
                 "Safety mismatch for module {lib_name}"
             );
         }
@@ -353,11 +348,11 @@ mod tests {
 
         // Build library caches
         let lib_db_path = build_source_db_no_deps(SAMPLE_LIB);
-        let lib_cache_path = tmp.path().join("sample_lib_cache.json");
+        let lib_cache_path = tmp.path().join("sample_lib_cache.bin");
         run_analyze_library(&lib_db_path, &lib_cache_path, &[]);
 
         let proj_db_path = build_source_db_no_deps(SAMPLE_PROJECT_LIB);
-        let proj_cache_path = tmp.path().join("proj_lib_cache.json");
+        let proj_cache_path = tmp.path().join("proj_lib_cache.bin");
         run_analyze_library(&proj_db_path, &proj_cache_path, &[&lib_cache_path]);
 
         // Run analyze_binary from cached libraries
