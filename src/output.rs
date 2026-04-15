@@ -18,6 +18,8 @@ use serde::ser::SerializeMap;
 use serde::ser::SerializeStruct;
 use starlark_map::small_set::SmallSet;
 
+use crate::cache::CachedReExport;
+use crate::cache::LibraryCache;
 use crate::errors::ErrorKind;
 use crate::errors::ErrorMetadata;
 use crate::errors::SafetyError;
@@ -240,6 +242,22 @@ fn build_re_export_map(
     map
 }
 
+/// Build the re-export map from cached re-export data.
+fn build_re_export_map_from_cache(
+    re_exports: &[CachedReExport],
+    failing_modules: &SmallSet<ModuleName>,
+) -> AHashMap<ModuleName, AHashSet<ModuleName>> {
+    let mut map: AHashMap<ModuleName, AHashSet<ModuleName>> = AHashMap::new();
+    for re_export in re_exports {
+        if failing_modules.contains(&re_export.imported_module) {
+            map.entry(re_export.exported_module)
+                .or_default()
+                .insert(re_export.imported_module);
+        }
+    }
+    map
+}
+
 /// Build the lazy_eligible dict by scanning the import graph, handling cycles,
 /// and adding implicit imports.
 fn build_lazy_eligible(
@@ -321,13 +339,45 @@ impl LifeGuardAnalysis {
         exports: &Exports,
         options: &Options,
     ) -> Self {
+        let re_export_map_builder =
+            |failing: &SmallSet<ModuleName>| build_re_export_map(exports, failing);
+        Self::build(safety_map, import_graph, options, re_export_map_builder)
+    }
+
+    /// Build a LifeGuardAnalysis from pre-computed library caches.
+    /// This is the "reduce" step: no per-file analysis happens here.
+    pub fn from_cache(cache: &mut LibraryCache, options: &Options) -> Self {
+        cache.resolve_cross_library_errors();
+
+        let safety_map = cache.to_safety_map();
+        let import_graph = cache.to_import_graph();
+        let side_effect_imports = cache.to_side_effect_map();
+
+        let cached_re_exports = &cache.exports.re_exports;
+        let re_export_map_builder = |failing: &SmallSet<ModuleName>| {
+            build_re_export_map_from_cache(cached_re_exports, failing)
+        };
+
+        let mut analysis = Self::build(safety_map, import_graph, options, re_export_map_builder);
+        analysis.propagate_side_effect_imports(&side_effect_imports);
+        analysis
+    }
+
+    fn build(
+        safety_map: SafetyMap,
+        import_graph: ImportGraph,
+        options: &Options,
+        re_export_map_builder: impl FnOnce(
+            &SmallSet<ModuleName>,
+        ) -> AHashMap<ModuleName, AHashSet<ModuleName>>,
+    ) -> Self {
         // Collect all modules in the safety map for filtering cycles later.
         let source_modules: AHashSet<ModuleName> =
             safety_map.iter().map(|entry| *entry.key()).collect();
 
         let classified = classify_modules(safety_map);
         let all_cycles = collect_cycles(&import_graph, &source_modules);
-        let re_export_map = build_re_export_map(exports, &classified.failing_modules);
+        let re_export_map = re_export_map_builder(&classified.failing_modules);
         let lazy_eligible =
             build_lazy_eligible(&import_graph, &classified, &re_export_map, &all_cycles);
 

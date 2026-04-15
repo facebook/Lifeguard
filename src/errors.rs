@@ -116,6 +116,23 @@ impl ErrorKind {
             Self::CustomFinalizer | Self::ExecCall | Self::SysModulesAccess
         )
     }
+
+    /// Whether this error kind can be a false positive when analyzed without
+    /// dependencies. Unknown* means the callee wasn't resolved; Unsafe* means
+    /// it was resolved via an import binding but effects defaulted to unsafe
+    /// because the source module was missing.
+    pub fn could_be_caused_by_missing_import(&self) -> bool {
+        matches!(
+            self,
+            Self::UnknownFunctionCall
+                | Self::UnknownMethodCall
+                | Self::UnknownDecoratorCall
+                | Self::UnknownObject
+                | Self::UnsafeFunctionCall
+                | Self::UnsafeMethodCall
+                | Self::UnsafeDecoratorCall
+        )
+    }
 }
 
 impl ErrorString for ErrorKind {

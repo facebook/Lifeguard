@@ -10,6 +10,7 @@ use std::path::Path;
 use ahash::AHashSet;
 use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
+use ruff_text_size::TextRange;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -18,9 +19,11 @@ use crate::errors::SafetyError;
 use crate::exports::ExportType;
 use crate::exports::Exports;
 use crate::imports::ImportGraph;
+use crate::module_safety::ModuleSafety;
 use crate::module_safety::SafetyResult;
 use crate::project::SafetyMap;
 use crate::project::SideEffectMap;
+use crate::traits::ModuleNameExt;
 
 const CACHE_VERSION: u32 = 1;
 
@@ -191,6 +194,84 @@ impl LibraryCache {
             }
         }
     }
+
+    /// Clear false errors from modules whose missing imports are now resolved
+    /// in the merged cache, and promote those imports to the imports list.
+    ///
+    /// When a library is analyzed without its deps, calls into dep modules
+    /// produce false Unknown*/Unsafe* errors. After merging, we detect which
+    /// missing imports are now present and clear those errors.
+    /// Parent modules are checked to handle `from X import Y`.
+    pub fn resolve_cross_library_errors(&mut self) {
+        let module_names: AHashSet<ModuleName> = self.modules.iter().map(|m| m.name).collect();
+
+        for module in &mut self.modules {
+            if module.missing_imports.is_empty() {
+                continue;
+            }
+
+            let all_resolved = module.missing_imports.iter().all(|missing| {
+                module_names.contains(missing)
+                    || missing
+                        .iter_parents()
+                        .any(|parent| module_names.contains(&parent))
+            });
+
+            if !all_resolved {
+                continue;
+            }
+
+            if let CachedSafety::Ok(ref mut safety) = module.safety {
+                safety
+                    .errors
+                    .retain(|e| !e.kind.could_be_caused_by_missing_import());
+            }
+
+            let resolved = std::mem::take(&mut module.missing_imports);
+            for imp in resolved {
+                if module_names.contains(&imp) {
+                    module.imports.insert(imp);
+                }
+            }
+        }
+    }
+
+    /// Reconstruct a SafetyMap from cached module data.
+    pub fn to_safety_map(&self) -> SafetyMap {
+        let map = SafetyMap::with_capacity(self.modules.len());
+        for module in &self.modules {
+            map.insert(module.name, module.safety.to_safety_result());
+        }
+        map
+    }
+
+    /// Reconstruct an ImportGraph from cached module import edges.
+    pub fn to_import_graph(&self) -> ImportGraph {
+        let mut graph = ImportGraph::new();
+        for module in &self.modules {
+            graph.graph.add_node(&module.name);
+        }
+        for module in &self.modules {
+            for imported in &module.imports {
+                graph.graph.add_edge(&module.name, imported);
+            }
+            for missing in &module.missing_imports {
+                graph.add_missing(&module.name, *missing);
+            }
+        }
+        graph
+    }
+
+    /// Reconstruct a SideEffectMap from cached module data.
+    pub fn to_side_effect_map(&self) -> SideEffectMap {
+        let mut map = SideEffectMap::with_capacity(self.modules.len());
+        for m in &self.modules {
+            if !m.side_effect_imports.is_empty() {
+                map.insert(m.name, m.side_effect_imports.iter().copied().collect());
+            }
+        }
+        map
+    }
 }
 
 impl CachedModule {
@@ -227,6 +308,26 @@ impl CachedSafety {
                 this.implicit_imports.extend(other.implicit_imports);
                 this.implicit_imports.sort();
                 this.implicit_imports.dedup();
+            }
+        }
+    }
+
+    /// Convert back to a SafetyResult for pipeline reconstruction.
+    pub fn to_safety_result(&self) -> SafetyResult {
+        match self {
+            CachedSafety::Ok(safety) => {
+                let mut module_safety = ModuleSafety::new();
+                for error in &safety.errors {
+                    module_safety.add_error(error.to_safety_error());
+                }
+                for override_err in &safety.force_imports_eager_overrides {
+                    module_safety.add_force_import_override(override_err.to_safety_error());
+                }
+                module_safety.implicit_imports = safety.implicit_imports.clone();
+                SafetyResult::Ok(module_safety)
+            }
+            CachedSafety::AnalysisError { message } => {
+                SafetyResult::AnalysisError(anyhow::anyhow!("{}", message))
             }
         }
     }
@@ -279,6 +380,10 @@ impl CachedError {
             kind: error.kind,
             metadata: error.metadata.as_str().to_string(),
         }
+    }
+
+    fn to_safety_error(&self) -> SafetyError {
+        SafetyError::new(self.kind, self.metadata.clone(), TextRange::default())
     }
 }
 

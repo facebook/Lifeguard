@@ -254,4 +254,133 @@ mod tests {
             );
         }
     }
+
+    /// Build the BXL source DB for a target and return the path to the merged_db.json file.
+    fn build_bxl_source_db(target: &str) -> String {
+        let output = Command::new("buck2")
+            .args([
+                "--isolation-dir",
+                ISO_DIR,
+                "bxl",
+                "fbcode//buck2/prelude/python/sourcedb/classic.bxl:build",
+                "--",
+                "--target",
+                target,
+            ])
+            .output()
+            .expect("failed to execute buck2 bxl");
+        assert!(
+            output.status.success(),
+            "BXL build failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let bxl: serde_json::Value =
+            serde_json::from_str(&stdout).expect("Failed to parse BXL output");
+        bxl["db"]
+            .as_str()
+            .expect("BXL output missing 'db' key")
+            .to_string()
+    }
+
+    /// Run analyze-binary and return the parsed output JSON.
+    fn run_analyze_binary(
+        output_path: &std::path::Path,
+        cache_paths: &[&std::path::Path],
+    ) -> serde_json::Value {
+        let mut args = vec![
+            "--isolation-dir".to_string(),
+            ISO_DIR.to_string(),
+            "run".to_string(),
+            ANALYZER.to_string(),
+            "--".to_string(),
+            "analyze-binary".to_string(),
+            output_path.to_str().unwrap().to_string(),
+            "--sorted-output".to_string(),
+        ];
+        for cache in cache_paths {
+            args.push("--cache".to_string());
+            args.push(cache.to_str().unwrap().to_string());
+        }
+        let output = Command::new("buck2")
+            .args(&args)
+            .output()
+            .expect("failed to execute analyzer");
+        assert!(
+            output.status.success(),
+            "analyze-binary failed:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        let content = std::fs::read_to_string(output_path).expect("Failed to read output");
+        serde_json::from_str(&content).expect("Failed to parse output JSON")
+    }
+
+    /// Run the baseline analyze command and return the parsed output JSON.
+    /// The analyze command uses std::mem::forget which triggers LeakSanitizer
+    /// in ASAN builds, so we return the exit status alongside the output.
+    fn run_analyze_baseline(
+        db_path: &str,
+        output_path: &std::path::Path,
+    ) -> (bool, serde_json::Value) {
+        let output = Command::new("buck2")
+            .args([
+                "--isolation-dir",
+                ISO_DIR,
+                "run",
+                ANALYZER,
+                "--",
+                "analyze",
+                db_path,
+                output_path.to_str().unwrap(),
+                "--sorted-output",
+            ])
+            .output()
+            .expect("failed to execute analyzer");
+        let content = std::fs::read_to_string(output_path)
+            .expect("analyze command did not produce output file");
+        let json = serde_json::from_str(&content).expect("Failed to parse output JSON");
+        (output.status.success(), json)
+    }
+
+    /// Verify analyze_binary produces the same output as a full baseline analyze.
+    #[test]
+    fn test_analyze_binary_matches_baseline() {
+        if !check_buck_availability() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Build library caches
+        let lib_db_path = build_source_db_no_deps(SAMPLE_LIB);
+        let lib_cache_path = tmp.path().join("sample_lib_cache.json");
+        run_analyze_library(&lib_db_path, &lib_cache_path, &[]);
+
+        let proj_db_path = build_source_db_no_deps(SAMPLE_PROJECT_LIB);
+        let proj_cache_path = tmp.path().join("proj_lib_cache.json");
+        run_analyze_library(&proj_db_path, &proj_cache_path, &[&lib_cache_path]);
+
+        // Run analyze_binary from cached libraries
+        let binary_output_path = tmp.path().join("binary_output.json");
+        let binary_output = run_analyze_binary(&binary_output_path, &[&proj_cache_path]);
+
+        // Run baseline analyze on full source DB for comparison
+        let full_db_path = build_bxl_source_db(SAMPLE_PROJECT_LIB);
+        let baseline_output_path = tmp.path().join("baseline_output.json");
+        let (baseline_ok, baseline_output) =
+            run_analyze_baseline(&full_db_path, &baseline_output_path);
+
+        // Only compare when baseline exited cleanly (LeakSanitizer in ASAN
+        // builds causes non-zero exit and can produce incomplete output).
+        if baseline_ok {
+            assert_eq!(
+                binary_output["LOAD_IMPORTS_EAGERLY"], baseline_output["LOAD_IMPORTS_EAGERLY"],
+                "LOAD_IMPORTS_EAGERLY mismatch"
+            );
+            assert_eq!(
+                binary_output["LAZY_ELIGIBLE"], baseline_output["LAZY_ELIGIBLE"],
+                "LAZY_ELIGIBLE mismatch"
+            );
+        }
+    }
 }

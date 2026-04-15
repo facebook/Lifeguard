@@ -6,6 +6,7 @@
  */
 
 pub mod analyze;
+pub mod analyze_binary;
 pub mod analyze_library;
 pub mod gen_source_db;
 pub mod run_tree;

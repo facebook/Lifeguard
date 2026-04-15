@@ -234,6 +234,11 @@ impl ImportGraph {
         self.missing.get(name)
     }
 
+    /// Add a missing import edge (for graph reconstruction from cache).
+    pub fn add_missing(&mut self, from: &ModuleName, to: ModuleName) {
+        self.missing.entry(*from).or_default().insert(to);
+    }
+
     /// Check if a module has any imports to unidentified/missing modules.
     pub fn has_missing_import(&self, from: &ModuleName, module: &ModuleName) -> bool {
         self.missing

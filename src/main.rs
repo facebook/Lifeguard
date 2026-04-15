@@ -9,6 +9,7 @@ use anyhow::Result;
 use clap::Parser;
 use clap::Subcommand;
 use lifeguard::commands::analyze::AnalyzeArgs;
+use lifeguard::commands::analyze_binary::AnalyzeBinaryArgs;
 use lifeguard::commands::analyze_library::AnalyzeLibraryArgs;
 use lifeguard::commands::gen_source_db::GenSourceDbArgs;
 use lifeguard::commands::run_tree::RunTreeArgs;
@@ -28,6 +29,8 @@ struct Cli {
 enum Commands {
     /// [Default Behavior] Analyze a source DB to determine which modules can be safely lazily imported
     Analyze(AnalyzeArgs),
+    /// Assemble cached library outputs into the final Lifeguard output for a binary
+    AnalyzeBinary(AnalyzeBinaryArgs),
     /// Analyze a Python library and output a cache file for map-reduce analysis
     AnalyzeLibrary(AnalyzeLibraryArgs),
     /// Analyze all Python files in a directory tree
@@ -45,6 +48,7 @@ fn main() -> Result<()> {
 
     match args.command {
         Some(Commands::Analyze(args)) => lifeguard::commands::analyze::run(args),
+        Some(Commands::AnalyzeBinary(args)) => lifeguard::commands::analyze_binary::run(args),
         Some(Commands::AnalyzeLibrary(args)) => lifeguard::commands::analyze_library::run(args),
         Some(Commands::RunTree(args)) => lifeguard::commands::run_tree::run(args),
         Some(Commands::ShowEffects(args)) => lifeguard::commands::show_effects::run(args),
