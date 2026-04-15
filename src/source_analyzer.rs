@@ -46,6 +46,7 @@ use crate::bindings::Alias;
 use crate::class::FieldKind;
 use crate::cursor::Block;
 use crate::cursor::Cursor;
+use crate::cursor::TryHandler;
 use crate::effects::CallData;
 use crate::effects::CallKind;
 use crate::effects::Effect;
@@ -980,31 +981,54 @@ impl<'a> SourceAnalyzer<'a> {
         output.effects.merge(&out.effects);
     }
 
-    fn raise(&self, x: &StmtRaise, output: &mut ModuleEffects) {
-        // TODO: Check the exception handlers of the current try: block and see if they actually
-        // handle the raise(). For now we treat it as safe since code of the form
-        //    try:
-        //      ...
-        //      raise(...)
-        //    except ...:
-        //      ...
-        // is usually intended to handle the raised exception.
-        if self.cursor.in_block(&Block::TryBody) {
-            return;
+    /// Extract the exception type name from a raise expression.
+    /// Handles both `raise ValueError` (ExprName) and `raise ValueError("msg")` (ExprCall).
+    fn exception_name(exc: &Expr) -> Option<ModuleName> {
+        match exc {
+            Expr::Call(call) => call.func.full_name(),
+            other => other.full_name(),
         }
+    }
+
+    fn raise(&self, x: &StmtRaise, output: &mut ModuleEffects) {
         let unknown = ModuleName::from_str("<unknown exception>");
         let name = match &x.exc {
-            Some(exc) => exc.as_ref().full_name().unwrap_or(unknown),
-            None => unknown,
+            Some(exc) => Self::exception_name(exc.as_ref()).unwrap_or(unknown),
+            // Bare `raise` (re-raise): we can't determine the type, so treat it as caught if
+            // we're inside any try body at all.
+            None => {
+                if self.cursor.in_try_body() {
+                    return;
+                }
+                unknown
+            }
         };
+        if self.cursor.catches_exception(&name) {
+            return;
+        }
         let eff = Effect::new(EffectKind::Raise, name, x.range());
         self.add_effect(eff, output);
     }
 
+    fn extract_try_handlers(handlers: &[ExceptHandler]) -> Vec<TryHandler> {
+        handlers
+            .iter()
+            .map(|ExceptHandler::ExceptHandler(e)| match &e.type_ {
+                None => TryHandler::Bare,
+                Some(typ) => {
+                    let names = match typ.as_ref() {
+                        Expr::Tuple(t) => t.elts.iter().filter_map(|elt| elt.full_name()).collect(),
+                        expr => expr.full_name().into_iter().collect(),
+                    };
+                    TryHandler::typed(names)
+                }
+            })
+            .collect()
+    }
+
     fn try_(&mut self, x: &StmtTry, output: &mut ModuleEffects) {
-        // When analysing a try:/except:/orelse:/finally: block, we special-case the try: block so
-        // that we can treat raise() statements within it as safe.
-        self.cursor.enter_block(Block::TryBody);
+        let handlers = Self::extract_try_handlers(&x.handlers);
+        self.cursor.enter_block(Block::TryBody(handlers));
         self.stmts_with_called_imports(&x.body, output);
         self.cursor.leave_block();
         for ExceptHandler::ExceptHandler(e) in &x.handlers {

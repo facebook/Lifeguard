@@ -10,10 +10,53 @@ use ruff_python_ast::StmtClassDef;
 use ruff_python_ast::StmtFunctionDef;
 use ruff_python_ast::name::Name;
 
+/// What a single `except` clause catches.
+///
+/// TODO: Exception names are currently matched as written in the source (e.g. "ValueError") rather
+/// than fully qualified (e.g. "builtins.ValueError"). Both the handler and raise sides use
+/// `full_name()` directly, so they are consistent with each other. Mismatches from mixed import
+/// styles (e.g. `except ValueError` vs `raise builtins.ValueError`) produce false positives (extra
+/// Raise effects), not false negatives, so this is safe. Revisit if we see false positives from
+/// exception matching in practice.
+#[derive(Debug, Clone)]
+pub enum TryHandler {
+    /// Bare `except:` — catches everything.
+    Bare,
+    /// `except SomeError:` — catches a single named type.
+    Single(ModuleName),
+    /// `except (A, B):` — catches multiple named types.
+    /// An empty vec (from an unresolvable type expression) catches nothing.
+    Multiple(Vec<ModuleName>),
+}
+
+/// Well-known exception base classes that act as catch-alls.
+const CATCH_ALL_EXCEPTIONS: &[&str] = &["Exception", "BaseException"];
+
+fn exception_matches(name: &ModuleName, exc_name: &ModuleName) -> bool {
+    name == exc_name || CATCH_ALL_EXCEPTIONS.contains(&name.as_str())
+}
+
+impl TryHandler {
+    pub fn typed(names: Vec<ModuleName>) -> Self {
+        match names.len() {
+            1 => Self::Single(names.into_iter().next().unwrap()),
+            _ => Self::Multiple(names),
+        }
+    }
+
+    pub fn catches(&self, exc_name: &ModuleName) -> bool {
+        match self {
+            Self::Bare => true,
+            Self::Single(n) => exception_matches(n, exc_name),
+            Self::Multiple(names) => names.iter().any(|n| exception_matches(n, exc_name)),
+        }
+    }
+}
+
 /// A kind of block that encloses an AST node.
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum Block {
-    TryBody,
+    TryBody(Vec<TryHandler>),
 }
 
 #[derive(Debug, Clone)]
@@ -26,8 +69,15 @@ impl BlockStack {
         BlockStack { stack: vec![] }
     }
 
-    pub fn contains(&self, block: &Block) -> bool {
-        self.stack.iter().any(|s| s == block)
+    pub fn in_try_body(&self) -> bool {
+        self.stack.iter().any(|s| matches!(s, Block::TryBody(_)))
+    }
+
+    /// Check whether any enclosing try block has a handler that catches `exc_name`.
+    pub fn catches_exception(&self, exc_name: &ModuleName) -> bool {
+        self.stack.iter().rev().any(|block| match block {
+            Block::TryBody(handlers) => handlers.iter().any(|h| h.catches(exc_name)),
+        })
     }
 
     pub fn push(&mut self, block: Block) {
@@ -93,8 +143,12 @@ impl Cursor {
         self.block_stack.pop();
     }
 
-    pub fn in_block(&self, block: &Block) -> bool {
-        self.block_stack.contains(block)
+    pub fn in_try_body(&self) -> bool {
+        self.block_stack.in_try_body()
+    }
+
+    pub fn catches_exception(&self, exc_name: &ModuleName) -> bool {
+        self.block_stack.catches_exception(exc_name)
     }
 
     pub fn enter_module_scope(&mut self, mod_name: &ModuleName) {
@@ -338,6 +392,61 @@ mod tests {
             .collect::<Vec<_>>();
         let actual = c.legb_scope_names_iter().collect::<Vec<_>>();
         assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn test_try_handler_bare_catches_everything() {
+        let handler = TryHandler::Bare;
+        assert!(handler.catches(&ModuleName::from_str("ValueError")));
+        assert!(handler.catches(&ModuleName::from_str("Whatever")));
+    }
+
+    #[test]
+    fn test_try_handler_typed_exact_match() {
+        let handler = TryHandler::typed(vec![ModuleName::from_str("ValueError")]);
+        assert!(handler.catches(&ModuleName::from_str("ValueError")));
+        assert!(!handler.catches(&ModuleName::from_str("TypeError")));
+    }
+
+    #[test]
+    fn test_try_handler_typed_catch_all() {
+        let handler = TryHandler::typed(vec![ModuleName::from_str("Exception")]);
+        assert!(handler.catches(&ModuleName::from_str("ValueError")));
+        assert!(handler.catches(&ModuleName::from_str("Exception")));
+
+        let handler = TryHandler::typed(vec![ModuleName::from_str("BaseException")]);
+        assert!(handler.catches(&ModuleName::from_str("KeyboardInterrupt")));
+    }
+
+    #[test]
+    fn test_try_handler_typed_tuple() {
+        let handler = TryHandler::typed(vec![
+            ModuleName::from_str("TypeError"),
+            ModuleName::from_str("ValueError"),
+        ]);
+        assert!(handler.catches(&ModuleName::from_str("ValueError")));
+        assert!(handler.catches(&ModuleName::from_str("TypeError")));
+        assert!(!handler.catches(&ModuleName::from_str("KeyError")));
+    }
+
+    #[test]
+    fn test_catches_exception_nested_try() {
+        let mut stack = BlockStack::new();
+        let outer = Block::TryBody(vec![TryHandler::typed(vec![ModuleName::from_str(
+            "OSError",
+        )])]);
+        let inner = Block::TryBody(vec![TryHandler::typed(vec![ModuleName::from_str(
+            "TypeError",
+        )])]);
+        stack.push(outer);
+        stack.push(inner);
+
+        // Inner catches TypeError
+        assert!(stack.catches_exception(&ModuleName::from_str("TypeError")));
+        // Outer catches OSError
+        assert!(stack.catches_exception(&ModuleName::from_str("OSError")));
+        // Neither catches ValueError
+        assert!(!stack.catches_exception(&ModuleName::from_str("ValueError")));
     }
 
     #[test]
