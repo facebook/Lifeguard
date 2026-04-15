@@ -25,14 +25,11 @@ use crate::project::SafetyMap;
 use crate::project::SideEffectMap;
 use crate::traits::ModuleNameExt;
 
-const CACHE_VERSION: u32 = 2;
-
 /// Cached analysis results for a single Python library.
 /// Contains all information needed to merge with other libraries
 /// in a map-reduce analysis pipeline.
 #[derive(Serialize, Deserialize)]
 pub struct LibraryCache {
-    pub version: u32,
     pub modules: Vec<CachedModule>,
     pub exports: CachedExports,
 }
@@ -133,11 +130,7 @@ impl LibraryCache {
 
         let exports = CachedExports::from_exports(exports);
 
-        LibraryCache {
-            version: CACHE_VERSION,
-            modules,
-            exports,
-        }
+        LibraryCache { modules, exports }
     }
 
     /// Write the cache to a binary file using postcard.
@@ -150,15 +143,7 @@ impl LibraryCache {
     /// Read a cache from a binary file using postcard.
     pub fn read_from_file(path: &Path) -> anyhow::Result<Self> {
         let bytes = std::fs::read(path)?;
-        let cache: Self = postcard::from_bytes(&bytes)?;
-        if cache.version != CACHE_VERSION {
-            anyhow::bail!(
-                "Cache version mismatch: expected {}, got {}",
-                CACHE_VERSION,
-                cache.version
-            );
-        }
-        Ok(cache)
+        Ok(postcard::from_bytes(&bytes)?)
     }
 
     /// Merge dependency caches into this cache.
@@ -491,7 +476,6 @@ mod tests {
         let bytes = postcard::to_allocvec(&cache).unwrap();
         let loaded: LibraryCache = postcard::from_bytes(&bytes).unwrap();
 
-        assert_eq!(loaded.version, CACHE_VERSION);
         assert_eq!(loaded.modules.len(), 2);
 
         let foo = loaded.modules.iter().find(|m| m.name == mn("foo")).unwrap();
@@ -549,7 +533,6 @@ mod tests {
         let bytes = postcard::to_allocvec(&cache).unwrap();
         let loaded: LibraryCache = postcard::from_bytes(&bytes).unwrap();
 
-        assert_eq!(loaded.version, CACHE_VERSION);
         assert_eq!(loaded.modules.len(), 1);
         assert_eq!(loaded.modules[0].name, mn("test"));
     }
