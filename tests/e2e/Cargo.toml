@@ -14,3 +14,5 @@ path = "test_e2e.rs"
 
 [dev-dependencies]
 lifeguard = { path = "../../src" }
+serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
+tempfile = "3.27.0"

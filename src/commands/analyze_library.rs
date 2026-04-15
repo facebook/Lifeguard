@@ -9,6 +9,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::Parser;
+use rayon::prelude::*;
 use tracing::info;
 
 use crate::cache::LibraryCache;
@@ -27,6 +28,12 @@ pub struct AnalyzeLibraryArgs {
 
     /// Path to output cache file
     pub cache_output_path: PathBuf,
+
+    /// Paths to pre-computed dependency cache files.
+    /// When provided, the source db should contain only the target's own
+    /// source files. Results for dependency modules are merged from these caches.
+    #[arg(long = "dep-cache")]
+    pub dep_caches: Vec<PathBuf>,
 }
 
 /// Detect the root directory by walking up from cwd until a source file resolves.
@@ -70,10 +77,9 @@ pub fn run(args: AnalyzeLibraryArgs) -> Result<()> {
     })?;
 
     let root_dir = detect_root_dir(&src_map)?;
-
     let result = run_pipeline(&src_map, &root_dir)?;
 
-    let cache = time("Building cache", || {
+    let mut cache = time("Building cache", || {
         LibraryCache::build(
             &result.safety_map,
             &result.import_graph,
@@ -81,6 +87,22 @@ pub fn run(args: AnalyzeLibraryArgs) -> Result<()> {
             &result.side_effect_imports,
         )
     });
+
+    if !args.dep_caches.is_empty() {
+        let dep_caches: Vec<LibraryCache> = time("Loading dep caches", || {
+            args.dep_caches
+                .par_iter()
+                .map(|p| {
+                    info!("Loading dep cache from {}", p.display());
+                    LibraryCache::read_from_file(p)
+                })
+                .collect::<Result<Vec<_>>>()
+        })?;
+
+        time("Merging dep caches", || {
+            cache.merge_dep_caches(dep_caches);
+        });
+    }
 
     time("Writing cache", || {
         cache.write_to_file(&args.cache_output_path)

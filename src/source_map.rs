@@ -18,7 +18,6 @@ use anyhow::anyhow;
 pub use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
 use ruff_python_ast::PySourceType;
-use serde::Deserialize;
 use tracing::warn;
 
 use crate::debug::report_memory;
@@ -91,29 +90,31 @@ pub fn load_source_map<P: AsRef<Path>>(db_path: P) -> Result<SourceMap> {
     Ok(time("  Resolving source map", || resolve_source_map(raw)))
 }
 
+/// Parse a source DB JSON file. Supports three formats:
+/// - dbg-source-db: `{"sources": {...}, "dependencies": {...}}`
+/// - BXL: `{"build_map": {...}}`
+/// - flat: `{"path": "path", ...}` (from source-db-no-deps)
 fn parse_source_map<P: AsRef<Path>>(db_path: P) -> Result<RawSourceMap> {
     let content = std::fs::read_to_string(db_path)?;
+    let value: serde_json::Value = serde_json::from_str(&content)?;
 
-    // Try dbg-db.json format (from buck build subtarget)
-    #[derive(Deserialize)]
-    struct DbFile {
-        sources: RawSourceMap,
-        dependencies: RawSourceMap,
+    let obj = value
+        .as_object()
+        .ok_or_else(|| anyhow!("Source DB must be a JSON object"))?;
+
+    if obj.contains_key("sources") && obj.contains_key("dependencies") {
+        // dbg-source-db format: sources win over dependencies on duplicate keys
+        let sources: RawSourceMap = serde_json::from_value(obj["sources"].clone())?;
+        let mut deps: RawSourceMap = serde_json::from_value(obj["dependencies"].clone())?;
+        deps.extend(sources);
+        Ok(deps)
+    } else if obj.contains_key("build_map") {
+        // BXL format
+        Ok(serde_json::from_value(obj["build_map"].clone())?)
+    } else {
+        // Flat format (source-db-no-deps)
+        Ok(serde_json::from_value(value)?)
     }
-
-    if let Ok(mut db_mapping) = serde_json::from_str::<DbFile>(&content) {
-        db_mapping.dependencies.extend(db_mapping.sources);
-        return Ok(db_mapping.dependencies);
-    }
-
-    // Fall back to merged_db.json format (from BXL)
-    #[derive(Deserialize)]
-    struct BxlDbFile {
-        build_map: RawSourceMap,
-    }
-
-    let bxl_mapping: BxlDbFile = serde_json::from_str(&content)?;
-    Ok(bxl_mapping.build_map)
 }
 
 /// Filters non-Python files, converts paths to module names once, and resolves

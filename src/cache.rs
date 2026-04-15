@@ -7,6 +7,7 @@
 
 use std::path::Path;
 
+use ahash::AHashSet;
 use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
 use serde::Deserialize;
@@ -39,11 +40,11 @@ pub struct CachedModule {
     pub name: ModuleName,
     pub safety: CachedSafety,
     /// Resolved imports (edges in the import graph).
-    pub imports: Vec<ModuleName>,
+    pub imports: AHashSet<ModuleName>,
     /// Imports that could not be resolved to modules in the source DB.
-    pub missing_imports: Vec<ModuleName>,
+    pub missing_imports: AHashSet<ModuleName>,
     /// Module-level imports never accessed in any scope (side-effect imports).
-    pub side_effect_imports: Vec<ModuleName>,
+    pub side_effect_imports: AHashSet<ModuleName>,
 }
 
 /// Safety analysis result for a cached module.
@@ -62,7 +63,7 @@ pub struct CachedModuleSafety {
 }
 
 /// A serializable safety error (without source location).
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CachedError {
     pub kind: ErrorKind,
     pub metadata: String,
@@ -100,21 +101,18 @@ impl LibraryCache {
                 let name = *entry.key();
                 let safety_result = entry.value();
 
-                let mut imports: Vec<ModuleName> =
+                let imports: AHashSet<ModuleName> =
                     import_graph.get_imports(&name).cloned().collect();
-                imports.sort();
 
-                let mut missing_imports: Vec<ModuleName> = import_graph
+                let missing_imports: AHashSet<ModuleName> = import_graph
                     .get_missing_imports(&name)
                     .map(|m| m.iter().cloned().collect())
                     .unwrap_or_default();
-                missing_imports.sort();
 
-                let mut se_imports: Vec<ModuleName> = side_effect_imports
+                let se_imports: AHashSet<ModuleName> = side_effect_imports
                     .get(&name)
                     .map(|s| s.iter().cloned().collect())
                     .unwrap_or_default();
-                se_imports.sort();
 
                 let safety = CachedSafety::from_safety_result(safety_result);
 
@@ -130,12 +128,12 @@ impl LibraryCache {
 
         modules.sort_by_key(|m| m.name);
 
-        let cached_exports = CachedExports::from_exports(exports);
+        let exports = CachedExports::from_exports(exports);
 
         LibraryCache {
             version: CACHE_VERSION,
             modules,
-            exports: cached_exports,
+            exports,
         }
     }
 
@@ -149,9 +147,9 @@ impl LibraryCache {
 
     /// Read a cache from a JSON file.
     pub fn read_from_file(path: &Path) -> anyhow::Result<Self> {
-        let file = std::fs::File::open(path)?;
-        let reader = std::io::BufReader::new(file);
-        let cache: Self = serde_json::from_reader(reader)?;
+        // Read to string first so serde can borrow &str for ModuleName deserialization.
+        let content = std::fs::read_to_string(path)?;
+        let cache: Self = serde_json::from_str(&content)?;
         if cache.version != CACHE_VERSION {
             anyhow::bail!(
                 "Cache version mismatch: expected {}, got {}",
@@ -161,15 +159,78 @@ impl LibraryCache {
         }
         Ok(cache)
     }
+
+    /// Merge dependency caches into this cache.
+    /// When the same module appears in multiple caches (a .py file can belong
+    /// to more than one python_library), module data is merged:
+    /// - imports / side_effect_imports: union
+    /// - missing_imports: intersection (only truly missing if unresolved everywhere)
+    /// - safety: most conservative (most errors)
+    pub fn merge_dep_caches(&mut self, dep_caches: Vec<LibraryCache>) {
+        let extra_modules: usize = dep_caches.iter().map(|d| d.modules.len()).sum();
+        self.modules.reserve(extra_modules);
+
+        for dep in dep_caches {
+            self.modules.extend(dep.modules);
+            self.exports.merge(dep.exports);
+        }
+        self.modules.sort_by_key(|m| m.name);
+        self.merge_duplicate_modules();
+        self.exports.sort_and_dedup();
+    }
+
+    /// Merge consecutive modules with the same name (assumes sorted by name).
+    fn merge_duplicate_modules(&mut self) {
+        let mut i = 0;
+        while i + 1 < self.modules.len() {
+            if self.modules[i].name == self.modules[i + 1].name {
+                let other = self.modules.remove(i + 1);
+                self.modules[i].merge(other);
+            } else {
+                i += 1;
+            }
+        }
+    }
 }
 
 impl CachedModule {
     pub fn is_safe(&self) -> bool {
         matches!(&self.safety, CachedSafety::Ok(s) if s.is_safe())
     }
+
+    /// Merge another CachedModule (same name) into this one.
+    fn merge(&mut self, other: CachedModule) {
+        self.imports.extend(other.imports);
+        self.missing_imports
+            .retain(|m| other.missing_imports.contains(m));
+        self.side_effect_imports.extend(other.side_effect_imports);
+        self.safety.merge(other.safety);
+    }
 }
 
 impl CachedSafety {
+    /// Merge another safety result, keeping the more conservative outcome.
+    /// AnalysisError always wins. Between two Ok results, keep the union of errors.
+    fn merge(&mut self, other: CachedSafety) {
+        match (&mut *self, other) {
+            // AnalysisError is the most conservative — keep it
+            (CachedSafety::AnalysisError { .. }, _) => {}
+            (_, other @ CachedSafety::AnalysisError { .. }) => *self = other,
+            // Both Ok: merge errors and overrides
+            (CachedSafety::Ok(this), CachedSafety::Ok(other)) => {
+                merge_errors(&mut this.errors, other.errors);
+                merge_errors(
+                    &mut this.force_imports_eager_overrides,
+                    other.force_imports_eager_overrides,
+                );
+
+                this.implicit_imports.extend(other.implicit_imports);
+                this.implicit_imports.sort();
+                this.implicit_imports.dedup();
+            }
+        }
+    }
+
     fn from_safety_result(result: &SafetyResult) -> Self {
         match result {
             SafetyResult::Ok(safety) => CachedSafety::Ok(CachedModuleSafety {
@@ -206,6 +267,12 @@ impl CachedModuleSafety {
     }
 }
 
+fn merge_errors(target: &mut Vec<CachedError>, other: Vec<CachedError>) {
+    target.extend(other);
+    target.sort();
+    target.dedup();
+}
+
 impl CachedError {
     fn from_safety_error(error: &SafetyError) -> Self {
         CachedError {
@@ -217,13 +284,12 @@ impl CachedError {
 
 impl CachedExports {
     fn from_exports(exports: &Exports) -> Self {
-        let mut definitions: Vec<(ModuleName, ExportType)> = exports
+        let definitions: Vec<(ModuleName, ExportType)> = exports
             .get_exports()
             .map(|(name, export)| (*name, export.typ))
             .collect();
-        definitions.sort_by_key(|(name, _)| *name);
 
-        let mut re_exports: Vec<CachedReExport> = exports
+        let re_exports: Vec<CachedReExport> = exports
             .get_re_exports()
             .map(|(exported, (imported, _range))| CachedReExport {
                 exported_module: exported.module,
@@ -232,24 +298,48 @@ impl CachedExports {
                 imported_attr: imported.attr.to_string(),
             })
             .collect();
-        re_exports.sort_by_key(|a| (a.exported_module, a.exported_attr.clone()));
 
-        let mut all: Vec<(ModuleName, Vec<String>)> = exports
+        let all: Vec<(ModuleName, Vec<String>)> = exports
             .iter_all()
             .map(|(name, names)| (*name, names.iter().map(|n| n.to_string()).collect()))
             .collect();
-        all.sort_by_key(|(name, _)| *name);
 
-        let mut return_types: Vec<(ModuleName, ModuleName)> =
+        let return_types: Vec<(ModuleName, ModuleName)> =
             exports.iter_return_types().map(|(k, v)| (*k, *v)).collect();
-        return_types.sort_by_key(|(k, _)| *k);
 
-        CachedExports {
+        let mut result = CachedExports {
             definitions,
             re_exports,
             all,
             return_types,
-        }
+        };
+        result.sort_and_dedup();
+        result
+    }
+
+    fn sort_and_dedup(&mut self) {
+        self.definitions.sort_by_key(|(name, _)| *name);
+        self.definitions.dedup_by_key(|(name, _)| *name);
+
+        self.re_exports.sort_by(|a, b| {
+            (&a.exported_module, &a.exported_attr).cmp(&(&b.exported_module, &b.exported_attr))
+        });
+        self.re_exports.dedup_by(|a, b| {
+            a.exported_module == b.exported_module && a.exported_attr == b.exported_attr
+        });
+
+        self.all.sort_by_key(|(name, _)| *name);
+        self.all.dedup_by_key(|(name, _)| *name);
+
+        self.return_types.sort_by_key(|(k, _)| *k);
+        self.return_types.dedup_by_key(|(k, _)| *k);
+    }
+
+    fn merge(&mut self, other: CachedExports) {
+        self.definitions.extend(other.definitions);
+        self.re_exports.extend(other.re_exports);
+        self.all.extend(other.all);
+        self.return_types.extend(other.return_types);
     }
 }
 
@@ -303,7 +393,7 @@ mod tests {
 
         let foo = loaded.modules.iter().find(|m| m.name == mn("foo")).unwrap();
         assert!(matches!(&foo.safety, CachedSafety::Ok(s) if s.is_safe()));
-        assert_eq!(foo.imports, vec![mn("bar")]);
+        assert!(foo.imports.contains(&mn("bar")));
 
         let bar = loaded.modules.iter().find(|m| m.name == mn("bar")).unwrap();
         match &bar.safety {
@@ -454,7 +544,7 @@ mod tests {
         let loaded: LibraryCache = serde_json::from_str(&json).unwrap();
 
         let a = loaded.modules.iter().find(|m| m.name == mn("a")).unwrap();
-        assert_eq!(a.side_effect_imports, vec![mn("unused_dep")]);
+        assert!(a.side_effect_imports.contains(&mn("unused_dep")));
     }
 
     #[test]
@@ -472,5 +562,145 @@ mod tests {
 
         let names: Vec<&str> = cache.modules.iter().map(|m| m.name.as_str()).collect();
         assert_eq!(names, vec!["a_mod", "m_mod", "z_mod"]);
+    }
+
+    #[test]
+    fn test_merge_dep_caches() {
+        // Build own cache with 1 module
+        let safety_map: SafetyMap = DashMap::new();
+        safety_map.insert(mn("own"), SafetyResult::Ok(ModuleSafety::new()));
+
+        let mut cache = LibraryCache::build(
+            &safety_map,
+            &ImportGraph::new(),
+            &Exports::empty(),
+            &AHashMap::new(),
+        );
+        assert_eq!(cache.modules.len(), 1);
+
+        // Build a dep cache with 2 modules
+        let dep_safety_map: SafetyMap = DashMap::new();
+        dep_safety_map.insert(mn("dep_a"), SafetyResult::Ok(ModuleSafety::new()));
+        let mut unsafe_safety = ModuleSafety::new();
+        unsafe_safety.add_error(SafetyError::new(
+            ErrorKind::UnsafeFunctionCall,
+            "bad()".to_string(),
+            TextRange::default(),
+        ));
+        dep_safety_map.insert(mn("dep_b"), SafetyResult::Ok(unsafe_safety));
+
+        let dep_cache = LibraryCache::build(
+            &dep_safety_map,
+            &ImportGraph::new(),
+            &Exports::empty(),
+            &AHashMap::new(),
+        );
+
+        cache.merge_dep_caches(vec![dep_cache]);
+
+        // Should now have 3 modules, sorted
+        assert_eq!(cache.modules.len(), 3);
+        let names: Vec<&str> = cache.modules.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, vec!["dep_a", "dep_b", "own"]);
+
+        // dep_b should still have its error
+        let dep_b = cache
+            .modules
+            .iter()
+            .find(|m| m.name == mn("dep_b"))
+            .unwrap();
+        match &dep_b.safety {
+            CachedSafety::Ok(s) => {
+                assert_eq!(s.errors.len(), 1);
+                assert_eq!(s.errors[0].kind, ErrorKind::UnsafeFunctionCall);
+            }
+            _ => panic!("Expected Ok safety"),
+        }
+    }
+
+    /// Simulates the sample_project scenario:
+    /// - sample_lib has 5 modules (dep), analyzed alone to produce a dep cache
+    /// - sample_project-library has 1 own module, analyzed separately + merged
+    ///
+    /// Verifies that own build + merge produces the same results as full analysis.
+    #[test]
+    fn test_own_build_plus_merge_matches_full_build() {
+        use crate::imports::ImportGraph;
+        use crate::project;
+        use crate::pyrefly::sys_info::SysInfo;
+        use crate::test_lib::TestSources;
+        use crate::traits::SysInfoExt;
+
+        let dep_modules: Vec<(&str, &str)> = vec![
+            ("safe_module", "def greet(name): return f'Hello, {name}'\n"),
+            (
+                "unsafe_module",
+                "import os\nresult = os.path.join('a', 'b')\ndef helper(): return result\n",
+            ),
+            (
+                "importer",
+                "from safe_module import greet\nfrom unsafe_module import helper\n",
+            ),
+            (
+                "has_finalizer",
+                "class Leaker:\n    def __del__(self):\n        pass\n",
+            ),
+            ("uses_exec", "exec('x = 1')\n"),
+        ];
+        let own_module = (
+            "main",
+            "from importer import greet\ndef main():\n    print(greet('world'))\n",
+        );
+
+        let sys_info = SysInfo::lg_default();
+
+        // --- Step 1: Analyze dep modules alone → dep cache ---
+        let dep_sources = TestSources::new(&dep_modules);
+        let (dep_ig, dep_exports) = ImportGraph::make_with_exports(&dep_sources, &sys_info);
+        let (dep_sm, dep_se, _) =
+            project::run_analysis(&dep_sources, &dep_exports, &dep_ig, &sys_info);
+        let dep_cache = LibraryCache::build(&dep_sm, &dep_ig, &dep_exports, &dep_se);
+        assert_eq!(dep_cache.modules.len(), 5);
+
+        // --- Step 2: Analyze own module alone → own cache ---
+        let own_sources = TestSources::new(&[own_module]);
+        let (own_ig, own_exports) = ImportGraph::make_with_exports(&own_sources, &sys_info);
+        let (own_sm, own_se, _) =
+            project::run_analysis(&own_sources, &own_exports, &own_ig, &sys_info);
+        let mut own_cache = LibraryCache::build(&own_sm, &own_ig, &own_exports, &own_se);
+        assert_eq!(own_cache.modules.len(), 1);
+
+        // --- Step 3: Merge ---
+        own_cache.merge_dep_caches(vec![dep_cache]);
+        assert_eq!(own_cache.modules.len(), 6);
+
+        // --- Step 4: Full analysis for comparison ---
+        let mut all_modules = dep_modules.clone();
+        all_modules.push(own_module);
+        let all_sources = TestSources::new(&all_modules);
+        let (all_ig, all_exports) = ImportGraph::make_with_exports(&all_sources, &sys_info);
+        let (all_sm, all_se, _) =
+            project::run_analysis(&all_sources, &all_exports, &all_ig, &sys_info);
+        let full_cache = LibraryCache::build(&all_sm, &all_ig, &all_exports, &all_se);
+        assert_eq!(full_cache.modules.len(), 6);
+
+        // Same module names
+        let full_names: Vec<&str> = full_cache.modules.iter().map(|m| m.name.as_str()).collect();
+        let merged_names: Vec<&str> = own_cache.modules.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(full_names, merged_names);
+
+        // Same safety status for every module
+        for (full_mod, merged_mod) in full_cache.modules.iter().zip(own_cache.modules.iter()) {
+            let full_safe = matches!(&full_mod.safety, CachedSafety::Ok(s) if s.is_safe());
+            let merged_safe = matches!(&merged_mod.safety, CachedSafety::Ok(s) if s.is_safe());
+            assert_eq!(
+                full_safe,
+                merged_safe,
+                "Module {} safety mismatch: full={}, merged={}",
+                full_mod.name.as_str(),
+                full_safe,
+                merged_safe
+            );
+        }
     }
 }

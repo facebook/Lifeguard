@@ -2514,6 +2514,8 @@ name = "test_e2e"
 version = "0.0.0"
 dependencies = [
  "lifeguard",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
