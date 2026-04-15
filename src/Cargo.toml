@@ -16,7 +16,7 @@ name = "lifeguard"
 path = "main.rs"
 
 [dependencies]
-ahash = { version = "0.8.11", features = ["runtime-rng"] }
+ahash = { version = "0.8.11", features = ["serde"] }
 anyhow = "1.0.102"
 clap = { version = "4.6.0", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 dashmap = { version = "5.5.3", features = ["rayon", "serde"] }

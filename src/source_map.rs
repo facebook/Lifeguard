@@ -18,6 +18,7 @@ use anyhow::anyhow;
 pub use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
 use ruff_python_ast::PySourceType;
+use serde::Deserialize;
 use tracing::warn;
 
 use crate::debug::report_memory;
@@ -74,6 +75,19 @@ pub type SourceMap = HashMap<ModuleName, SourceResult, ahash::RandomState>;
 // Internal type for the raw deserialized source DB before module name resolution
 type RawSourceMap = HashMap<String, PathBuf, ahash::RandomState>;
 
+/// Typed envelope for the BXL source DB format.
+#[derive(Deserialize)]
+struct BxlSourceDb {
+    build_map: RawSourceMap,
+}
+
+/// Typed envelope for the dbg-source-db format.
+#[derive(Deserialize)]
+struct DbgSourceDb {
+    sources: RawSourceMap,
+    dependencies: RawSourceMap,
+}
+
 // TODO: We are not including pyi files from the source db for now; we will consider external stubs
 // once we get the internal stubs fully working.
 static PYTHON_EXTENSIONS: LazyLock<AHashSet<&'static OsStr>> =
@@ -94,61 +108,69 @@ pub fn load_source_map<P: AsRef<Path>>(db_path: P) -> Result<SourceMap> {
 /// - dbg-source-db: `{"sources": {...}, "dependencies": {...}}`
 /// - BXL: `{"build_map": {...}}`
 /// - flat: `{"path": "path", ...}` (from source-db-no-deps)
+///
+/// Deserializes directly into typed structs to avoid an intermediate
+/// serde_json::Value tree, saving allocation and conversion overhead.
 fn parse_source_map<P: AsRef<Path>>(db_path: P) -> Result<RawSourceMap> {
     let content = std::fs::read_to_string(db_path)?;
-    let value: serde_json::Value = serde_json::from_str(&content)?;
 
-    let obj = value
-        .as_object()
-        .ok_or_else(|| anyhow!("Source DB must be a JSON object"))?;
-
-    if obj.contains_key("sources") && obj.contains_key("dependencies") {
+    // Detect format from the beginning of the file to pick the right
+    // deserialization path without parsing the full JSON first.
+    let prefix = content.get(..200).unwrap_or(&content);
+    if prefix.contains("\"build_map\"") {
+        let db: BxlSourceDb = serde_json::from_str(&content)?;
+        Ok(db.build_map)
+    } else if prefix.contains("\"sources\"") {
         // dbg-source-db format: sources win over dependencies on duplicate keys
-        let sources: RawSourceMap = serde_json::from_value(obj["sources"].clone())?;
-        let mut deps: RawSourceMap = serde_json::from_value(obj["dependencies"].clone())?;
-        deps.extend(sources);
+        let db: DbgSourceDb = serde_json::from_str(&content)?;
+        let mut deps = db.dependencies;
+        deps.extend(db.sources);
         Ok(deps)
-    } else if obj.contains_key("build_map") {
-        // BXL format
-        Ok(serde_json::from_value(obj["build_map"].clone())?)
     } else {
         // Flat format (source-db-no-deps)
-        Ok(serde_json::from_value(value)?)
+        Ok(serde_json::from_str(&content)?)
     }
 }
 
-/// Filters non-Python files, converts paths to module names once, and resolves
-/// priority conflicts (e.g. __init__.py vs regular .py) in a single pass.
+/// Filters non-Python files, converts paths to module names, and resolves
+/// priority conflicts (e.g. __init__.py vs regular .py).
+///
+/// Phase 1 uses rayon to parallelize per-entry filtering and name conversion.
+/// Phase 2 sequentially merges results to resolve priority conflicts.
 fn resolve_source_map(raw: RawSourceMap) -> SourceMap {
-    let mut result = SourceMap::default();
-    let mut priorities: HashMap<ModuleName, u8> = HashMap::new();
+    let entries: Vec<(ModuleName, u8, PathBuf)> = raw
+        .into_par_iter()
+        .filter_map(|(module_path, full_path)| {
+            if !is_python_file(&full_path) {
+                return None;
+            }
+            let mod_name = match ModuleName::from_relative_path(module_path.as_ref()) {
+                Ok(name) => name,
+                Err(e) => {
+                    warn!(
+                        "Failed to convert path to module name '{}' (file '{}'): {}",
+                        module_path,
+                        full_path.display(),
+                        e
+                    );
+                    return None;
+                }
+            };
+            // TODO(T257095571): We need to surface the error where the path does not convert to a valid file.
+            let priority = match source_priority(&full_path) {
+                Ok(p) => p,
+                Err(e) => {
+                    warn!("Skipping file with invalid path: {:?}: {}", full_path, e);
+                    return None;
+                }
+            };
+            Some((mod_name, priority, full_path))
+        })
+        .collect();
 
-    for (module_path, full_path) in raw {
-        if !is_python_file(&full_path) {
-            continue;
-        }
-        // Guard against the module key in the sourcedb not just being the suffix
-        // of the full path.
-        let mod_name = match ModuleName::from_relative_path(module_path.as_ref()) {
-            Ok(name) => name,
-            Err(e) => {
-                tracing::warn!(
-                    "Failed to convert path to module name '{}' (file '{}'): {}",
-                    module_path,
-                    full_path.display(),
-                    e
-                );
-                continue;
-            }
-        };
-        // TODO(T257095571): We need to surface the error where the path does not convert to a valid file.
-        let priority = match source_priority(&full_path) {
-            Ok(p) => p,
-            Err(e) => {
-                warn!("Skipping file with invalid path: {:?}: {}", full_path, e);
-                continue;
-            }
-        };
+    let mut result = SourceMap::default();
+    let mut priorities: HashMap<ModuleName, u8, ahash::RandomState> = HashMap::default();
+    for (mod_name, priority, full_path) in entries {
         let dominated = priorities.get(&mod_name).is_some_and(|&p| p <= priority);
         if !dominated {
             priorities.insert(mod_name, priority);
