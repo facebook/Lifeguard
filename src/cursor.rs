@@ -18,7 +18,7 @@ use ruff_python_ast::name::Name;
 /// styles (e.g. `except ValueError` vs `raise builtins.ValueError`) produce false positives (extra
 /// Raise effects), not false negatives, so this is safe. Revisit if we see false positives from
 /// exception matching in practice.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum TryHandler {
     /// Bare `except:` — catches everything.
     Bare,
@@ -77,6 +77,13 @@ impl BlockStack {
     pub fn catches_exception(&self, exc_name: &ModuleName) -> bool {
         self.stack.iter().rev().any(|block| match block {
             Block::TryBody(handlers) => handlers.iter().any(|h| h.catches(exc_name)),
+        })
+    }
+
+    /// Iterate over all try handlers from enclosing try blocks.
+    pub fn try_handlers(&self) -> impl Iterator<Item = &TryHandler> + '_ {
+        self.stack.iter().flat_map(|block| match block {
+            Block::TryBody(handlers) => handlers.iter(),
         })
     }
 
@@ -149,6 +156,11 @@ impl Cursor {
 
     pub fn catches_exception(&self, exc_name: &ModuleName) -> bool {
         self.block_stack.catches_exception(exc_name)
+    }
+
+    /// Iterate over all try handlers from enclosing try blocks (for annotating call effects).
+    pub fn try_handlers(&self) -> impl Iterator<Item = &TryHandler> + '_ {
+        self.block_stack.try_handlers()
     }
 
     pub fn enter_module_scope(&mut self, mod_name: &ModuleName) {
@@ -447,6 +459,39 @@ mod tests {
         assert!(stack.catches_exception(&ModuleName::from_str("OSError")));
         // Neither catches ValueError
         assert!(!stack.catches_exception(&ModuleName::from_str("ValueError")));
+    }
+
+    #[test]
+    fn test_try_handlers_empty_stack() {
+        let stack = BlockStack::new();
+        let handlers: Vec<&TryHandler> = stack.try_handlers().collect();
+        assert!(handlers.is_empty());
+    }
+
+    #[test]
+    fn test_try_handlers_nested_try() {
+        let mut stack = BlockStack::new();
+        let outer = Block::TryBody(vec![TryHandler::typed(vec![ModuleName::from_str(
+            "OSError",
+        )])]);
+        let inner = Block::TryBody(vec![
+            TryHandler::Bare,
+            TryHandler::typed(vec![ModuleName::from_str("TypeError")]),
+        ]);
+        stack.push(outer);
+        stack.push(inner);
+
+        let handlers: Vec<&TryHandler> = stack.try_handlers().collect();
+        assert_eq!(handlers.len(), 3);
+        assert_eq!(
+            handlers[0],
+            &TryHandler::Single(ModuleName::from_str("OSError"))
+        );
+        assert_eq!(handlers[1], &TryHandler::Bare);
+        assert_eq!(
+            handlers[2],
+            &TryHandler::Single(ModuleName::from_str("TypeError"))
+        );
     }
 
     #[test]

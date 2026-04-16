@@ -1361,6 +1361,11 @@ impl<'a> SourceAnalyzer<'a> {
     }
 
     fn add_effect(&self, eff: Effect, output: &mut ModuleEffects) {
+        let eff = if eff.kind.is_runnable() && self.cursor.in_try_body() {
+            eff.with_try_handlers(self.cursor.try_handlers())
+        } else {
+            eff
+        };
         output.add_effect(self.cursor.scope(), eff);
     }
 

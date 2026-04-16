@@ -15,6 +15,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json;
 
+use crate::cursor::TryHandler;
 use crate::format::ErrorString;
 use crate::format::bare_string;
 use crate::module_parser::ParsedModule;
@@ -233,16 +234,19 @@ pub struct Effect {
     pub name: ModuleName,
     pub range: TextRange,
     pub data: EffectData,
+    /// Try handlers from enclosing try blocks at the call site.
+    /// Only present for runnable effects inside try bodies.
+    pub try_handlers: Option<Box<[TryHandler]>>,
 }
 
 impl Effect {
     pub fn new(kind: EffectKind, name: ModuleName, range: TextRange) -> Self {
-        let data = EffectData::None;
         Self {
             kind,
             name,
             range,
-            data,
+            data: EffectData::None,
+            try_handlers: None,
         }
     }
 
@@ -257,7 +261,31 @@ impl Effect {
             name,
             range,
             data,
+            try_handlers: None,
         }
+    }
+
+    pub fn with_try_handlers<'a>(
+        mut self,
+        try_handlers: impl Iterator<Item = &'a TryHandler>,
+    ) -> Self {
+        let handlers: Vec<TryHandler> = try_handlers.cloned().collect();
+        if !handlers.is_empty() {
+            self.try_handlers = Some(handlers.into_boxed_slice());
+        }
+        self
+    }
+
+    /// Whether this effect has enclosing try handlers that could catch exceptions.
+    pub fn has_try_context(&self) -> bool {
+        self.try_handlers.is_some()
+    }
+
+    /// Check whether any enclosing try handler catches the given exception name.
+    pub fn try_context_catches(&self, exc_name: &ModuleName) -> bool {
+        self.try_handlers
+            .as_ref()
+            .is_some_and(|handlers| handlers.iter().any(|h| h.catches(exc_name)))
     }
 }
 
@@ -373,6 +401,7 @@ impl EffectTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cursor::TryHandler;
 
     #[test]
     fn test_serialize_effect_kind() {
@@ -433,6 +462,62 @@ mod tests {
         let empty = CallData::empty();
         assert!(!empty.has_unsafe_keyword("foo"));
         assert!(!empty.has_unsafe_keywords());
+    }
+
+    #[test]
+    fn test_with_try_handlers_empty_iterator() {
+        let eff = Effect::new(
+            EffectKind::Raise,
+            ModuleName::from_str("ValueError"),
+            TextRange::default(),
+        )
+        .with_try_handlers(std::iter::empty());
+        assert!(!eff.has_try_context());
+        assert!(eff.try_handlers.is_none());
+    }
+
+    #[test]
+    fn test_with_try_handlers_populates_field() {
+        let handlers = [
+            TryHandler::Bare,
+            TryHandler::Single(ModuleName::from_str("TypeError")),
+        ];
+        let eff = Effect::new(
+            EffectKind::Raise,
+            ModuleName::from_str("ValueError"),
+            TextRange::default(),
+        )
+        .with_try_handlers(handlers.iter());
+        assert!(eff.has_try_context());
+        assert_eq!(eff.try_handlers.as_ref().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_try_context_catches_delegates_to_handlers() {
+        let handlers = [
+            TryHandler::Single(ModuleName::from_str("TypeError")),
+            TryHandler::Single(ModuleName::from_str("ValueError")),
+        ];
+        let eff = Effect::new(
+            EffectKind::Raise,
+            ModuleName::from_str("ValueError"),
+            TextRange::default(),
+        )
+        .with_try_handlers(handlers.iter());
+
+        assert!(eff.try_context_catches(&ModuleName::from_str("ValueError")));
+        assert!(eff.try_context_catches(&ModuleName::from_str("TypeError")));
+        assert!(!eff.try_context_catches(&ModuleName::from_str("KeyError")));
+    }
+
+    #[test]
+    fn test_try_context_catches_no_handlers() {
+        let eff = Effect::new(
+            EffectKind::Raise,
+            ModuleName::from_str("ValueError"),
+            TextRange::default(),
+        );
+        assert!(!eff.try_context_catches(&ModuleName::from_str("ValueError")));
     }
 
     #[test]
