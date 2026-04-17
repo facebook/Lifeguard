@@ -492,7 +492,7 @@ impl<'a> SourceAnalyzer<'a> {
             return None;
         }
 
-        let Some(call_name) = func.full_name() else {
+        let Some(call_name) = res.expr_full_name else {
             // We have a base name but no full name (e.g. `x.f[i]()`)
             self.unknown_function_name(func, output);
             return None;
@@ -500,7 +500,7 @@ impl<'a> SourceAnalyzer<'a> {
 
         let fname = self
             .fname_replace_import_alias(&call_name, &res)
-            .unwrap_or_else(|| res.qualify_name(&call_name));
+            .unwrap_or_else(|| res.qualified_name());
 
         Some((res, fname))
     }
@@ -905,7 +905,7 @@ impl<'a> SourceAnalyzer<'a> {
                 self.check_unresolved_call(call, args, output, Some(CallKind::Decorator));
                 continue;
             };
-            let Some(call_name) = call.full_name() else {
+            let Some(call_name) = res.expr_full_name else {
                 // Handle cases like @decorators[0] where the decorator is accessed via subscript.
                 // We can't statically determine the decorator, so mark it as unknown.
                 let name = match call {
@@ -919,7 +919,7 @@ impl<'a> SourceAnalyzer<'a> {
             };
             let fname = self
                 .fname_replace_import_alias(&call_name, &res)
-                .unwrap_or_else(|| res.qualify_name(&call_name));
+                .unwrap_or_else(|| res.qualified_name());
 
             if manual_override::declared_safe(&fname) {
                 continue;

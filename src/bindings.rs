@@ -268,8 +268,7 @@ impl<'a, 'b> AliasTableBuilder<'a, 'b> {
     // and is therefore a direct reference to that variable.
     fn expr_def(&self, expr: &Expr) -> Option<Value> {
         let res = self.definitions.resolve(&self.cursor, expr)?;
-        let expr_name = expr.full_name()?;
-        let fq_name = res.qualify_name(&expr_name);
+        let fq_name = res.try_qualified_name()?;
         self.lookup_external_name(&fq_name)
     }
 
@@ -306,8 +305,7 @@ impl<'a, 'b> AliasTableBuilder<'a, 'b> {
         if let Some(res) = r {
             if res.definition.is_import() {
                 // We cannot resolve this to a type, but we know it's an imported value
-                if let Some(var_name) = rhs.full_name() {
-                    let rhs_name = res.qualify_name(&var_name);
+                if let Some(rhs_name) = res.try_qualified_name() {
                     self.add_alias(name.clone(), Alias::Global(Value::Variable(rhs_name)));
                 } else {
                     // We don't even have a name but we still want to track this as a cross-module
@@ -440,10 +438,8 @@ impl<'a, 'b> BindingsTableBuilder<'a, 'b> {
     /// Used both for constructor calls (to infer instance types) and for
     /// type annotations in stub files.
     fn resolve_to_class(&self, expr: &Expr) -> Option<ModuleName> {
-        // If we don't have a named expression, or if we cannot resolve the name in the
-        // current scope, return None
-        let expr_name = expr.full_name()?;
         let res = self.resolve_expr(expr)?;
+        let expr_name = res.expr_full_name?;
         if let Some(alias) = self.aliases.resolve(&res.scope, &res.name) {
             // We have resolved `res.name`, which is the base name of `expr`, i.e. if expr is
             // `foo.bar.baz` we have only resolved `foo`, so we need to be careful that we take the
@@ -488,8 +484,8 @@ impl<'a, 'b> BindingsTableBuilder<'a, 'b> {
     }
 
     fn get_function_return_type(&self, func: &Expr) -> Option<ModuleName> {
-        let expr_name = func.full_name()?;
         let res = self.resolve_expr(func)?;
+        let expr_name = res.expr_full_name?;
 
         let fqn = if let Some(alias) = self.aliases.resolve(&res.scope, &res.name) {
             let parts = expr_name.components();

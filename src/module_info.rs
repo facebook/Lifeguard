@@ -80,7 +80,9 @@ impl DefinitionTable {
 
     pub fn resolve(&self, cursor: &Cursor, value: &Expr) -> Option<ResolvedName<'_>> {
         let name = value.base_name()?;
-        self.resolve_name(cursor, name)
+        let mut res = self.resolve_name(cursor, name)?;
+        res.expr_full_name = value.full_name();
+        Some(res)
     }
 
     pub fn is_imported(&self, cursor: &Cursor, value: &Expr) -> bool {
@@ -104,6 +106,7 @@ impl DefinitionTable {
                     definition: def,
                     scope,
                     scope_definitions: &self.definitions[&scope],
+                    expr_full_name: None,
                 });
             }
         }
@@ -122,6 +125,9 @@ pub struct ResolvedName<'a> {
     pub definition: &'a Definition,
     pub scope: ModuleName,
     pub scope_definitions: &'a Definitions,
+    // The full dotted name from the expression that was resolved (e.g. "x.f" for `x.f()`).
+    // Set by resolve() when resolving from an Expr; None when resolving from a bare Name.
+    pub(crate) expr_full_name: Option<ModuleName>,
 }
 
 impl<'a> ResolvedName<'a> {
@@ -141,15 +147,21 @@ impl<'a> ResolvedName<'a> {
     }
 
     pub fn qualified_name(&self) -> ModuleName {
-        self.qualify_name(&ModuleName::from_name(&self.name))
+        let name = self
+            .expr_full_name
+            .unwrap_or_else(|| ModuleName::from_name(&self.name));
+        self.qualify_name(&name)
     }
 
-    // Qualify a possibly dotted name with the scope of this name
-    // (We have looked up the base name of an expression like `x.f()` and resolved the scope that
-    // `x` was found in; separately, we use `full_name` to get the full expression `x.f` as the
-    // called function. This method joins the parts together.)
-    // TODO: Do all this more coherently; we should not need to call this manually.
-    pub fn qualify_name(&self, name: &ModuleName) -> ModuleName {
+    pub fn try_qualified_name(&self) -> Option<ModuleName> {
+        Some(self.qualify_name(&self.expr_full_name?))
+    }
+
+    // Qualify a possibly dotted name with the scope of this name.
+    // Prefer qualified_name() or try_qualified_name() over calling this directly;
+    // this is only needed when the name is constructed manually rather than from
+    // the resolved expression.
+    pub(crate) fn qualify_name(&self, name: &ModuleName) -> ModuleName {
         if matches!(self.definition.style, DefinitionStyle::ImportModule(_)) {
             // Not a from import, so we don't have a prefix
             *name
@@ -217,6 +229,7 @@ impl<'a> ModuleInfo<'a> {
             definition: def,
             scope: builtins_scope,
             scope_definitions: defs,
+            expr_full_name: value.full_name(),
         })
     }
 
@@ -482,12 +495,14 @@ impl<'a> CombinedDefinitionClassBuilder<'a> {
 
     fn get_class_name(&self, expr: &Expr) -> Option<ModuleName> {
         let res = self.resolve_expr(expr)?;
-        Some(res.qualify_name(&expr.full_name()?))
+        res.try_qualified_name()
     }
 
     fn resolve_expr(&self, x: &Expr) -> Option<ResolvedName<'_>> {
         let name = x.base_name()?;
-        self.resolve_name(name)
+        let mut res = self.resolve_name(name)?;
+        res.expr_full_name = x.full_name();
+        Some(res)
     }
 
     fn resolve_name(&self, name: Name) -> Option<ResolvedName<'_>> {
@@ -499,6 +514,7 @@ impl<'a> CombinedDefinitionClassBuilder<'a> {
                         definition: def,
                         scope,
                         scope_definitions: defs,
+                        expr_full_name: None,
                     });
                 }
             }
