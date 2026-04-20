@@ -99,6 +99,17 @@ pub fn is_python_file(path: &Path) -> bool {
         .is_some_and(|ext| PYTHON_EXTENSIONS.contains(ext))
 }
 
+/// Returns true if `name` is a valid Python identifier (ASCII subset),
+/// i.e. it can appear as a component of a dotted module name.
+pub fn is_valid_python_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        None => false,
+        Some(c) if !c.is_ascii_alphabetic() && c != '_' => false,
+        _ => chars.all(|c| c.is_ascii_alphanumeric() || c == '_'),
+    }
+}
+
 pub fn load_source_map<P: AsRef<Path>>(db_path: P) -> Result<SourceMap> {
     let raw = time("  Parsing source map", || parse_source_map(db_path))?;
     Ok(time("  Resolving source map", || resolve_source_map(raw)))

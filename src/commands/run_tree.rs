@@ -20,6 +20,7 @@ use crate::source_map::ModuleName;
 use crate::source_map::SourceMap;
 use crate::source_map::SourceResult;
 use crate::source_map::is_python_file;
+use crate::source_map::is_valid_python_identifier;
 use crate::tracing::ProcessTimer;
 use crate::tracing::time;
 
@@ -41,17 +42,6 @@ pub struct RunTreeArgs {
     /// Sort output keys and values for deterministic results
     #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
     sorted_output: bool,
-}
-
-/// Returns true if `name` is a valid Python identifier (ASCII subset),
-/// i.e. it can appear as a component of a dotted module name.
-fn is_valid_python_identifier(name: &str) -> bool {
-    let mut chars = name.chars();
-    match chars.next() {
-        None => false,
-        Some(c) if !c.is_ascii_alphabetic() && c != '_' => false,
-        _ => chars.all(|c| c.is_ascii_alphanumeric() || c == '_'),
-    }
 }
 
 /// Recursively find all .py files in a directory, skipping directories

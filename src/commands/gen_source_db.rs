@@ -23,17 +23,7 @@ use serde::Serialize;
 use walkdir::WalkDir;
 
 use crate::source_map::is_python_file;
-
-/// Returns true if `name` is a valid Python identifier (ASCII subset),
-/// i.e. it can appear as a component of a dotted module name.
-fn is_valid_python_identifier(name: &str) -> bool {
-    let mut chars = name.chars();
-    match chars.next() {
-        None => false,
-        Some(c) if !c.is_ascii_alphabetic() && c != '_' => false,
-        _ => chars.all(|c| c.is_ascii_alphanumeric() || c == '_'),
-    }
-}
+use crate::source_map::is_valid_python_identifier;
 
 #[derive(Parser)]
 pub struct GenSourceDbArgs {
