@@ -23,6 +23,7 @@ use serde::Serialize;
 use walkdir::WalkDir;
 
 use crate::source_map::is_python_file;
+use crate::source_map::is_valid_python_identifier;
 
 #[derive(Parser)]
 pub struct GenSourceDbArgs {
@@ -31,6 +32,10 @@ pub struct GenSourceDbArgs {
 
     /// Path to output JSON file
     output_path: PathBuf,
+
+    /// Path to site-packages directory (overrides pyproject.toml setting)
+    #[arg(long)]
+    site_packages: Option<PathBuf>,
 }
 
 #[derive(Serialize)]
@@ -160,8 +165,11 @@ fn load_site_packages(input_dir: &Path) -> Result<Option<PathBuf>> {
 pub fn run(args: GenSourceDbArgs) -> Result<()> {
     let input_dir = args.input_dir.canonicalize()?;
 
-    // Load site_packages from pyproject.toml if present
-    let site_packages = load_site_packages(&input_dir)?;
+    // Use CLI arg if provided, otherwise load from pyproject.toml
+    let site_packages = match args.site_packages {
+        Some(sp) => Some(sp.canonicalize().context("site_packages path not found")?),
+        None => load_site_packages(&input_dir)?,
+    };
     if let Some(ref sp) = site_packages {
         eprintln!("Using site-packages: {}", sp.display());
     }
@@ -176,11 +184,27 @@ pub fn run(args: GenSourceDbArgs) -> Result<()> {
     let mut visited = HashSet::new();
     let mut queue = VecDeque::new();
 
-    // Seed the queue with all .py files under input_dir
+    // Seed the queue with all .py files under input_dir, skipping directories
+    // and files whose names are not valid Python identifiers.
     for entry in WalkDir::new(&input_dir)
         .into_iter()
+        .filter_entry(|e| {
+            if !e.file_type().is_dir() {
+                return true;
+            }
+            e.depth() == 0
+                || e.file_name()
+                    .to_str()
+                    .is_some_and(is_valid_python_identifier)
+        })
         .filter_map(|e| e.ok())
-        .filter(|e| is_python_file(e.path()))
+        .filter(|e| {
+            is_python_file(e.path())
+                && e.path()
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(is_valid_python_identifier)
+        })
     {
         if let Ok(full_path) = entry.path().canonicalize() {
             if visited.insert(full_path.clone()) {
@@ -218,26 +242,17 @@ pub fn run(args: GenSourceDbArgs) -> Result<()> {
                     Err(_) => continue,
                 };
                 if visited.insert(resolved.clone()) {
-                    // Determine the relative key based on which root it's under
-                    let rel_key = if resolved.starts_with(&input_dir) {
-                        resolved
-                            .strip_prefix(&input_dir)
-                            .expect("file should be under input_dir")
-                            .to_string_lossy()
-                            .into_owned()
-                    } else if let Some(ref sp) = site_packages {
-                        if resolved.starts_with(sp) {
-                            resolved
-                                .strip_prefix(sp)
-                                .expect("file should be under site_packages")
-                                .to_string_lossy()
-                                .into_owned()
-                        } else {
-                            continue;
-                        }
-                    } else {
+                    // Determine the relative key based on which root it's under.
+                    // Check most-specific root first (site_packages may be a
+                    // subdirectory of input_dir).
+                    let rel_key = roots
+                        .iter()
+                        .rev()
+                        .find_map(|root| resolved.strip_prefix(root).ok());
+                    let Some(rel_key) = rel_key else {
                         continue;
                     };
+                    let rel_key = rel_key.to_string_lossy().into_owned();
 
                     build_map.insert(rel_key, resolved.to_string_lossy().into_owned());
                     queue.push_back(resolved);

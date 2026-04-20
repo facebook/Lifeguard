@@ -20,6 +20,7 @@ use crate::source_map::ModuleName;
 use crate::source_map::SourceMap;
 use crate::source_map::SourceResult;
 use crate::source_map::is_python_file;
+use crate::source_map::is_valid_python_identifier;
 use crate::tracing::ProcessTimer;
 use crate::tracing::time;
 
@@ -43,12 +44,29 @@ pub struct RunTreeArgs {
     sorted_output: bool,
 }
 
-/// Recursively find all .py files in a directory
+/// Recursively find all .py files in a directory, skipping directories
+/// and files whose names are not valid Python identifiers
+/// (e.g. `.venv`, `site-packages`, `2024-07-23-0813_migration.py`).
 fn find_python_files(dir: &Path) -> Vec<PathBuf> {
     WalkDir::new(dir)
         .into_iter()
+        .filter_entry(|e| {
+            if !e.file_type().is_dir() {
+                return true;
+            }
+            e.depth() == 0
+                || e.file_name()
+                    .to_str()
+                    .is_some_and(is_valid_python_identifier)
+        })
         .filter_map(|e| e.ok())
-        .filter(|e| is_python_file(e.path()))
+        .filter(|e| {
+            is_python_file(e.path())
+                && e.path()
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(is_valid_python_identifier)
+        })
         .map(|e| e.into_path())
         .collect()
 }
