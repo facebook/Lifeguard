@@ -1834,7 +1834,7 @@ dependencies = [
 
 [[package]]
 name = "pyrefly_derive"
-version = "0.60.0"
+version = "0.55.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1843,7 +1843,7 @@ dependencies = [
 
 [[package]]
 name = "pyrefly_python"
-version = "0.60.0"
+version = "0.55.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1870,7 +1870,7 @@ dependencies = [
 
 [[package]]
 name = "pyrefly_util"
-version = "0.60.0"
+version = "0.55.0"
 dependencies = [
  "anstream 0.6.21",
  "anyhow",
