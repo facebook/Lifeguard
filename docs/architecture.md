@@ -58,9 +58,9 @@ AST parsing is on-demand — modules are parsed as needed during import graph co
 - `traits.rs` - Extension traits bridging lifeguard with pyrefly types
 
 **Binary utilities**:
-- `commands/run_tree.rs` - Subcommand to analyze a directory tree without Buck
+- `commands/run_tree.rs` - Subcommand to analyze a directory tree without Buck (reuses `gen_source_db`'s discovery)
 - `commands/show_effects.rs` - Subcommand to dump effects for a single Python file
-- `commands/gen_source_db.rs` - Subcommand to generate a source DB from a directory tree
+- `commands/gen_source_db.rs` - Subcommand to generate a source DB from a directory tree; owns the import-following discovery also used by `run-tree`
 
 **Local pyrefly forks**:
 - `pyrefly/definitions.rs` - Local fork of pyrefly's definitions module (with `LIFEGUARD:` markers)

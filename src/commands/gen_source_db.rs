@@ -22,8 +22,11 @@ use serde::Deserialize;
 use serde::Serialize;
 use walkdir::WalkDir;
 
+use crate::source_map::RawSourceMap;
+use crate::source_map::SourceMap;
 use crate::source_map::is_python_file;
 use crate::source_map::is_valid_python_identifier;
+use crate::source_map::resolve_source_map;
 
 #[derive(Parser)]
 pub struct GenSourceDbArgs {
@@ -162,11 +165,21 @@ fn load_site_packages(input_dir: &Path) -> Result<Option<PathBuf>> {
     Ok(Some(sp_path))
 }
 
-pub fn run(args: GenSourceDbArgs) -> Result<()> {
-    let input_dir = args.input_dir.canonicalize()?;
+/// Build the source-DB `build_map` for `input_dir` by seeding with every
+/// `.py` file under it (whose path components are valid Python identifiers)
+/// and then following imports transitively. If `site_packages_override` is
+/// Some, it takes precedence over the `[lifeguard].site_packages` entry in
+/// `<input_dir>/pyproject.toml`. Imports that resolve under site-packages
+/// are included as well. Returns the map (rel-path → abs-path) and the
+/// number of seed files (rest came from import-following).
+pub(crate) fn build_source_db(
+    input_dir: &Path,
+    site_packages_override: Option<&Path>,
+) -> Result<(BTreeMap<String, String>, usize)> {
+    let input_dir = input_dir.canonicalize()?;
 
-    // Use CLI arg if provided, otherwise load from pyproject.toml
-    let site_packages = match args.site_packages {
+    // CLI override wins over pyproject.toml
+    let site_packages = match site_packages_override {
         Some(sp) => Some(sp.canonicalize().context("site_packages path not found")?),
         None => load_site_packages(&input_dir)?,
     };
@@ -177,7 +190,7 @@ pub fn run(args: GenSourceDbArgs) -> Result<()> {
     // Build search roots
     let mut roots: Vec<&Path> = vec![&input_dir];
     if let Some(ref sp) = site_packages {
-        roots.push(sp.as_path());
+        roots.push(sp);
     }
 
     let mut build_map = BTreeMap::new();
@@ -221,11 +234,6 @@ pub fn run(args: GenSourceDbArgs) -> Result<()> {
     }
 
     let seed_count = build_map.len();
-    eprintln!(
-        "Seeded with {} files from {}",
-        seed_count,
-        input_dir.display()
-    );
 
     // Process the work queue: parse each file for imports, resolve them, add new files
     while let Some(file_path) = queue.pop_front() {
@@ -260,6 +268,28 @@ pub fn run(args: GenSourceDbArgs) -> Result<()> {
             }
         }
     }
+
+    Ok((build_map, seed_count))
+}
+
+/// Convert a `build_map` (as produced by [`build_source_db`]) into a
+/// [`SourceMap`], applying the standard priority resolution (`.pyi` >
+/// `.py`, `__init__` > regular) on duplicates.
+pub(crate) fn to_source_map(build_map: BTreeMap<String, String>) -> SourceMap {
+    let raw: RawSourceMap = build_map
+        .into_iter()
+        .map(|(k, v)| (k, PathBuf::from(v)))
+        .collect();
+    resolve_source_map(raw)
+}
+
+pub fn run(args: GenSourceDbArgs) -> Result<()> {
+    let (build_map, seed_count) = build_source_db(&args.input_dir, args.site_packages.as_deref())?;
+    eprintln!(
+        "Seeded with {} files from {}",
+        seed_count,
+        args.input_dir.display()
+    );
 
     let source_db = SourceDb { build_map };
     let output_file = std::fs::File::create(&args.output_path)?;
