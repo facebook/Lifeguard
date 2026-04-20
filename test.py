@@ -150,5 +150,8 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        # no stack trace on interrupt
-        sys.exit(signal.SIGINT)
+        # Re-raise SIGINT with the default handler so the OS sets exit code 130
+        # (128 + SIGINT), correctly signalling an interrupted process to shells
+        # and CI systems, rather than exiting with a generic error code.
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        os.kill(os.getpid(), signal.SIGINT)
