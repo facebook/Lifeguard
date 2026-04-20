@@ -738,7 +738,18 @@ struct Call<'a> {
     stack: CallStack,
 }
 
-#[derive(Debug, Default)]
+impl<'a> Call<'a> {
+    fn clone_with_name(&self, func: ModuleName) -> Self {
+        Self {
+            caller_module: self.caller_module,
+            effect: self.effect,
+            func,
+            stack: self.stack.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone)]
 struct CallStack {
     entries: Vec<ModuleName>,
     seen: AHashSet<ModuleName>,
@@ -1021,24 +1032,24 @@ impl ProjectInfo {
         }
     }
 
-    fn check_constructor_call(&self, call: &mut Call, state: &GlobalAnalysisState) -> Result<bool> {
+    fn check_constructor_call(&self, call: &Call, state: &GlobalAnalysisState) -> Result<bool> {
         let mut ret = true;
         let cls_name = call.func;
         // Check the metaclass
         let cls = self.classes.lookup(&cls_name).unwrap();
         if let Some(mcls) = cls.metaclass {
-            call.func = mcls.append_str("__new__");
-            ret &= self.check_call_body(call, state)?;
-            call.func = mcls.append_str("__init__");
-            ret &= self.check_call_body(call, state)?;
+            let mut mcls_new = call.clone_with_name(mcls.append_str("__new__"));
+            ret &= self.check_call_body(&mut mcls_new, state)?;
+            let mut mcls_init = call.clone_with_name(mcls.append_str("__init__"));
+            ret &= self.check_call_body(&mut mcls_init, state)?;
         }
         // Check __init__
         // TODO: Look up __init__ in the MRO
-        call.func = cls_name.append_str("__init__");
-        ret &= self.check_call_body(call, state)?;
+        let mut init_call = call.clone_with_name(cls_name.append_str("__init__"));
+        ret &= self.check_call_body(&mut init_call, state)?;
         // Check __post_init__ (called by dataclass-generated __init__)
-        call.func = cls_name.append_str("__post_init__");
-        ret &= self.check_call_body(call, state)?;
+        let mut post_init_call = call.clone_with_name(cls_name.append_str("__post_init__"));
+        ret &= self.check_call_body(&mut post_init_call, state)?;
         Ok(ret)
     }
 
