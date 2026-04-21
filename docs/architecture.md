@@ -56,6 +56,7 @@ AST parsing is on-demand — modules are parsed as needed during import graph co
 - `module_parser.rs` - Module parsing abstraction
 - `tracing.rs` - Simple timing utility
 - `traits.rs` - Extension traits bridging lifeguard with pyrefly types
+- `find_sources.rs` - Seeds from `.py` files under a directory and follows imports (optionally into site-packages); shared by `run-tree` and `gen-source-db`
 
 **Binary utilities**:
 - `commands/run_tree.rs` - Subcommand to analyze a directory tree without Buck

@@ -72,8 +72,8 @@ impl AstResult {
 // Type aliases
 pub type SourceMap = HashMap<ModuleName, SourceResult, ahash::RandomState>;
 
-// Internal type for the raw deserialized source DB before module name resolution
-type RawSourceMap = HashMap<String, PathBuf, ahash::RandomState>;
+// Raw deserialized source DB (string paths) before module name resolution.
+pub(crate) type RawSourceMap = HashMap<String, PathBuf, ahash::RandomState>;
 
 /// Typed envelope for the BXL source DB format.
 #[derive(Deserialize)]
@@ -148,7 +148,7 @@ fn parse_source_map<P: AsRef<Path>>(db_path: P) -> Result<RawSourceMap> {
 ///
 /// Phase 1 uses rayon to parallelize per-entry filtering and name conversion.
 /// Phase 2 sequentially merges results to resolve priority conflicts.
-fn resolve_source_map(raw: RawSourceMap) -> SourceMap {
+pub(crate) fn resolve_source_map(raw: RawSourceMap) -> SourceMap {
     let entries: Vec<(ModuleName, u8, PathBuf)> = raw
         .into_par_iter()
         .filter_map(|(module_path, full_path)| {
