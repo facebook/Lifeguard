@@ -434,5 +434,14 @@ pub fn check_buck_availability() -> bool {
         eprintln!("buck2 not available");
         return false;
     }
-    true
+    // Also check we're inside a Buck project. buck2 may be on PATH
+    // even when running from the OSS checkout.
+    let root = Command::new("buck2").args(["root"]).output();
+    match root {
+        Ok(o) if o.status.success() => true,
+        _ => {
+            eprintln!("not in a Buck project, skipping");
+            false
+        }
+    }
 }
