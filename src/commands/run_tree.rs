@@ -13,7 +13,7 @@ use clap::ArgAction;
 use clap::Parser;
 
 use crate::find_sources::build_source_db;
-use crate::find_sources::to_source_map;
+use crate::find_sources::make_source_map;
 use crate::runner::Options;
 use crate::runner::process_source_map;
 use crate::tracing::ProcessTimer;
@@ -52,7 +52,7 @@ pub fn run(args: RunTreeArgs) -> Result<()> {
     })?;
     println!("Found {} Python files", build_map.len());
 
-    let source_map = to_source_map(build_map);
+    let source_map = make_source_map(build_map);
 
     let options = Options {
         verbose_output_path: args.verbose_output_path,

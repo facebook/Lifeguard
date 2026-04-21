@@ -259,7 +259,7 @@ pub fn build_source_db(
 /// Convert a `build_map` (as produced by [`build_source_db`]) into a
 /// [`SourceMap`], applying the standard priority resolution (`.pyi` >
 /// `.py`, `__init__` > regular) on duplicates.
-pub fn to_source_map(build_map: BTreeMap<String, String>) -> SourceMap {
+pub fn make_source_map(build_map: BTreeMap<String, String>) -> SourceMap {
     let raw: RawSourceMap = build_map
         .into_iter()
         .map(|(k, v)| (k, PathBuf::from(v)))
