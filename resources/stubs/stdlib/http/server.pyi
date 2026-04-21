@@ -57,8 +57,8 @@ if sys.version_info >= (3, 14):
             keyfile: StrOrBytesPath | None = None,
             password: _PasswordType | None = None,
             alpn_protocols: Iterable[str] | None = None,
-        ) -> None: ...
-        def server_activate(self) -> None: ...
+        ) -> None: unsafe()
+        def server_activate(self) -> None: unsafe()
 
     class ThreadingHTTPSServer(socketserver.ThreadingMixIn, HTTPSServer): ...
 
@@ -80,22 +80,22 @@ class BaseHTTPRequestHandler(socketserver.StreamRequestHandler):
     default_request_version: str  # undocumented
     weekdayname: ClassVar[Sequence[str]]  # undocumented
     monthname: ClassVar[Sequence[str | None]]  # undocumented
-    def handle_one_request(self) -> None: ...
-    def handle_expect_100(self) -> bool: ...
-    def send_error(self, code: int, message: str | None = None, explain: str | None = None) -> None: ...
-    def send_response(self, code: int, message: str | None = None) -> None: ...
-    def send_header(self, keyword: str, value: str) -> None: ...
-    def send_response_only(self, code: int, message: str | None = None) -> None: ...
-    def end_headers(self) -> None: ...
-    def flush_headers(self) -> None: ...
-    def log_request(self, code: int | str = "-", size: int | str = "-") -> None: ...
-    def log_error(self, format: str, *args: Any) -> None: ...
-    def log_message(self, format: str, *args: Any) -> None: ...
-    def version_string(self) -> str: ...
-    def date_time_string(self, timestamp: float | None = None) -> str: ...
-    def log_date_time_string(self) -> str: ...
-    def address_string(self) -> str: ...
-    def parse_request(self) -> bool: ...  # undocumented
+    def handle_one_request(self) -> None: unsafe()
+    def handle_expect_100(self) -> bool: unsafe()
+    def send_error(self, code: int, message: str | None = None, explain: str | None = None) -> None: unsafe()
+    def send_response(self, code: int, message: str | None = None) -> None: unsafe()
+    def send_header(self, keyword: str, value: str) -> None: unsafe()
+    def send_response_only(self, code: int, message: str | None = None) -> None: unsafe()
+    def end_headers(self) -> None: unsafe()
+    def flush_headers(self) -> None: unsafe()
+    def log_request(self, code: int | str = "-", size: int | str = "-") -> None: unsafe()
+    def log_error(self, format: str, *args: Any) -> None: unsafe()
+    def log_message(self, format: str, *args: Any) -> None: unsafe()
+    def version_string(self) -> str: no_effects()
+    def date_time_string(self, timestamp: float | None = None) -> str: no_effects()
+    def log_date_time_string(self) -> str: no_effects()
+    def address_string(self) -> str: no_effects()
+    def parse_request(self) -> bool: unsafe()  # undocumented
 
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     extensions_map: dict[str, str]
@@ -109,22 +109,22 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
         server: socketserver.BaseServer,
         *,
         directory: StrPath | None = None,
-    ) -> None: ...
-    def do_GET(self) -> None: ...
-    def do_HEAD(self) -> None: ...
-    def send_head(self) -> io.BytesIO | BinaryIO | None: ...  # undocumented
-    def list_directory(self, path: StrPath) -> io.BytesIO | None: ...  # undocumented
-    def translate_path(self, path: str) -> str: ...  # undocumented
-    def copyfile(self, source: SupportsRead[AnyStr], outputfile: SupportsWrite[AnyStr]) -> None: ...  # undocumented
-    def guess_type(self, path: StrPath) -> str: ...  # undocumented
+    ) -> None: unsafe()
+    def do_GET(self) -> None: unsafe()
+    def do_HEAD(self) -> None: unsafe()
+    def send_head(self) -> io.BytesIO | BinaryIO | None: unsafe()  # undocumented
+    def list_directory(self, path: StrPath) -> io.BytesIO | None: unsafe()  # undocumented
+    def translate_path(self, path: str) -> str: no_effects()  # undocumented
+    def copyfile(self, source: SupportsRead[AnyStr], outputfile: SupportsWrite[AnyStr]) -> None: unsafe()  # undocumented
+    def guess_type(self, path: StrPath) -> str: no_effects()  # undocumented
 
-def executable(path: StrPath) -> bool: ...  # undocumented
+def executable(path: StrPath) -> bool: unsafe()  # undocumented
 @deprecated("Deprecated in Python 3.13; removal scheduled for Python 3.15")
 class CGIHTTPRequestHandler(SimpleHTTPRequestHandler):
     cgi_directories: list[str]
     have_fork: bool  # undocumented
-    def do_POST(self) -> None: ...
-    def is_cgi(self) -> bool: ...  # undocumented
-    def is_executable(self, path: StrPath) -> bool: ...  # undocumented
-    def is_python(self, path: StrPath) -> bool: ...  # undocumented
-    def run_cgi(self) -> None: ...  # undocumented
+    def do_POST(self) -> None: unsafe()
+    def is_cgi(self) -> bool: no_effects()  # undocumented
+    def is_executable(self, path: StrPath) -> bool: unsafe()  # undocumented
+    def is_python(self, path: StrPath) -> bool: no_effects()  # undocumented
+    def run_cgi(self) -> None: unsafe()  # undocumented
