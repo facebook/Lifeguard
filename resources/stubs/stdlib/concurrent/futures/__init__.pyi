@@ -68,4 +68,4 @@ else:
         "ThreadPoolExecutor",
     )
 
-def __dir__() -> tuple[str, ...]: ...
+def __dir__() -> tuple[str, ...]: no_effects()

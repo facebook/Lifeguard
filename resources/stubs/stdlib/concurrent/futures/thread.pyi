@@ -15,7 +15,7 @@ _threads_queues: Mapping[Any, Any]
 _shutdown: bool
 _global_shutdown_lock: Lock
 
-def _python_exit() -> None: ...
+def _python_exit() -> None: unsafe()
 
 _S = TypeVar("_S")
 
@@ -37,29 +37,29 @@ if sys.version_info >= (3, 14):
         @classmethod
         def prepare(
             cls, initializer: Callable[[Unpack[_Ts]], object], initargs: tuple[Unpack[_Ts]]
-        ) -> tuple[Callable[[], Self], _ResolveTaskFunc]: ...
+        ) -> tuple[Callable[[], Self], _ResolveTaskFunc]: no_effects()
         @overload
         @classmethod
         def prepare(
             cls, initializer: Callable[[], object], initargs: tuple[()]
         ) -> tuple[Callable[[], Self], _ResolveTaskFunc]: ...
         @overload
-        def __init__(self, initializer: Callable[[Unpack[_Ts]], object], initargs: tuple[Unpack[_Ts]]) -> None: ...
+        def __init__(self, initializer: Callable[[Unpack[_Ts]], object], initargs: tuple[Unpack[_Ts]]) -> None: no_effects()
         @overload
         def __init__(self, initializer: Callable[[], object], initargs: tuple[()]) -> None: ...
-        def initialize(self) -> None: ...
-        def finalize(self) -> None: ...
-        def run(self, task: _Task) -> None: ...
+        def initialize(self) -> None: unsafe()
+        def finalize(self) -> None: unsafe()
+        def run(self, task: _Task) -> None: unsafe()
 
 if sys.version_info >= (3, 14):
     class _WorkItem(Generic[_S]):
         future: Future[Any]
         task: _Task
-        def __init__(self, future: Future[Any], task: _Task) -> None: ...
-        def run(self, ctx: WorkerContext) -> None: ...
-        def __class_getitem__(cls, item: Any, /) -> GenericAlias: ...
+        def __init__(self, future: Future[Any], task: _Task) -> None: no_effects()
+        def run(self, ctx: WorkerContext) -> None: unsafe()
+        def __class_getitem__(cls, item: Any, /) -> GenericAlias: no_effects()
 
-    def _worker(executor_reference: ref[Any], ctx: WorkerContext, work_queue: queue.SimpleQueue[Any]) -> None: ...
+    def _worker(executor_reference: ref[Any], ctx: WorkerContext, work_queue: queue.SimpleQueue[Any]) -> None: unsafe()
 
 else:
     class _WorkItem(Generic[_S]):
@@ -67,16 +67,16 @@ else:
         fn: Callable[..., _S]
         args: Iterable[Any]
         kwargs: Mapping[str, Any]
-        def __init__(self, future: Future[_S], fn: Callable[..., _S], args: Iterable[Any], kwargs: Mapping[str, Any]) -> None: ...
-        def run(self) -> None: ...
-        def __class_getitem__(cls, item: Any, /) -> GenericAlias: ...
+        def __init__(self, future: Future[_S], fn: Callable[..., _S], args: Iterable[Any], kwargs: Mapping[str, Any]) -> None: no_effects()
+        def run(self) -> None: unsafe()
+        def __class_getitem__(cls, item: Any, /) -> GenericAlias: no_effects()
 
     def _worker(
         executor_reference: ref[Any],
         work_queue: queue.SimpleQueue[Any],
         initializer: Callable[[Unpack[_Ts]], object],
         initargs: tuple[Unpack[_Ts]],
-    ) -> None: ...
+    ) -> None: unsafe()
 
 class BrokenThreadPool(BrokenExecutor): ...
 
@@ -104,7 +104,7 @@ class ThreadPoolExecutor(Executor):
         @classmethod
         def prepare_context(
             cls, initializer: Callable[[], object], initargs: tuple[()]
-        ) -> tuple[Callable[[], WorkerContext], _ResolveTaskFunc]: ...
+        ) -> tuple[Callable[[], WorkerContext], _ResolveTaskFunc]: no_effects()
         @overload
         @classmethod
         def prepare_context(
@@ -118,7 +118,7 @@ class ThreadPoolExecutor(Executor):
         thread_name_prefix: str = "",
         initializer: Callable[[], object] | None = None,
         initargs: tuple[()] = (),
-    ) -> None: ...
+    ) -> None: no_effects()
     @overload
     def __init__(
         self,
@@ -136,5 +136,5 @@ class ThreadPoolExecutor(Executor):
         initializer: Callable[[Unpack[_Ts]], object],
         initargs: tuple[Unpack[_Ts]],
     ) -> None: ...
-    def _adjust_thread_count(self) -> None: ...
-    def _initializer_failed(self) -> None: ...
+    def _adjust_thread_count(self) -> None: unsafe()
+    def _initializer_failed(self) -> None: unsafe()

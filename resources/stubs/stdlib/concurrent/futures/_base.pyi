@@ -40,20 +40,20 @@ class Future(Generic[_T]):
     _result: _T | None
     _exception: BaseException | None
     _waiters: list[_Waiter]
-    def cancel(self) -> bool: ...
-    def cancelled(self) -> bool: ...
-    def running(self) -> bool: ...
-    def done(self) -> bool: ...
-    def add_done_callback(self, fn: Callable[[Future[_T]], object]) -> None: ...
-    def result(self, timeout: float | None = None) -> _T: ...
-    def set_running_or_notify_cancel(self) -> bool: ...
-    def set_result(self, result: _T) -> None: ...
-    def exception(self, timeout: float | None = None) -> BaseException | None: ...
-    def set_exception(self, exception: BaseException | None) -> None: ...
-    def __class_getitem__(cls, item: Any, /) -> GenericAlias: ...
+    def cancel(self) -> bool: unsafe()
+    def cancelled(self) -> bool: no_effects()
+    def running(self) -> bool: no_effects()
+    def done(self) -> bool: no_effects()
+    def add_done_callback(self, fn: Callable[[Future[_T]], object]) -> None: mutation()
+    def result(self, timeout: float | None = None) -> _T: unsafe()
+    def set_running_or_notify_cancel(self) -> bool: mutation()
+    def set_result(self, result: _T) -> None: mutation()
+    def exception(self, timeout: float | None = None) -> BaseException | None: unsafe()
+    def set_exception(self, exception: BaseException | None) -> None: mutation()
+    def __class_getitem__(cls, item: Any, /) -> GenericAlias: no_effects()
 
 class Executor:
-    def submit(self, fn: Callable[_P, _T], /, *args: _P.args, **kwargs: _P.kwargs) -> Future[_T]: ...
+    def submit(self, fn: Callable[_P, _T], /, *args: _P.args, **kwargs: _P.kwargs) -> Future[_T]: unsafe()
     if sys.version_info >= (3, 14):
         def map(
             self,
@@ -62,17 +62,17 @@ class Executor:
             timeout: float | None = None,
             chunksize: int = 1,
             buffersize: int | None = None,
-        ) -> Iterator[_T]: ...
+        ) -> Iterator[_T]: unsafe()
     else:
         def map(
             self, fn: Callable[..., _T], *iterables: Iterable[Any], timeout: float | None = None, chunksize: int = 1
-        ) -> Iterator[_T]: ...
+        ) -> Iterator[_T]: unsafe()
 
-    def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None: ...
-    def __enter__(self) -> Self: ...
+    def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None: unsafe()
+    def __enter__(self) -> Self: no_effects()
     def __exit__(
         self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None
-    ) -> bool | None: ...
+    ) -> bool | None: unsafe()
 
 class _AsCompletedFuture(Protocol[_T_co]):
     # as_completed only mutates non-generic aspects of passed Futures and does not do any nominal
@@ -84,7 +84,7 @@ class _AsCompletedFuture(Protocol[_T_co]):
     # Not used by as_completed, but needed to propagate the generic type
     def result(self, timeout: float | None = None) -> _T_co: ...
 
-def as_completed(fs: Iterable[_AsCompletedFuture[_T]], timeout: float | None = None) -> Iterator[Future[_T]]: ...
+def as_completed(fs: Iterable[_AsCompletedFuture[_T]], timeout: float | None = None) -> Iterator[Future[_T]]: unsafe()
 
 class DoneAndNotDoneFutures(NamedTuple, Generic[_T]):
     done: set[Future[_T]]
@@ -92,14 +92,14 @@ class DoneAndNotDoneFutures(NamedTuple, Generic[_T]):
 
 def wait(
     fs: Iterable[Future[_T]], timeout: float | None = None, return_when: str = "ALL_COMPLETED"
-) -> DoneAndNotDoneFutures[_T]: ...
+) -> DoneAndNotDoneFutures[_T]: unsafe()
 
 class _Waiter:
     event: threading.Event
     finished_futures: list[Future[Any]]
-    def add_result(self, future: Future[Any]) -> None: ...
-    def add_exception(self, future: Future[Any]) -> None: ...
-    def add_cancelled(self, future: Future[Any]) -> None: ...
+    def add_result(self, future: Future[Any]) -> None: mutation()
+    def add_exception(self, future: Future[Any]) -> None: mutation()
+    def add_cancelled(self, future: Future[Any]) -> None: mutation()
 
 class _AsCompletedWaiter(_Waiter):
     lock: threading.Lock
@@ -110,10 +110,10 @@ class _AllCompletedWaiter(_Waiter):
     num_pending_calls: int
     stop_on_exception: bool
     lock: threading.Lock
-    def __init__(self, num_pending_calls: int, stop_on_exception: bool) -> None: ...
+    def __init__(self, num_pending_calls: int, stop_on_exception: bool) -> None: no_effects()
 
 class _AcquireFutures:
     futures: Iterable[Future[Any]]
-    def __init__(self, futures: Iterable[Future[Any]]) -> None: ...
-    def __enter__(self) -> None: ...
-    def __exit__(self, *args: Unused) -> None: ...
+    def __init__(self, futures: Iterable[Future[Any]]) -> None: no_effects()
+    def __enter__(self) -> None: unsafe()
+    def __exit__(self, *args: Unused) -> None: unsafe()

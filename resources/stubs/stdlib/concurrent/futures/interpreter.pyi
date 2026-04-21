@@ -35,7 +35,7 @@ if sys.version_info >= (3, 14):
     from _interpreters import InterpreterError
 
     class ExecutionFailed(InterpreterError):
-        def __init__(self, excinfo: _ExcInfo) -> None: ...  #  type: ignore[override]
+        def __init__(self, excinfo: _ExcInfo) -> None: no_effects()  #  type: ignore[override]
 
     class WorkerContext(ThreadWorkerContext):
         # Parent class doesn't have `shared` argument,
@@ -43,7 +43,7 @@ if sys.version_info >= (3, 14):
         @classmethod
         def prepare(
             cls, initializer: Callable[[Unpack[_Ts]], object], initargs: tuple[Unpack[_Ts]], shared: Mapping[str, object]
-        ) -> tuple[Callable[[], Self], _TaskFunc]: ...
+        ) -> tuple[Callable[[], Self], _TaskFunc]: no_effects()
         @overload  #  type: ignore[override]
         @classmethod
         def prepare(
@@ -51,9 +51,9 @@ if sys.version_info >= (3, 14):
         ) -> tuple[Callable[[], Self], _TaskFunc]: ...
         def __init__(
             self, initdata: tuple[bytes, Literal["function", "script"]], shared: Mapping[str, object] | None = None
-        ) -> None: ...  #  type: ignore[override]
-        def __del__(self) -> None: ...
-        def run(self, task: _Task) -> None: ...  #  type: ignore[override]
+        ) -> None: no_effects()  #  type: ignore[override]
+        def __del__(self) -> None: unsafe()
+        def run(self, task: _Task) -> None: unsafe()  #  type: ignore[override]
 
     class BrokenInterpreterPool(BrokenThreadPool): ...
 
@@ -64,7 +64,7 @@ if sys.version_info >= (3, 14):
         @classmethod
         def prepare_context(
             cls, initializer: Callable[[], object], initargs: tuple[()], shared: Mapping[str, object]
-        ) -> tuple[Callable[[], WorkerContext], _TaskFunc]: ...
+        ) -> tuple[Callable[[], WorkerContext], _TaskFunc]: no_effects()
         @overload  #  type: ignore[override]
         @classmethod
         def prepare_context(
@@ -78,7 +78,7 @@ if sys.version_info >= (3, 14):
             initializer: Callable[[], object] | None = None,
             initargs: tuple[()] = (),
             shared: Mapping[str, object] | None = None,
-        ) -> None: ...
+        ) -> None: no_effects()
         @overload
         def __init__(
             self,
