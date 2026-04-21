@@ -85,8 +85,43 @@ fn resolve_import(roots: &[&Path], module: &str) -> Option<PathBuf> {
     None
 }
 
+/// Compute the package name for a Python file given its path relative to a root.
+/// The package is always the parent directory, dotted
+/// (e.g. `sqlalchemy/sql/__init__.py` → `sqlalchemy.sql`,
+/// `sqlalchemy/sql/schema.py` → `sqlalchemy.sql`).
+fn package_from_rel_path(rel_path: &Path) -> Option<String> {
+    let parts: Vec<&str> = rel_path
+        .parent()?
+        .components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .collect();
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("."))
+    }
+}
+
+/// Resolve a relative import to an absolute module name.
+/// `level` is the number of leading dots, `module` is the part after the dots (if any),
+/// and `package` is the current file's package.
+fn resolve_relative_import(level: u32, module: Option<&str>, package: &str) -> Option<String> {
+    let parts: Vec<&str> = package.split('.').collect();
+    // level=1 means current package, level=2 means parent, etc.
+    let keep = parts.len().checked_sub(level.saturating_sub(1) as usize)?;
+    if keep == 0 {
+        return module.map(|m| m.to_string());
+    }
+    let base = parts[..keep].join(".");
+    match module {
+        Some(m) => Some(format!("{}.{}", base, m)),
+        None => Some(base),
+    }
+}
+
 /// Extract dotted module names from import statements in Python source.
-fn extract_imports(source: &str) -> Vec<String> {
+/// If `package` is provided, relative imports are resolved against it.
+fn extract_imports(source: &str, package: Option<&str>) -> Vec<String> {
     let parsed = parse_unchecked_source(source, ruff_python_ast::PySourceType::Python);
     let mut imports = Vec::new();
 
@@ -98,8 +133,23 @@ fn extract_imports(source: &str) -> Vec<String> {
                 }
             }
             Stmt::ImportFrom(import_from) => {
-                // Skip relative imports (level > 0) — they refer to the project itself
                 if import_from.level > 0 {
+                    // Resolve relative import if we have a package context
+                    let Some(pkg) = package else {
+                        continue;
+                    };
+                    let base = resolve_relative_import(
+                        import_from.level,
+                        import_from.module.as_ref().map(|m| m.as_str()),
+                        pkg,
+                    );
+                    let Some(base) = base else {
+                        continue;
+                    };
+                    for alias in &import_from.names {
+                        imports.push(format!("{}.{}", base, alias.name));
+                    }
+                    imports.push(base);
                     continue;
                 }
                 if let Some(module) = &import_from.module {
@@ -226,7 +276,15 @@ pub fn build_source_db(
             Err(_) => continue,
         };
 
-        let imports = extract_imports(&source);
+        // For site_packages files, compute the package so relative imports
+        // can be resolved. Project files don't need this: the initial walk
+        // already seeds every .py under input_dir, so following their relative
+        // imports wouldn't discover anything new.
+        let package = site_packages
+            .as_ref()
+            .and_then(|sp| file_path.strip_prefix(sp).ok())
+            .and_then(package_from_rel_path);
+        let imports = extract_imports(&source, package.as_deref());
         for module_name in imports {
             if let Some(resolved) = resolve_import(&roots, &module_name) {
                 let resolved = match resolved.canonicalize() {

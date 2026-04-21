@@ -62,4 +62,24 @@ mod tests {
             BTreeSet::from(["main.py", "foo/__init__.py"]),
         );
     }
+
+    #[test]
+    fn test_follows_relative_imports_in_site_packages() {
+        // pkg/__init__.py uses a relative import to pull in its sibling.
+        // Without package-aware relative-import resolution, `helper` would
+        // never make it into the build map.
+        let tmp = populate_temp_dir(&[
+            ("proj/main.py", "import pkg\n"),
+            ("sp/pkg/__init__.py", "from . import helper\n"),
+            ("sp/pkg/helper.py", ""),
+        ]);
+        let proj = tmp.path().join("proj");
+        let sp = tmp.path().join("sp");
+
+        let (build_map, _) = build_source_db(&proj, Some(&sp)).unwrap();
+        assert_eq!(
+            keys(&build_map),
+            BTreeSet::from(["main.py", "pkg/__init__.py", "pkg/helper.py"]),
+        );
+    }
 }
