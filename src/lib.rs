@@ -17,6 +17,7 @@ pub mod debug;
 pub mod effects;
 pub mod errors;
 pub mod exports;
+pub mod find_sources;
 pub mod format;
 pub mod graph;
 pub mod imports;

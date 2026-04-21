@@ -12,8 +12,8 @@ use anyhow::Result;
 use clap::ArgAction;
 use clap::Parser;
 
-use crate::commands::gen_source_db::build_source_db;
-use crate::commands::gen_source_db::to_source_map;
+use crate::find_sources::build_source_db;
+use crate::find_sources::to_source_map;
 use crate::runner::Options;
 use crate::runner::process_source_map;
 use crate::tracing::ProcessTimer;
