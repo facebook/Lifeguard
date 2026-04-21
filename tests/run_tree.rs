@@ -5,8 +5,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-mod common;
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
@@ -15,8 +13,7 @@ mod tests {
     use clap::Parser;
     use lifeguard::commands::run_tree::RunTreeArgs;
     use lifeguard::commands::run_tree::run;
-
-    use crate::common::populate_temp_dir;
+    use lifeguard::test_lib::populate_temp_dir;
 
     #[test]
     fn test_run_tree_resolves_cli_site_packages() {

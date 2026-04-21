@@ -39,3 +39,4 @@ toml = { version = "0.9.12", features = ["preserve_order"] }
 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
 tracing-subscriber = { version = "0.3.23", features = ["chrono", "env-filter", "json", "local-time", "parking_lot", "registry"] }
 walkdir = "2.3"
+tempfile = "3.27.0"

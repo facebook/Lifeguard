@@ -5,8 +5,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-mod common;
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
@@ -15,9 +13,8 @@ mod tests {
     use clap::Parser;
     use lifeguard::commands::gen_source_db::GenSourceDbArgs;
     use lifeguard::commands::gen_source_db::run;
+    use lifeguard::test_lib::populate_temp_dir;
     use serde_json::Value;
-
-    use crate::common::populate_temp_dir;
 
     #[test]
     fn test_gen_source_db_writes_build_map_json() {

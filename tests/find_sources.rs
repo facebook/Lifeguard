@@ -5,15 +5,12 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-mod common;
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
 
     use lifeguard::find_sources::build_source_db;
-
-    use crate::common::populate_temp_dir;
+    use lifeguard::test_lib::populate_temp_dir;
 
     fn keys(build_map: &std::collections::BTreeMap<String, String>) -> BTreeSet<&str> {
         build_map.keys().map(|s| s.as_str()).collect()
