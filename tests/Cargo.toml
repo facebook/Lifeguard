@@ -49,6 +49,14 @@ name = "exceptions"
 path = "exceptions.rs"
 
 [[test]]
+name = "find_sources"
+path = "find_sources.rs"
+
+[[test]]
+name = "gen_source_db"
+path = "gen_source_db.rs"
+
+[[test]]
 name = "imports"
 path = "imports.rs"
 
@@ -93,6 +101,10 @@ name = "port_test_ownership"
 path = "port_test_ownership.rs"
 
 [[test]]
+name = "run_tree"
+path = "run_tree.rs"
+
+[[test]]
 name = "source_analyzer"
 path = "source_analyzer.rs"
 
@@ -106,6 +118,7 @@ path = "stubs.rs"
 
 [dev-dependencies]
 anyhow = "1.0.102"
+clap = { version = "4.6.0", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 lifeguard = { path = "../src" }
 ruff_text_size = { git = "https://github.com/astral-sh/ruff/", rev = "474b00568ad78f02ad8e19b8166cbeb6d69f8511" }
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
