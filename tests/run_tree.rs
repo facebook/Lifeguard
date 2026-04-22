@@ -14,6 +14,7 @@ mod tests {
     use lifeguard::commands::run_tree::RunTreeArgs;
     use lifeguard::commands::run_tree::run;
     use lifeguard::test_lib::populate_temp_dir;
+    use serde_json::Value;
 
     #[test]
     fn test_run_tree_resolves_cli_site_packages() {
@@ -38,7 +39,7 @@ mod tests {
         run(args).unwrap();
 
         let content = fs::read_to_string(&output).unwrap();
-        let value: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let value: Value = serde_json::from_str(&content).unwrap();
         let modules: BTreeSet<&str> = value["LAZY_ELIGIBLE"]
             .as_object()
             .expect("LAZY_ELIGIBLE object in output JSON")
