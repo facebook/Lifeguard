@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::fs;
 use std::process::Command;
 
 use ahash::AHashMap;
@@ -15,6 +16,7 @@ use itertools::Itertools;
 use pyrefly_python::module::Module;
 use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
+use tempfile::TempDir;
 
 use crate::analyzer::analyze;
 use crate::effects::Effect;
@@ -444,4 +446,19 @@ pub fn check_buck_availability() -> bool {
             false
         }
     }
+}
+
+/// Create a new temp directory and write each `(rel_path, contents)` pair
+/// into it, creating intermediate directories as needed. The returned
+/// [`TempDir`] owns the path and deletes it on drop.
+pub fn populate_temp_dir(files: &[(&str, &str)]) -> TempDir {
+    let tmp = TempDir::new().expect("create temp dir");
+    for (rel, contents) in files {
+        let path = tmp.path().join(rel);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("create parent dirs");
+        }
+        fs::write(&path, contents).expect("write file");
+    }
+    tmp
 }

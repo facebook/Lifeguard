@@ -1327,6 +1327,7 @@ dependencies = [
  "serde_json",
  "starlark_map",
  "static_interner",
+ "tempfile",
  "toml",
  "tracing",
  "tracing-subscriber",
@@ -2274,6 +2275,7 @@ name = "safer_lazy_imports_lifeguard_tests"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "clap",
  "lifeguard",
  "ruff_text_size",
  "serde_json",
