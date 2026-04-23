@@ -536,6 +536,18 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn test_cached_struct_sizes() {
+        assert_eq!(std::mem::size_of::<LibraryCache>(), 120);
+        assert_eq!(std::mem::size_of::<CachedModule>(), 320);
+        assert_eq!(std::mem::size_of::<CachedSafety>(), 72);
+        assert_eq!(std::mem::size_of::<CachedModuleSafety>(), 72);
+        assert_eq!(std::mem::size_of::<CachedError>(), 32);
+        assert_eq!(std::mem::size_of::<CachedExports>(), 96);
+        assert_eq!(std::mem::size_of::<CachedReExport>(), 64);
+    }
+
+    #[test]
     fn test_cache_round_trip() {
         let safety_map: SafetyMap = DashMap::new();
 
