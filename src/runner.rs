@@ -52,14 +52,14 @@ pub fn run_pipeline(src_map: &SourceMap, root_dir: &std::path::Path) -> Result<P
     });
     report_memory("After creating import graph and exports");
 
-    let (safety_map, side_effect_imports, parse_errors) = time("Analyzing AST", || {
+    let output = time("Analyzing AST", || {
         project::run_analysis(&sources, &exports, &import_graph, &sys_info)
     });
     report_memory("After analyzing AST");
 
     // Surface parse errors in the safety map so they appear in the final output.
-    for entry in parse_errors.iter() {
-        safety_map.insert(
+    for entry in output.parse_errors.iter() {
+        output.safety_map.insert(
             *entry.key(),
             module_safety::SafetyResult::AnalysisError(anyhow::anyhow!(
                 "Parse error: {}",
@@ -70,10 +70,10 @@ pub fn run_pipeline(src_map: &SourceMap, root_dir: &std::path::Path) -> Result<P
 
     Ok(PipelineResult {
         sources,
-        safety_map,
+        safety_map: output.safety_map,
         import_graph,
         exports,
-        side_effect_imports,
+        side_effect_imports: output.side_effect_imports,
     })
 }
 

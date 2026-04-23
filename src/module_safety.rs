@@ -5,10 +5,37 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::collections::HashMap;
+
 use ahash::AHashSet;
 use pyrefly_python::module_name::ModuleName;
+use serde::Deserialize;
+use serde::Serialize;
 
 use crate::errors::SafetyError;
+
+/// Safety verdict for a single function from call graph analysis.
+///
+/// Variants are ordered by conservatism: `Safe` < `UnsafeIfImported` < `Unsafe`.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize
+)]
+pub enum FunctionSafety {
+    /// Always safe to call.
+    Safe,
+    /// Safe within its own module, unsafe when called cross-module.
+    UnsafeIfImported,
+    /// Always unsafe to call.
+    Unsafe,
+}
 
 #[derive(Debug)]
 pub struct ModuleSafety {
@@ -17,6 +44,9 @@ pub struct ModuleSafety {
     /// Errors that alter if a module should eagerly import its imports
     pub force_imports_eager_overrides: Vec<SafetyError>,
     pub implicit_imports: Vec<ModuleName>,
+    /// Per-function safety verdicts from call graph analysis.
+    /// Keys are function-local names (e.g., "helper" for `mod.helper`).
+    pub function_safety: HashMap<String, FunctionSafety>,
 }
 
 impl ModuleSafety {
@@ -25,6 +55,7 @@ impl ModuleSafety {
             errors: Vec::new(),
             force_imports_eager_overrides: Vec::new(),
             implicit_imports: Vec::new(),
+            function_safety: HashMap::new(),
         }
     }
 

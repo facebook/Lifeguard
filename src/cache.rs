@@ -5,6 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use ahash::AHashSet;
@@ -19,6 +20,7 @@ use crate::errors::SafetyError;
 use crate::exports::ExportType;
 use crate::exports::Exports;
 use crate::imports::ImportGraph;
+use crate::module_safety::FunctionSafety;
 use crate::module_safety::ModuleSafety;
 use crate::module_safety::SafetyResult;
 use crate::project::SafetyMap;
@@ -45,6 +47,9 @@ pub struct CachedModule {
     pub missing_imports: AHashSet<ModuleName>,
     /// Module-level imports never accessed in any scope (side-effect imports).
     pub side_effect_imports: AHashSet<ModuleName>,
+    /// Per-function safety verdicts from call graph analysis.
+    /// Keys are function-local names (e.g., "helper" for `mod.helper`).
+    pub function_safety: HashMap<String, FunctionSafety>,
 }
 
 /// Safety analysis result for a cached module.
@@ -114,6 +119,11 @@ impl LibraryCache {
                     .map(|s| s.iter().cloned().collect())
                     .unwrap_or_default();
 
+                let function_safety = match safety_result {
+                    SafetyResult::Ok(ms) => ms.function_safety.clone(),
+                    _ => HashMap::new(),
+                };
+
                 let safety = CachedSafety::from_safety_result(safety_result);
 
                 CachedModule {
@@ -122,6 +132,7 @@ impl LibraryCache {
                     imports,
                     missing_imports,
                     side_effect_imports: se_imports,
+                    function_safety,
                 }
             })
             .collect();
@@ -178,43 +189,55 @@ impl LibraryCache {
         }
     }
 
-    /// Clear false errors from modules whose missing imports are now resolved
-    /// in the merged cache, and promote those imports to the imports list.
+    /// Resolve missing imports against the merged cache and selectively clear
+    /// false errors using per-function safety verdicts.
     ///
-    /// When a library is analyzed without its deps, calls into dep modules
-    /// produce false Unknown*/Unsafe* errors. After merging, we detect which
-    /// missing imports are now present and clear those errors.
-    /// Parent modules are checked to handle `from X import Y`.
+    /// Each missing import is resolved independently. For each Unknown* error,
+    /// we consult the resolved module's cached function_safety to determine
+    /// whether the called function is actually safe. Only errors where the
+    /// function is verified safe are cleared.
     pub fn resolve_cross_library_errors(&mut self) {
         let module_names: AHashSet<ModuleName> = self.modules.iter().map(|m| m.name).collect();
+
+        let func_safety_by_module: HashMap<ModuleName, HashMap<String, FunctionSafety>> = self
+            .modules
+            .iter()
+            .map(|m| (m.name, m.function_safety.clone()))
+            .collect();
 
         for module in &mut self.modules {
             if module.missing_imports.is_empty() {
                 continue;
             }
 
-            let all_resolved = module.missing_imports.iter().all(|missing| {
-                module_names.contains(missing)
-                    || missing
-                        .iter_parents()
-                        .any(|parent| module_names.contains(&parent))
-            });
+            let mut still_missing: AHashSet<ModuleName> = AHashSet::new();
+            let mut resolved_modules: AHashSet<ModuleName> = AHashSet::new();
 
-            if !all_resolved {
-                continue;
+            for missing in module.missing_imports.drain() {
+                if module_names.contains(&missing) {
+                    module.imports.insert(missing);
+                    resolved_modules.insert(missing);
+                } else if let Some((parent, _)) = missing
+                    .iter_parents()
+                    .find(|(p, _)| module_names.contains(p))
+                {
+                    module.imports.insert(parent);
+                    resolved_modules.insert(parent);
+                } else {
+                    still_missing.insert(missing);
+                }
             }
+
+            module.missing_imports = still_missing;
 
             if let CachedSafety::Ok(ref mut safety) = module.safety {
-                safety
-                    .errors
-                    .retain(|e| !e.kind.could_be_caused_by_missing_import());
-            }
-
-            let resolved = std::mem::take(&mut module.missing_imports);
-            for imp in resolved {
-                if module_names.contains(&imp) {
-                    module.imports.insert(imp);
-                }
+                safety.errors.retain(|e| {
+                    if !e.kind.could_be_caused_by_missing_import() {
+                        return true;
+                    }
+                    let func_name = e.metadata.trim_end_matches("()");
+                    !is_call_verified_safe(func_name, &resolved_modules, &func_safety_by_module)
+                });
             }
         }
     }
@@ -257,6 +280,46 @@ impl LibraryCache {
     }
 }
 
+/// Check if a function call can be verified as safe using cached per-function
+/// safety verdicts from the resolved modules.
+///
+/// For qualified names like "mod.sub.func", tries each parent as the module
+/// prefix (longest first) and looks up the remainder in that module's
+/// function_safety map.
+/// For unqualified names like "helper", checks all resolved modules.
+/// Returns true only if the function is found and verified Safe.
+fn is_call_verified_safe(
+    func_name: &str,
+    resolved_modules: &AHashSet<ModuleName>,
+    func_safety_by_module: &HashMap<ModuleName, HashMap<String, FunctionSafety>>,
+) -> bool {
+    let fqn = ModuleName::from_str(func_name);
+    for (parent, dot_pos) in fqn.iter_parents() {
+        if resolved_modules.contains(&parent) {
+            let local_name = &func_name[dot_pos + 1..];
+            if let Some(fs) = func_safety_by_module.get(&parent) {
+                return matches!(fs.get(local_name), Some(FunctionSafety::Safe));
+            }
+            return false;
+        }
+    }
+
+    matches!(
+        resolved_modules
+            .iter()
+            .filter_map(|r| func_safety_by_module.get(r))
+            .filter_map(|fs| fs.get(func_name))
+            .try_fold(false, |_, s| {
+                if *s == FunctionSafety::Safe {
+                    Ok(true)
+                } else {
+                    Err(())
+                }
+            }),
+        Ok(true)
+    )
+}
+
 impl CachedModule {
     pub fn is_safe(&self) -> bool {
         matches!(&self.safety, CachedSafety::Ok(s) if s.is_safe())
@@ -269,6 +332,14 @@ impl CachedModule {
             .retain(|m| other.missing_imports.contains(m));
         self.side_effect_imports.extend(other.side_effect_imports);
         self.safety.merge(other.safety);
+        for (name, safety) in other.function_safety {
+            self.function_safety
+                .entry(name)
+                .and_modify(|existing| {
+                    *existing = (*existing).max(safety);
+                })
+                .or_insert(safety);
+        }
     }
 }
 
@@ -448,6 +519,22 @@ mod tests {
         ModuleName::from_str(s)
     }
 
+    fn build_cache(sources: &crate::test_lib::TestSources) -> LibraryCache {
+        use crate::imports::ImportGraph;
+        use crate::project;
+        use crate::traits::SysInfoExt;
+
+        let sys_info = crate::pyrefly::sys_info::SysInfo::lg_default();
+        let (import_graph, exports) = ImportGraph::make_with_exports(sources, &sys_info);
+        let output = project::run_analysis(sources, &exports, &import_graph, &sys_info);
+        LibraryCache::build(
+            &output.safety_map,
+            &import_graph,
+            &exports,
+            &output.side_effect_imports,
+        )
+    }
+
     #[test]
     fn test_cache_round_trip() {
         let safety_map: SafetyMap = DashMap::new();
@@ -539,21 +626,13 @@ mod tests {
 
     #[test]
     fn test_cache_from_pipeline() {
-        use crate::imports::ImportGraph;
-        use crate::project;
         use crate::test_lib::TestSources;
-        use crate::traits::SysInfoExt;
 
         let sources = TestSources::new(&[
             ("foo", "import bar\nx = bar.func()\n"),
             ("bar", "def func(): return 1\n"),
         ]);
-        let sys_info = crate::pyrefly::sys_info::SysInfo::lg_default();
-        let (import_graph, exports) = ImportGraph::make_with_exports(&sources, &sys_info);
-        let (safety_map, side_effect_imports, _parse_errors) =
-            project::run_analysis(&sources, &exports, &import_graph, &sys_info);
-
-        let cache = LibraryCache::build(&safety_map, &import_graph, &exports, &side_effect_imports);
+        let cache = build_cache(&sources);
 
         // Both modules should be in the cache (stubs are filtered by run_analysis)
         assert_eq!(cache.modules.len(), 2);
@@ -711,11 +790,7 @@ mod tests {
     /// Verifies that own build + merge produces the same results as full analysis.
     #[test]
     fn test_own_build_plus_merge_matches_full_build() {
-        use crate::imports::ImportGraph;
-        use crate::project;
-        use crate::pyrefly::sys_info::SysInfo;
         use crate::test_lib::TestSources;
-        use crate::traits::SysInfoExt;
 
         let dep_modules: Vec<(&str, &str)> = vec![
             ("safe_module", "def greet(name): return f'Hello, {name}'\n"),
@@ -738,22 +813,12 @@ mod tests {
             "from importer import greet\ndef main():\n    print(greet('world'))\n",
         );
 
-        let sys_info = SysInfo::lg_default();
-
         // --- Step 1: Analyze dep modules alone → dep cache ---
-        let dep_sources = TestSources::new(&dep_modules);
-        let (dep_ig, dep_exports) = ImportGraph::make_with_exports(&dep_sources, &sys_info);
-        let (dep_sm, dep_se, _) =
-            project::run_analysis(&dep_sources, &dep_exports, &dep_ig, &sys_info);
-        let dep_cache = LibraryCache::build(&dep_sm, &dep_ig, &dep_exports, &dep_se);
+        let dep_cache = build_cache(&TestSources::new(&dep_modules));
         assert_eq!(dep_cache.modules.len(), 5);
 
         // --- Step 2: Analyze own module alone → own cache ---
-        let own_sources = TestSources::new(&[own_module]);
-        let (own_ig, own_exports) = ImportGraph::make_with_exports(&own_sources, &sys_info);
-        let (own_sm, own_se, _) =
-            project::run_analysis(&own_sources, &own_exports, &own_ig, &sys_info);
-        let mut own_cache = LibraryCache::build(&own_sm, &own_ig, &own_exports, &own_se);
+        let mut own_cache = build_cache(&TestSources::new(&[own_module]));
         assert_eq!(own_cache.modules.len(), 1);
 
         // --- Step 3: Merge ---
@@ -763,11 +828,7 @@ mod tests {
         // --- Step 4: Full analysis for comparison ---
         let mut all_modules = dep_modules.clone();
         all_modules.push(own_module);
-        let all_sources = TestSources::new(&all_modules);
-        let (all_ig, all_exports) = ImportGraph::make_with_exports(&all_sources, &sys_info);
-        let (all_sm, all_se, _) =
-            project::run_analysis(&all_sources, &all_exports, &all_ig, &sys_info);
-        let full_cache = LibraryCache::build(&all_sm, &all_ig, &all_exports, &all_se);
+        let full_cache = build_cache(&TestSources::new(&all_modules));
         assert_eq!(full_cache.modules.len(), 6);
 
         // Same module names

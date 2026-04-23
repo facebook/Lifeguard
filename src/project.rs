@@ -34,6 +34,7 @@ use crate::exports::Exports;
 use crate::imports::ImportGraph;
 use crate::module_effects::ModuleImportsMap;
 use crate::module_parser::ParsedModule;
+pub use crate::module_safety::FunctionSafety;
 use crate::module_safety::ModuleSafety;
 use crate::module_safety::SafetyResult;
 use crate::pyrefly::sys_info::SysInfo;
@@ -185,15 +186,11 @@ fn get_all_safe_re_exports(effect_table: &EffectTable, re_exports: &mut AHashSet
     }
 }
 
-// Cached function safety
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum FunctionSafety {
-    // Always safe to call
-    Safe,
-    // Always unsafe to call
-    Unsafe,
-    // Unsafe if called from a different module
-    UnsafeIfImported,
+/// Collected output from the analysis pipeline.
+pub struct AnalysisOutput {
+    pub safety_map: SafetyMap,
+    pub side_effect_imports: SideEffectMap,
+    pub parse_errors: ParseErrors,
 }
 
 // Collects whole-project analysis output, as well as any global state that is required while
@@ -219,7 +216,23 @@ impl GlobalAnalysisState {
         }
     }
 
+    /// Decompose FQN-keyed function safety verdicts into per-module local-name
+    /// maps and embed them in the corresponding ModuleSafety entries.
     fn into_safety_map(self) -> SafetyMap {
+        for entry in self.function_safety.iter() {
+            let fqn = entry.key();
+            for (parent, dot_pos) in fqn.iter_parents() {
+                if let Some(mut safety_entry) = self.safety_map.get_mut(&parent) {
+                    if let SafetyResult::Ok(module_safety) = safety_entry.value_mut() {
+                        let local_name = &fqn.as_str()[dot_pos + 1..];
+                        module_safety
+                            .function_safety
+                            .insert(local_name.to_string(), *entry.value());
+                    }
+                    break;
+                }
+            }
+        }
         self.safety_map
     }
 
@@ -294,13 +307,13 @@ fn compute_side_effect_imports(analysis_map: &AnalysisMap) -> SideEffectMap {
     results.into_iter().collect()
 }
 
-/// Run the full analysis pipeline
+/// Run the full analysis pipeline.
 pub fn run_analysis(
     sources: &impl ModuleProvider,
     exports: &Exports,
     import_graph: &ImportGraph,
     sys_info: &SysInfo,
-) -> (SafetyMap, SideEffectMap, ParseErrors) {
+) -> AnalysisOutput {
     let (analysis_map, parse_errors) = analyze_all(sources, exports, import_graph, sys_info);
     let side_effect_imports = time("  Computing side-effect imports", || {
         compute_side_effect_imports(&analysis_map)
@@ -312,7 +325,11 @@ pub fn run_analysis(
     time("  Filtering out stubs", || {
         filter_out_stubs(&safety_map, sources)
     });
-    (safety_map, side_effect_imports, parse_errors)
+    AnalysisOutput {
+        safety_map,
+        side_effect_imports,
+        parse_errors,
+    }
 }
 
 /// Filter out stubs from the safety map
@@ -356,7 +373,7 @@ fn get_imports_in_function_module(
     let mut additional_called_imports = AHashSet::new();
 
     // For curr_import = "foo.bar.baz.func", check for module in order: foo.bar.baz, foo.bar, foo
-    for parent_name in curr_import.iter_parents() {
+    for (parent_name, _) in curr_import.iter_parents() {
         if let Some(output) = analysis_map.get(&parent_name) {
             let module_pending_imports = &output.module_effects.pending_imports;
             // Check for imports in parent_name module
@@ -394,7 +411,7 @@ fn is_called_attribute_loaded(
     if import_graph.contains(curr_import) {
         return false;
     }
-    for parent_name in curr_import.iter_parents() {
+    for (parent_name, _) in curr_import.iter_parents() {
         if all_pending_imports.contains(&parent_name) {
             return true;
         }

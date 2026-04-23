@@ -102,7 +102,7 @@ pub struct ParentIter<'a> {
 }
 
 impl Iterator for ParentIter<'_> {
-    type Item = ModuleName;
+    type Item = (ModuleName, usize);
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.index >= self.dot_positions.len() {
@@ -110,7 +110,7 @@ impl Iterator for ParentIter<'_> {
         }
         let pos = self.dot_positions[self.dot_positions.len() - 1 - self.index];
         self.index += 1;
-        Some(ModuleName::from_str(&self.s[..pos]))
+        Some((ModuleName::from_str(&self.s[..pos]), pos))
     }
 }
 

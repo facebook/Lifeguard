@@ -31,11 +31,10 @@ mod tests {
         let sources = TestSources::new(modules);
         let sys_info = SysInfo::lg_default();
         let (import_graph, exports) = ImportGraph::make_with_exports(&sources, &sys_info);
-        let (safety_map, side_effect_imports, _) =
-            project::run_analysis(&sources, &exports, &import_graph, &sys_info);
+        let output = project::run_analysis(&sources, &exports, &import_graph, &sys_info);
         let mut analysis =
-            LifeGuardAnalysis::new(safety_map, import_graph, &exports, &test_options());
-        analysis.propagate_side_effect_imports(&side_effect_imports);
+            LifeGuardAnalysis::new(output.safety_map, import_graph, &exports, &test_options());
+        analysis.propagate_side_effect_imports(&output.side_effect_imports);
         analysis
     }
 
