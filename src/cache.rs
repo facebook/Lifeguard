@@ -669,6 +669,33 @@ mod tests {
     }
 
     #[test]
+    fn test_constructor_call_caches_class_level_safety() {
+        use crate::test_lib::TestSources;
+
+        let cache = build_cache(&TestSources::new(&[
+            (
+                "defs",
+                "from dataclasses import dataclass\n\
+                 @dataclass\n\
+                 class Safe:\n\
+                 \x20   value: int = 0\n",
+            ),
+            ("caller", "from defs import Safe\nobj = Safe()\n"),
+        ]));
+
+        let defs_mod = cache.modules.iter().find(|m| m.name == mn("defs")).unwrap();
+        assert!(
+            defs_mod.function_safety.contains_key("Safe"),
+            "function_safety should contain class-level entry 'Safe', got keys: {:?}",
+            defs_mod.function_safety.keys().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            defs_mod.function_safety.get("Safe"),
+            Some(&FunctionSafety::Safe),
+        );
+    }
+
+    #[test]
     fn test_cache_with_load_imports_eagerly() {
         let safety_map: SafetyMap = DashMap::new();
         let mut safety = ModuleSafety::new();
@@ -861,5 +888,130 @@ mod tests {
                 merged_safe
             );
         }
+    }
+
+    #[test]
+    fn test_resolve_cross_library_constructor_call() {
+        use crate::test_lib::TestSources;
+
+        let dep_cache = build_cache(&TestSources::new(&[(
+            "dep",
+            "from dataclasses import dataclass\n\
+             @dataclass\n\
+             class MyClass:\n\
+             \x20   value: int = 0\n",
+        )]));
+
+        let own_sources = TestSources::new(&[(
+            "caller",
+            "from dep import MyClass\n\
+             instance = MyClass()\n",
+        )]);
+        let mut own_cache = build_cache(&own_sources);
+
+        let caller_before = own_cache
+            .modules
+            .iter()
+            .find(|m| m.name == mn("caller"))
+            .unwrap();
+        assert!(
+            !caller_before.is_safe(),
+            "caller should be unsafe before merge (dep is missing)"
+        );
+
+        own_cache.merge_dep_caches(vec![dep_cache]);
+        own_cache.resolve_cross_library_errors();
+
+        let caller_after = own_cache
+            .modules
+            .iter()
+            .find(|m| m.name == mn("caller"))
+            .unwrap();
+        assert!(
+            caller_after.is_safe(),
+            "caller should be safe after resolving cross-library constructor call"
+        );
+    }
+
+    #[test]
+    fn test_resolve_cross_library_unsafe_constructor() {
+        use crate::test_lib::TestSources;
+
+        let dep_cache = build_cache(&TestSources::new(&[
+            (
+                "dep",
+                "import dep_state\n\
+             class MyClass:\n\
+             \x20   def __init__(self):\n\
+             \x20       dep_state.counter = dep_state.counter + 1\n",
+            ),
+            ("dep_state", "counter = 0\n"),
+        ]));
+
+        let own_sources = TestSources::new(&[(
+            "caller",
+            "from dep import MyClass\n\
+             instance = MyClass()\n",
+        )]);
+        let mut own_cache = build_cache(&own_sources);
+
+        own_cache.merge_dep_caches(vec![dep_cache]);
+        own_cache.resolve_cross_library_errors();
+
+        let caller = own_cache
+            .modules
+            .iter()
+            .find(|m| m.name == mn("caller"))
+            .unwrap();
+        assert!(
+            !caller.is_safe(),
+            "caller should remain unsafe when constructor has side effects"
+        );
+    }
+
+    #[test]
+    fn test_resolve_cross_library_unsafe_if_imported_constructor() {
+        use crate::test_lib::TestSources;
+
+        let dep_cache = build_cache(&TestSources::new(&[(
+            "defs",
+            "counter = 0\n\
+             class Foo:\n\
+             \x20   def __init__(self):\n\
+             \x20       global counter\n\
+             \x20       counter += 1\n\
+             obj = Foo()\n",
+        )]));
+
+        let defs_mod = dep_cache
+            .modules
+            .iter()
+            .find(|m| m.name == mn("defs"))
+            .unwrap();
+        assert_ne!(
+            defs_mod.function_safety.get("Foo"),
+            Some(&FunctionSafety::Safe),
+            "class Foo must not be cached as Safe when __init__ mutates module globals"
+        );
+
+        let own_sources = TestSources::new(&[(
+            "caller",
+            "from defs import Foo\n\
+             instance = Foo()\n",
+        )]);
+        let mut own_cache = build_cache(&own_sources);
+
+        own_cache.merge_dep_caches(vec![dep_cache]);
+        own_cache.resolve_cross_library_errors();
+
+        let caller = own_cache
+            .modules
+            .iter()
+            .find(|m| m.name == mn("caller"))
+            .unwrap();
+        assert!(
+            !caller.is_safe(),
+            "caller should remain unsafe: Foo.__init__ mutates module globals"
+        );
     }
 }

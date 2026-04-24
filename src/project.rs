@@ -18,6 +18,7 @@ use anyhow::anyhow;
 use dashmap::DashMap;
 use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
+use ruff_text_size::TextRange;
 
 use crate::analyzer;
 use crate::analyzer::AnalyzedModule;
@@ -904,7 +905,30 @@ impl ProjectInfo {
             }
         });
 
+        self.precompute_constructor_safety(&state);
+
         state.into_safety_map()
+    }
+
+    fn precompute_constructor_safety(&self, state: &GlobalAnalysisState) {
+        let dummy_range = TextRange::default();
+        for cls_name in self.classes.keys() {
+            if state.function_safety.contains_key(cls_name) {
+                continue;
+            }
+            let effect = Effect::new(EffectKind::FunctionCall, *cls_name, dummy_range);
+            // cls_name as caller_module makes UnsafeIfImported → Unsafe (conservative for cache).
+            let call = Call {
+                caller_module: cls_name,
+                effect: &effect,
+                func: *cls_name,
+                stack: CallStack::default(),
+            };
+            match self.check_constructor_call(&call, state) {
+                Ok(true) => state.mark_safe(cls_name),
+                Ok(false) | Err(_) => state.mark_unsafe(cls_name),
+            }
+        }
     }
 
     fn check_load_imports_eagerly(
@@ -1067,6 +1091,7 @@ impl ProjectInfo {
         // Check __post_init__ (called by dataclass-generated __init__)
         let mut post_init_call = call.clone_with_name(cls_name.append_str("__post_init__"));
         ret &= self.check_call_body(&mut post_init_call, state)?;
+
         Ok(ret)
     }
 

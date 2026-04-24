@@ -99,6 +99,10 @@ impl ClassTable {
     pub fn lookup_str(&self, name: &str) -> Option<&Class> {
         self.table.get(&ModuleName::from_str(name))
     }
+
+    pub(crate) fn keys(&self) -> impl Iterator<Item = &ModuleName> {
+        self.table.keys()
+    }
 }
 
 #[cfg(test)]
