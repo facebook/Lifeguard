@@ -508,7 +508,7 @@ impl<'a, 'b> BindingsTableBuilder<'a, 'b> {
         }
         // Follow re-export chain for re-exported functions
         let attr = Attribute::from_module_name(&fqn);
-        let source = self.exports.get_definition_source_name(&attr)?;
+        let source = self.exports.resolve_transitive(&attr)?;
         self.exports.get_return_type(&source.as_module_name())
     }
 
@@ -626,7 +626,7 @@ impl<'a, 'b> BindingsTableBuilder<'a, 'b> {
             return None;
         };
         let imported_name = self.resolve_to_imported_name(&expr_name.id)?;
-        let source_name = self.exports.get_definition_source_name(&imported_name)?;
+        let source_name = self.exports.resolve_transitive(&imported_name)?;
         self.exports
             .is_class(&source_name.as_module_name())
             .then(|| imported_name.as_module_name())

@@ -420,7 +420,7 @@ impl<'a> SourceAnalyzer<'a> {
         bindings_value: &ModuleName,
     ) -> Option<ModuleName> {
         let attr = Attribute::from_module_name(bindings_value);
-        let source_name = self.info.exports.get_definition_source_name(&attr)?;
+        let source_name = self.info.exports.resolve_transitive(&attr)?;
         Some(source_name.as_module_name().append(attr_name))
     }
 

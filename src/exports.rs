@@ -129,34 +129,34 @@ impl Exports {
         ExportsBuilder::new_unfiltered(module_name, sys_info).build(parsed_module)
     }
 
-    /// Check if a symbol is a class, following re-export chains transitively if needed.
-    pub fn is_class(&self, name: &ModuleName) -> bool {
-        if self
-            .exports
-            .get(name)
-            .is_some_and(|e| matches!(e.typ, ExportType::Class))
-        {
-            return true;
-        }
-        // Follow re-export chain until we find a direct definition or a cycle
-        let mut current = Attribute::from_module_name(name);
+    /// Follow re-export chains transitively to find the ultimate definition.
+    /// Returns `None` if a cycle is detected.
+    pub fn resolve_transitive(&self, name: &Attribute) -> Option<Attribute> {
+        let mut current = name.clone();
         let mut seen = AHashSet::new();
-        while let Some((imported, _)) = self.re_exports.get(&current) {
-            if seen.contains(imported) {
-                return false;
-            }
-            let target = imported.as_module_name();
-            if self
-                .exports
-                .get(&target)
-                .is_some_and(|e| matches!(e.typ, ExportType::Class))
-            {
-                return true;
+        while let Some((next, _)) = self.re_exports.get(&current) {
+            if seen.contains(next) {
+                return None;
             }
             seen.insert(current);
-            current = imported.clone();
+            current = next.clone();
         }
-        false
+        Some(current)
+    }
+
+    /// Check if a symbol is a class, following re-export chains transitively if needed.
+    pub fn is_class(&self, name: &ModuleName) -> bool {
+        let is_class_export = |n: &ModuleName| {
+            self.exports
+                .get(n)
+                .is_some_and(|e| matches!(e.typ, ExportType::Class))
+        };
+        if is_class_export(name) {
+            return true;
+        }
+        let attr = Attribute::from_module_name(name);
+        self.resolve_transitive(&attr)
+            .is_some_and(|resolved| is_class_export(&resolved.as_module_name()))
     }
 
     /// Check if a symbol is a global variable.
@@ -242,20 +242,6 @@ impl Exports {
     /// Iterate over all return type mappings (function -> return type class).
     pub fn iter_return_types(&self) -> impl Iterator<Item = (&ModuleName, &ModuleName)> {
         self.return_types.iter()
-    }
-
-    pub fn get_definition_source_name(&self, name: &Attribute) -> Option<Attribute> {
-        // recurse through re-exports until we find the original name where the object was defined
-        let mut current = name.clone();
-        let mut seen = AHashSet::new();
-        while let Some((next, _)) = self.re_exports.get(&current) {
-            if seen.contains(next) {
-                return None;
-            }
-            seen.insert(current);
-            current = next.clone();
-        }
-        Some(current)
     }
 }
 
