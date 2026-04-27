@@ -112,7 +112,7 @@ else:
             self, typ: type[BaseException] | None, value: BaseException | None, traceback: TracebackType | None
         ) -> bool | None: ...
 
-def asynccontextmanager(func: Callable[_P, AsyncIterator[_T_co]]) -> Callable[_P, _AsyncGeneratorContextManager[_T_co]]: ...
+def asynccontextmanager(func: Callable[_P, AsyncIterator[_T_co]]) -> Callable[_P, _AsyncGeneratorContextManager[_T_co]]: no_effects()
 @type_check_only
 class _SupportsClose(Protocol):
     def close(self) -> object: ...
@@ -135,10 +135,10 @@ if sys.version_info >= (3, 10):
         async def __aexit__(self, *exc_info: Unused) -> None: ...
 
 class suppress(AbstractContextManager[None, bool]):
-    def __init__(self, *exceptions: type[BaseException]) -> None: ...
+    def __init__(self, *exceptions: type[BaseException]) -> None: no_effects()
     def __exit__(
         self, exctype: type[BaseException] | None, excinst: BaseException | None, exctb: TracebackType | None
-    ) -> bool: ...
+    ) -> bool: no_effects()
 
 # This is trying to describe what is needed for (most?) uses
 # of `redirect_stdout` and `redirect_stderr`.
