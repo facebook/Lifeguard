@@ -243,6 +243,12 @@ impl Exports {
     pub fn iter_return_types(&self) -> impl Iterator<Item = (&ModuleName, &ModuleName)> {
         self.return_types.iter()
     }
+
+    #[cfg(test)]
+    pub fn insert_re_export(&mut self, exported: Attribute, imported: Attribute) {
+        self.re_exports
+            .insert(exported, (imported, TextRange::default()));
+    }
 }
 
 struct ExportsBuilder<'a> {

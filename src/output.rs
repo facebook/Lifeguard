@@ -23,6 +23,7 @@ use crate::cache::LibraryCache;
 use crate::errors::ErrorKind;
 use crate::errors::ErrorMetadata;
 use crate::errors::SafetyError;
+use crate::exports::Attribute;
 use crate::exports::Exports;
 use crate::imports::ImportGraph;
 use crate::module_parser::ParsedModule;
@@ -227,13 +228,19 @@ fn classify_modules(safety_map: SafetyMap) -> ClassifiedModules {
 }
 
 /// Build a map from module -> set of source modules for its re-exports that are failing.
+/// Follows re-export chains transitively so that multi-hop re-exports (A→B→C where C is
+/// failing) are correctly attributed.
 fn build_re_export_map(
     exports: &Exports,
     failing_modules: &SmallSet<ModuleName>,
 ) -> AHashMap<ModuleName, AHashSet<ModuleName>> {
     let mut map: AHashMap<ModuleName, AHashSet<ModuleName>> = AHashMap::new();
-    for (re_export_name, (source_name, _)) in exports.get_re_exports() {
-        let source_module = source_name.module;
+    for (re_export_name, _) in exports.get_re_exports() {
+        let resolved = exports.resolve_transitive(re_export_name);
+        let source_module = match &resolved {
+            Some(attr) => attr.module,
+            None => continue,
+        };
         if failing_modules.contains(&source_module) {
             let module_part = re_export_name.module;
             map.entry(module_part).or_default().insert(source_module);
@@ -243,16 +250,45 @@ fn build_re_export_map(
 }
 
 /// Build the re-export map from cached re-export data.
+/// Follows re-export chains transitively, matching the non-cached path.
 fn build_re_export_map_from_cache(
     re_exports: &[CachedReExport],
     failing_modules: &SmallSet<ModuleName>,
 ) -> AHashMap<ModuleName, AHashSet<ModuleName>> {
+    // Build a chain lookup so we can follow re-export chains transitively.
+    let chain: AHashMap<Attribute, Attribute> = re_exports
+        .iter()
+        .map(|r| {
+            (
+                Attribute::new(r.exported_module, &r.exported_attr),
+                Attribute::new(r.imported_module, &r.imported_attr),
+            )
+        })
+        .collect();
+
+    let resolve = |start: &Attribute| -> Option<ModuleName> {
+        let mut current = start.clone();
+        let mut seen = AHashSet::new();
+        while let Some(next) = chain.get(&current) {
+            if seen.contains(next) {
+                return None;
+            }
+            seen.insert(current);
+            current = next.clone();
+        }
+        Some(current.module)
+    };
+
     let mut map: AHashMap<ModuleName, AHashSet<ModuleName>> = AHashMap::new();
     for re_export in re_exports {
-        if failing_modules.contains(&re_export.imported_module) {
+        let imported = Attribute::new(re_export.imported_module, &re_export.imported_attr);
+        let Some(source_module) = resolve(&imported) else {
+            continue;
+        };
+        if failing_modules.contains(&source_module) {
             map.entry(re_export.exported_module)
                 .or_default()
-                .insert(re_export.imported_module);
+                .insert(source_module);
         }
     }
     map
@@ -913,6 +949,167 @@ mod tests {
         // a.child (child of cycle member a) should also get the cycle deps propagated
         let child_deps = lazy_eligible.get(&a_child).unwrap();
         assert!(child_deps.contains(&b));
+    }
+
+    // ---- build_re_export_map tests ----
+
+    fn attr(module: &str, name: &str) -> Attribute {
+        Attribute::new(mn(module), name)
+    }
+
+    #[test]
+    fn test_re_export_map_single_hop() {
+        // A re-exports Foo from B, B is failing
+        let mut exports = Exports::empty();
+        exports.insert_re_export(attr("a", "Foo"), attr("b", "Foo"));
+
+        let mut failing = SmallSet::new();
+        failing.insert(mn("b"));
+
+        let map = build_re_export_map(&exports, &failing);
+        assert!(map[&mn("a")].contains(&mn("b")));
+    }
+
+    #[test]
+    fn test_re_export_map_two_hops() {
+        // A re-exports Foo from B, B re-exports Foo from C, C is failing
+        let mut exports = Exports::empty();
+        exports.insert_re_export(attr("a", "Foo"), attr("b", "Foo"));
+        exports.insert_re_export(attr("b", "Foo"), attr("c", "Foo"));
+
+        let mut failing = SmallSet::new();
+        failing.insert(mn("c"));
+
+        let map = build_re_export_map(&exports, &failing);
+        assert!(map[&mn("a")].contains(&mn("c")));
+        assert!(map[&mn("b")].contains(&mn("c")));
+    }
+
+    #[test]
+    fn test_re_export_map_three_hops() {
+        // A -> B -> C -> D, D is failing
+        let mut exports = Exports::empty();
+        exports.insert_re_export(attr("a", "Foo"), attr("b", "Foo"));
+        exports.insert_re_export(attr("b", "Foo"), attr("c", "Foo"));
+        exports.insert_re_export(attr("c", "Foo"), attr("d", "Foo"));
+
+        let mut failing = SmallSet::new();
+        failing.insert(mn("d"));
+
+        let map = build_re_export_map(&exports, &failing);
+        assert!(map[&mn("a")].contains(&mn("d")));
+        assert!(map[&mn("b")].contains(&mn("d")));
+        assert!(map[&mn("c")].contains(&mn("d")));
+    }
+
+    #[test]
+    fn test_re_export_map_no_failing() {
+        // A re-exports from B, but B is not failing
+        let mut exports = Exports::empty();
+        exports.insert_re_export(attr("a", "Foo"), attr("b", "Foo"));
+
+        let failing = SmallSet::new();
+        let map = build_re_export_map(&exports, &failing);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn test_re_export_map_cycle() {
+        // A -> B -> A (cycle), A is failing
+        let mut exports = Exports::empty();
+        exports.insert_re_export(attr("a", "Foo"), attr("b", "Foo"));
+        exports.insert_re_export(attr("b", "Foo"), attr("a", "Foo"));
+
+        let mut failing = SmallSet::new();
+        failing.insert(mn("a"));
+
+        // Should not panic; cycle detection should handle this
+        let map = build_re_export_map(&exports, &failing);
+        // B re-exports from A which is failing — but the chain B->A->B is a cycle,
+        // so resolve_transitive returns None and B is not in the map
+        assert!(!map.contains_key(&mn("b")));
+    }
+
+    #[test]
+    fn test_re_export_map_from_cache_two_hops() {
+        // Same scenario as test_re_export_map_two_hops but via cached path
+        let re_exports = vec![
+            CachedReExport {
+                exported_module: mn("a"),
+                exported_attr: "Foo".to_string(),
+                imported_module: mn("b"),
+                imported_attr: "Foo".to_string(),
+            },
+            CachedReExport {
+                exported_module: mn("b"),
+                exported_attr: "Foo".to_string(),
+                imported_module: mn("c"),
+                imported_attr: "Foo".to_string(),
+            },
+        ];
+
+        let mut failing = SmallSet::new();
+        failing.insert(mn("c"));
+
+        let map = build_re_export_map_from_cache(&re_exports, &failing);
+        assert!(map[&mn("a")].contains(&mn("c")));
+        assert!(map[&mn("b")].contains(&mn("c")));
+    }
+
+    #[test]
+    fn test_re_export_map_from_cache_three_hops() {
+        let re_exports = vec![
+            CachedReExport {
+                exported_module: mn("a"),
+                exported_attr: "Foo".to_string(),
+                imported_module: mn("b"),
+                imported_attr: "Foo".to_string(),
+            },
+            CachedReExport {
+                exported_module: mn("b"),
+                exported_attr: "Foo".to_string(),
+                imported_module: mn("c"),
+                imported_attr: "Foo".to_string(),
+            },
+            CachedReExport {
+                exported_module: mn("c"),
+                exported_attr: "Foo".to_string(),
+                imported_module: mn("d"),
+                imported_attr: "Foo".to_string(),
+            },
+        ];
+
+        let mut failing = SmallSet::new();
+        failing.insert(mn("d"));
+
+        let map = build_re_export_map_from_cache(&re_exports, &failing);
+        assert!(map[&mn("a")].contains(&mn("d")));
+        assert!(map[&mn("b")].contains(&mn("d")));
+        assert!(map[&mn("c")].contains(&mn("d")));
+    }
+
+    #[test]
+    fn test_re_export_map_from_cache_cycle() {
+        let re_exports = vec![
+            CachedReExport {
+                exported_module: mn("a"),
+                exported_attr: "Foo".to_string(),
+                imported_module: mn("b"),
+                imported_attr: "Foo".to_string(),
+            },
+            CachedReExport {
+                exported_module: mn("b"),
+                exported_attr: "Foo".to_string(),
+                imported_module: mn("a"),
+                imported_attr: "Foo".to_string(),
+            },
+        ];
+
+        let mut failing = SmallSet::new();
+        failing.insert(mn("a"));
+
+        let map = build_re_export_map_from_cache(&re_exports, &failing);
+        assert!(!map.contains_key(&mn("b")));
     }
 
     // ---- get_report tests ----
