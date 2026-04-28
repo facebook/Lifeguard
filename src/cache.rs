@@ -206,6 +206,10 @@ impl LibraryCache {
             .collect();
 
         for module in &mut self.modules {
+            if let CachedSafety::Ok(ref mut safety) = module.safety {
+                resolve_implicit_imports(&mut safety.implicit_imports, &module_names);
+            }
+
             if module.missing_imports.is_empty() {
                 continue;
             }
@@ -214,15 +218,9 @@ impl LibraryCache {
             let mut resolved_modules: AHashSet<ModuleName> = AHashSet::new();
 
             for missing in module.missing_imports.drain() {
-                if module_names.contains(&missing) {
-                    module.imports.insert(missing);
-                    resolved_modules.insert(missing);
-                } else if let Some((parent, _)) = missing
-                    .iter_parents()
-                    .find(|(p, _)| module_names.contains(p))
-                {
-                    module.imports.insert(parent);
-                    resolved_modules.insert(parent);
+                if let Some(resolved) = resolve_to_known_module(&missing, &module_names) {
+                    module.imports.insert(resolved);
+                    resolved_modules.insert(resolved);
                 } else {
                     still_missing.insert(missing);
                 }
@@ -318,6 +316,29 @@ fn is_call_verified_safe(
             }),
         Ok(true)
     )
+}
+
+fn resolve_to_known_module(name: &ModuleName, known: &AHashSet<ModuleName>) -> Option<ModuleName> {
+    if known.contains(name) {
+        return Some(*name);
+    }
+    name.iter_parents()
+        .find(|(p, _)| known.contains(p))
+        .map(|(p, _)| p)
+}
+
+fn resolve_implicit_imports(
+    implicit_imports: &mut Vec<ModuleName>,
+    module_names: &AHashSet<ModuleName>,
+) {
+    let mut seen = AHashSet::with_capacity(implicit_imports.len());
+    implicit_imports.retain_mut(|imp| {
+        if let Some(resolved) = resolve_to_known_module(imp, module_names) {
+            *imp = resolved;
+            return seen.insert(resolved);
+        }
+        seen.insert(*imp)
+    });
 }
 
 impl CachedModule {
@@ -1013,5 +1034,41 @@ mod tests {
             !caller.is_safe(),
             "caller should remain unsafe: Foo.__init__ mutates module globals"
         );
+    }
+
+    #[test]
+    fn test_resolve_to_known_module_exact_and_parent() {
+        let known: AHashSet<ModuleName> = [mn("foo"), mn("bar.baz")].into_iter().collect();
+
+        assert_eq!(resolve_to_known_module(&mn("foo"), &known), Some(mn("foo")));
+        assert_eq!(
+            resolve_to_known_module(&mn("bar.baz"), &known),
+            Some(mn("bar.baz"))
+        );
+        assert_eq!(
+            resolve_to_known_module(&mn("bar.baz.Qux"), &known),
+            Some(mn("bar.baz")),
+        );
+        assert_eq!(resolve_to_known_module(&mn("unknown"), &known), None);
+    }
+
+    #[test]
+    fn test_resolve_implicit_imports_dotted_paths() {
+        let known: AHashSet<ModuleName> = [mn("dep"), mn("other")].into_iter().collect();
+
+        let mut implicits = vec![mn("dep.ClassName"), mn("other"), mn("missing.Foo")];
+        resolve_implicit_imports(&mut implicits, &known);
+
+        assert_eq!(implicits, vec![mn("dep"), mn("other"), mn("missing.Foo")]);
+    }
+
+    #[test]
+    fn test_resolve_implicit_imports_deduplicates() {
+        let known: AHashSet<ModuleName> = [mn("dep")].into_iter().collect();
+
+        let mut implicits = vec![mn("dep.ClassA"), mn("dep.ClassB"), mn("dep")];
+        resolve_implicit_imports(&mut implicits, &known);
+
+        assert_eq!(implicits, vec![mn("dep")]);
     }
 }
