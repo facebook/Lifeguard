@@ -203,43 +203,4 @@ def f():
 "#;
         check_effects(code);
     }
-
-    #[test]
-    fn test_submodule_re_export_match() {
-        // pkg/__init__.py re-exports "val" from pkg.sub via __all__
-        let pkg_sub = r#"
-val = 42
-"#;
-        let pkg_init = r#"
-from pkg.sub import val  # E: submodule-re-export
-__all__ = ["val"]
-"#;
-        check_all_effects(vec![("pkg.sub", pkg_sub), ("pkg", pkg_init)]);
-    }
-
-    #[test]
-    fn test_submodule_re_export_not_in_all() {
-        // Imported name is NOT in __all__, so no effect
-        let pkg_sub = r#"
-val = 42
-"#;
-        let pkg_init = r#"
-from pkg.sub import val
-__all__ = ["other"]
-"#;
-        check_all_effects(vec![("pkg.sub", pkg_sub), ("pkg", pkg_init)]);
-    }
-
-    #[test]
-    fn test_submodule_re_export_not_submodule() {
-        // Source is NOT a submodule of the current module, so no effect
-        let other = r#"
-val = 42
-"#;
-        let consumer = r#"
-from other import val
-__all__ = ["val"]
-"#;
-        check_all_effects(vec![("other", other), ("consumer", consumer)]);
-    }
 }

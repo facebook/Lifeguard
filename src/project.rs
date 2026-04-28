@@ -888,21 +888,6 @@ impl ProjectInfo {
                     .safety_map
                     .insert(*mod_name, SafetyResult::AnalysisError(e));
             }
-
-            // Mark re-exported submodules as failing: when a module re-exports from
-            // its own submodule via __all__, the submodule must be marked unsafe so
-            // it is excluded from the LAZY_ELIGIBLE dict. Otherwise CPython's lazy import
-            // can resolve the name to the submodule object instead of the attribute.
-            for effs in result.module_effects.effects.values() {
-                for eff in effs {
-                    if eff.kind == EffectKind::SubmoduleReExport {
-                        state.add_error_to_module(
-                            &eff.name,
-                            SafetyError::new_from_effect(ErrorKind::SubmoduleReExport, eff),
-                        );
-                    }
-                }
-            }
         });
 
         self.precompute_constructor_safety(&state);

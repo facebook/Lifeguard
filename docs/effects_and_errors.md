@@ -90,7 +90,6 @@ pub struct SafetyError {
 | `CustomFinalizer` | Class with `__del__` |
 | `ExecCall` | `exec()` call |
 | `SysModulesAccess` | `sys.modules` access |
-| `SubmoduleReExport` | Submodule re-export name collision |
 | `ImportedModuleAssignment` | Assigning to an imported module's attribute |
 | `ImportedVarArgument` | Passing imported var to a function that mutates params |
 | `UnknownEffects` | Stub declares unknown effects |
@@ -148,7 +147,6 @@ All per-module `EffectTable`s are merged into a single global table (`merge_all_
    - `ImportedTypeAttr` → checked for property access, treated as a call
    - `ImportedVarArgument` + `ParamMethodCall` → `ImportedVarArgument` error
    - Effects with `requires_eager_loading_imports()` → added to `force_imports_eager_overrides`
-   - `SubmoduleReExport` effects → attached to the submodule being re-exported
 
 ### Not All Effects Become Errors
 

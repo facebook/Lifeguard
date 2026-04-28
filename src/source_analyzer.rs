@@ -1070,39 +1070,8 @@ impl<'a> SourceAnalyzer<'a> {
         self.expr(&x.subject, output);
     }
 
-    /// Detect submodule re-exports: when `from X import Y` at module/class scope
-    /// in an __init__.py where X is a submodule of the current package and Y
-    /// is in __all__. Under lazy imports, `from M import Y` can resolve Y to
-    /// the submodule X instead of the re-exported attribute.
-    fn check_submodule_re_exports(&self, x: &StmtImportFrom, output: &mut ModuleEffects) {
-        if !self.cursor.in_eager_scope() || !self.parsed_module.is_init {
-            return;
-        }
-        let Some(m) = self.info.module_name.new_maybe_relative(
-            self.parsed_module.is_init,
-            x.level,
-            x.module.as_ref().map(|x| &x.id),
-        ) else {
-            return;
-        };
-        if !self.import_graph.contains(&m) || m.parent() != Some(self.info.module_name) {
-            return;
-        }
-        let Some(all_names) = self.info.exports.get_all(&self.info.module_name) else {
-            return;
-        };
-        for name in &x.names {
-            if &name.name != "*" && all_names.contains(&name.name.id) {
-                let eff = Effect::new(EffectKind::SubmoduleReExport, m, x.range);
-                self.add_effect(eff, output);
-            }
-        }
-    }
-
     fn import_from(&self, x: &StmtImportFrom, output: &mut ModuleEffects) {
         self.add_import_from(x, output, false);
-
-        self.check_submodule_re_exports(x, output);
 
         for name in &x.names {
             if &name.name == "*" {

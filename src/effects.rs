@@ -76,8 +76,6 @@ pub enum EffectKind {
     ExecCall,
     // Accessing `sys.modules`.
     SysModulesAccess,
-    // Re-exporting a submodule's name via `__all__`.
-    SubmoduleReExport,
     // Passing an imported variable as a function argument.
     ImportedVarArgument,
     // Re-assigning an imported variable (for re-export tracking).

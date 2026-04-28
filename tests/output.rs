@@ -585,57 +585,6 @@ mod tests {
     }
 
     #[test]
-    fn test_submodule_re_export_not_in_lazy_eligible_set() {
-        // When a package re-exports from its own submodule via __all__, the
-        // submodule must NOT be in the LAZY_ELIGIBLE dict.
-        let pkg_init = r#"
-            from pkg.sub import val
-            __all__ = ["val"]
-        "#;
-        let pkg_sub = r#"
-            val = 42
-        "#;
-        let consumer = r#"
-            from pkg import val
-            x = val
-        "#;
-        let modules = vec![
-            ("pkg", pkg_init),
-            ("pkg.sub", pkg_sub),
-            ("consumer", consumer),
-        ];
-        let result = run_lifeguard_analysis(&modules);
-        assert!(
-            !result
-                .output
-                .lazy_eligible
-                .contains_key(&ModuleName::from_str("pkg.sub")),
-            "pkg.sub should NOT be in the LAZY_ELIGIBLE dict (re-exported submodule)"
-        );
-        assert!(
-            result
-                .failing_modules
-                .contains(&ModuleName::from_str("pkg.sub")),
-            "pkg.sub should be in failing_modules"
-        );
-
-        assert!(
-            result
-                .output
-                .lazy_eligible
-                .contains_key(&ModuleName::from_str("pkg")),
-            "pkg should be in the LAZY_ELIGIBLE dict"
-        );
-        assert!(
-            result
-                .output
-                .lazy_eligible
-                .contains_key(&ModuleName::from_str("consumer")),
-            "consumer should be in the LAZY_ELIGIBLE dict"
-        );
-    }
-
-    #[test]
     fn test_cycle_deps_propagate_to_subpackages() {
         // Test that cycle dependencies propagate to child modules.
 
@@ -879,54 +828,6 @@ mod tests {
         assert!(
             json_value.get("IMPORT_CYCLES").is_none(),
             "Non-verbose JSON should NOT contain IMPORT_CYCLES"
-        );
-    }
-
-    #[test]
-    fn test_cycle_deps_do_not_propagate_to_failing_children() {
-        // When a cycle module has a child that is failing (e.g. due to SubmoduleReExport),
-        // the child must NOT be added to lazy_eligible during cycle propagation.
-        // This mirrors the cryptography.hazmat.backends.openssl.backend production bug.
-
-        // cycle_a is a package (__init__.py) in a cycle with cycle_b.
-        // cycle_a re-exports "val" from its submodule cycle_a.sub via __all__.
-        let cycle_a = r#"
-            import cycle_b
-            from cycle_a.sub import val
-            __all__ = ["val"]
-        "#;
-
-        let cycle_b = r#"
-            import cycle_a
-            def func_b():
-                pass
-        "#;
-
-        let cycle_a_sub = r#"
-            val = 42
-        "#;
-
-        let modules = vec![
-            ("cycle_a", cycle_a),
-            ("cycle_b", cycle_b),
-            ("cycle_a.sub", cycle_a_sub),
-        ];
-
-        let result = run_lifeguard_analysis(&modules);
-
-        // cycle_a.sub should be FAILING (SubmoduleReExport) and NOT in lazy_eligible
-        assert!(
-            result
-                .failing_modules
-                .contains(&ModuleName::from_str("cycle_a.sub")),
-            "cycle_a.sub should be failing due to SubmoduleReExport"
-        );
-        assert!(
-            !result
-                .output
-                .lazy_eligible
-                .contains_key(&ModuleName::from_str("cycle_a.sub")),
-            "cycle_a.sub should NOT be in lazy_eligible (failing module, even with cycle propagation)"
         );
     }
 

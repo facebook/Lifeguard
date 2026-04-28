@@ -89,10 +89,6 @@ pub enum ErrorKind {
     /// ordering that lazy imports disrupts.
     SysModulesAccess,
 
-    /// A submodule is re-exported via `__all__`, creating a name collision risk
-    /// under lazy imports where the submodule object shadows the re-exported value.
-    SubmoduleReExport,
-
     /// An attribute on an imported module is explicitly being assigned, mutating the other module.
     ImportedModuleAssignment,
 
