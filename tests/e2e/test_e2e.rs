@@ -378,4 +378,72 @@ mod tests {
             );
         }
     }
+
+    const SAMPLE_PROJECT: &str =
+        "fbcode//safer_lazy_imports/lifeguard/testdata/sample_project:sample_project";
+
+    #[test]
+    fn test_binary_without_analyzer_has_no_analysis_output() {
+        if !check_buck_availability() {
+            return;
+        }
+
+        let output = Command::new("buck2")
+            .args([
+                "--isolation-dir",
+                ISO_DIR,
+                "build",
+                SAMPLE_PROJECT,
+                "--show-full-simple-output",
+            ])
+            .output()
+            .expect("failed to execute buck2 build");
+        assert!(
+            output.status.success(),
+            "binary build failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let output = Command::new("buck2")
+            .args([
+                "--isolation-dir",
+                ISO_DIR,
+                "build",
+                &format!("{SAMPLE_PROJECT}[dbg-source-db]"),
+                "--show-full-simple-output",
+            ])
+            .output()
+            .expect("failed to execute buck2 build");
+        assert!(
+            output.status.success(),
+            "dbg-source-db sub_target failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn test_library_without_toolchain_analyzer_has_no_cache() {
+        if !check_buck_availability() {
+            return;
+        }
+
+        let output = Command::new("buck2")
+            .args([
+                "--isolation-dir",
+                ISO_DIR,
+                "build",
+                &format!("{SAMPLE_LIB}[lazy-import-cache]"),
+            ])
+            .output()
+            .expect("failed to execute buck2 build");
+        assert!(
+            !output.status.success(),
+            "lazy-import-cache should NOT be available without toolchain config"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("lazy-import-cache") && stderr.contains("not available"),
+            "Expected 'not available' error for lazy-import-cache, got:\n{stderr}"
+        );
+    }
 }
