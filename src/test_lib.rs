@@ -224,6 +224,7 @@ fn check_output(
                 &import_graph,
                 &sys_info,
                 project::CachingMode::Disabled,
+                None,
             )
             .safety_map
         }

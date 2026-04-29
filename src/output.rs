@@ -33,6 +33,7 @@ use crate::project::SafetyMap;
 use crate::project::SideEffectMap;
 use crate::runner::Options;
 use crate::source_map::ModuleProvider;
+use crate::tracing::time;
 
 pub struct LifeGuardAnalysis {
     pub output: LifeGuardOutput,
@@ -372,7 +373,9 @@ impl LifeGuardAnalysis {
     /// Build a LifeGuardAnalysis from pre-computed library caches.
     /// This is the "reduce" step: no per-file analysis happens here.
     pub fn from_cache(cache: &mut LibraryCache, options: &Options) -> Self {
-        cache.resolve_cross_library_errors();
+        time("resolve_cross_library_errors", || {
+            cache.resolve_cross_library_errors()
+        });
 
         let safety_map = cache.to_safety_map();
         let import_graph = cache.to_import_graph();

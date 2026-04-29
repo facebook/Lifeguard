@@ -50,7 +50,7 @@ pub fn run(args: AnalyzeBinaryArgs) -> Result<()> {
 
     let mut merged = caches.swap_remove(0);
     if !caches.is_empty() {
-        merged.merge_dep_caches(caches);
+        time("merge_dep_caches", || merged.merge_dep_caches(caches));
     }
 
     info!("Merged cache: {} modules", merged.modules.len());

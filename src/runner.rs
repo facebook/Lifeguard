@@ -12,6 +12,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 
+use crate::cache::LibraryCache;
 use crate::debug::report_memory;
 use crate::imports::ImportGraph;
 use crate::module_safety;
@@ -45,6 +46,7 @@ pub fn run_pipeline(
     src_map: &SourceMap,
     root_dir: &std::path::Path,
     caching: CachingMode,
+    dep_caches: &[LibraryCache],
 ) -> Result<PipelineResult> {
     let sys_info = crate::pyrefly::sys_info::SysInfo::lg_default();
 
@@ -57,8 +59,23 @@ pub fn run_pipeline(
     });
     report_memory("After creating import graph and exports");
 
+    let dep_function_safety = if caching == CachingMode::Enabled && !dep_caches.is_empty() {
+        Some(time("Extracting dep function safety", || {
+            LibraryCache::extract_function_safety_from_caches(dep_caches)
+        }))
+    } else {
+        None
+    };
+
     let output = time("Analyzing AST", || {
-        project::run_analysis(&sources, &exports, &import_graph, &sys_info, caching)
+        project::run_analysis(
+            &sources,
+            &exports,
+            &import_graph,
+            &sys_info,
+            caching,
+            dep_function_safety,
+        )
     });
     report_memory("After analyzing AST");
 
@@ -88,7 +105,7 @@ pub fn process_source_map(
     root_dir: &std::path::Path,
     options: &Options,
 ) -> Result<LifeGuardAnalysis> {
-    let result = run_pipeline(src_map, root_dir, CachingMode::Disabled)?;
+    let result = run_pipeline(src_map, root_dir, CachingMode::Disabled, &[])?;
     let PipelineResult {
         sources,
         safety_map,

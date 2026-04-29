@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use ahash::AHashSet;
+use dashmap::DashMap;
 use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
 use ruff_text_size::TextRange;
@@ -250,6 +251,47 @@ impl LibraryCache {
                 });
             }
         }
+    }
+
+    /// Extract FQN-keyed function safety from multiple caches.
+    /// Also propagates safety through re-exports so callers using
+    /// the re-exported name can resolve the function.
+    pub fn extract_function_safety_from_caches(
+        caches: &[LibraryCache],
+    ) -> DashMap<ModuleName, FunctionSafety> {
+        let map = DashMap::new();
+        for cache in caches {
+            for module in &cache.modules {
+                for (local_name, safety) in &module.function_safety {
+                    let fqn = module.name.append_str(local_name);
+                    map.insert(fqn, *safety);
+                }
+            }
+        }
+        let re_exports: Vec<_> = caches.iter().flat_map(|c| &c.exports.re_exports).collect();
+
+        loop {
+            let mut changed = false;
+            for re_export in &re_exports {
+                let source_fqn = re_export
+                    .imported_module
+                    .append_str(&re_export.imported_attr);
+                let safety = map.get(&source_fqn).map(|s| *s);
+                if let Some(safety) = safety {
+                    let exported_fqn = re_export
+                        .exported_module
+                        .append_str(&re_export.exported_attr);
+                    if !map.contains_key(&exported_fqn) {
+                        map.insert(exported_fqn, safety);
+                        changed = true;
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        map
     }
 
     /// Reconstruct a SafetyMap from cached module data.
@@ -565,6 +607,7 @@ mod tests {
             &import_graph,
             &sys_info,
             project::CachingMode::Enabled,
+            None,
         );
         LibraryCache::build(
             &output.safety_map,
@@ -1088,5 +1131,66 @@ mod tests {
         resolve_implicit_imports(&mut implicits, &known);
 
         assert_eq!(implicits, vec![mn("dep")]);
+    }
+
+    #[test]
+    fn test_precompute_function_safety_populates_all_functions() {
+        use crate::test_lib::TestSources;
+
+        let cache = build_cache(&TestSources::new(&[(
+            "mod_a",
+            "def helper(): return 1\ndef unused(): return 2\n",
+        )]));
+
+        let mod_a = cache
+            .modules
+            .iter()
+            .find(|m| m.name == mn("mod_a"))
+            .unwrap();
+        assert!(
+            mod_a.function_safety.contains_key("helper"),
+            "helper should have a function_safety entry, got keys: {:?}",
+            mod_a.function_safety.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            mod_a.function_safety.contains_key("unused"),
+            "unused should have a function_safety entry, got keys: {:?}",
+            mod_a.function_safety.keys().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_resolve_cross_library_function_call() {
+        use crate::test_lib::TestSources;
+
+        let dep_cache = build_cache(&TestSources::new(&[("dep", "def safe_func(): return 1\n")]));
+
+        let mut own_cache = build_cache(&TestSources::new(&[(
+            "caller",
+            "from dep import safe_func\nx = safe_func()\n",
+        )]));
+
+        let caller_before = own_cache
+            .modules
+            .iter()
+            .find(|m| m.name == mn("caller"))
+            .unwrap();
+        assert!(
+            !caller_before.is_safe(),
+            "caller should be unsafe before merge (dep is missing)"
+        );
+
+        own_cache.merge_dep_caches(vec![dep_cache]);
+        own_cache.resolve_cross_library_errors();
+
+        let caller_after = own_cache
+            .modules
+            .iter()
+            .find(|m| m.name == mn("caller"))
+            .unwrap();
+        assert!(
+            caller_after.is_safe(),
+            "caller should be safe after resolving cross-library function call"
+        );
     }
 }

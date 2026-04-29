@@ -208,10 +208,10 @@ struct GlobalAnalysisState {
 }
 
 impl GlobalAnalysisState {
-    fn new() -> Self {
+    fn new(dep_function_safety: Option<DashMap<ModuleName, FunctionSafety>>) -> Self {
         Self {
             safety_map: SafetyMap::new(),
-            function_safety: DashMap::new(),
+            function_safety: dep_function_safety.unwrap_or_default(),
         }
     }
 
@@ -323,6 +323,7 @@ pub fn run_analysis(
     import_graph: &ImportGraph,
     sys_info: &SysInfo,
     caching: CachingMode,
+    dep_function_safety: Option<DashMap<ModuleName, FunctionSafety>>,
 ) -> AnalysisOutput {
     let (analysis_map, parse_errors) = analyze_all(sources, exports, import_graph, sys_info);
     let side_effect_imports = time("  Computing side-effect imports", || {
@@ -332,7 +333,7 @@ pub fn run_analysis(
         ProjectInfo::new(analysis_map, exports)
     });
     let safety_map = time("  Collecting errors", || {
-        info.collect_errors_from_project(caching)
+        info.collect_errors_from_project(caching, dep_function_safety)
     });
     time("  Filtering out stubs", || {
         filter_out_stubs(&safety_map, sources)
@@ -874,8 +875,12 @@ impl ProjectInfo {
         }
     }
 
-    pub fn collect_errors_from_project(&self, caching: CachingMode) -> SafetyMap {
-        let state = GlobalAnalysisState::new();
+    pub fn collect_errors_from_project(
+        &self,
+        caching: CachingMode,
+        dep_function_safety: Option<DashMap<ModuleName, FunctionSafety>>,
+    ) -> SafetyMap {
+        let state = GlobalAnalysisState::new(dep_function_safety);
         state.init_safety_map(&self.analysis_map);
 
         self.analysis_map.par_iter().for_each(|(mod_name, result)| {
@@ -903,6 +908,7 @@ impl ProjectInfo {
 
         if caching == CachingMode::Enabled {
             self.precompute_constructor_safety(&state);
+            self.precompute_function_safety(&state);
         }
 
         state.into_safety_map(caching)
@@ -925,6 +931,26 @@ impl ProjectInfo {
             match self.check_constructor_call(&call, state) {
                 Ok(true) => state.mark_safe(cls_name),
                 Ok(false) | Err(_) => state.mark_unsafe(cls_name),
+            }
+        }
+    }
+
+    fn precompute_function_safety(&self, state: &GlobalAnalysisState) {
+        let dummy_range = TextRange::default();
+        for (func_name, func_module) in &self.functions {
+            if state.function_safety.contains_key(func_name) {
+                continue;
+            }
+            let effect = Effect::new(EffectKind::FunctionCall, *func_name, dummy_range);
+            let mut call = Call {
+                caller_module: func_module,
+                effect: &effect,
+                func: *func_name,
+                stack: CallStack::default(),
+            };
+            if let Err(e) = self.check_call_body(&mut call, state) {
+                tracing::warn!("precompute_function_safety: {}: {}", func_name.as_str(), e);
+                state.mark_unsafe(func_name);
             }
         }
     }
@@ -1010,8 +1036,8 @@ impl ProjectInfo {
         Ok(())
     }
 
-    fn can_resolve_call(&self, call: &Call) -> bool {
-        self.contains_callable(&call.func)
+    fn can_resolve_call(&self, call: &Call, state: &GlobalAnalysisState) -> bool {
+        self.contains_callable(&call.func) || state.function_safety.contains_key(&call.func)
     }
 
     fn check_unknown_call(&self, call: &Call) -> Result<SafetyError> {
@@ -1044,7 +1070,7 @@ impl ProjectInfo {
         state: &GlobalAnalysisState,
         publish_safety_error: bool,
     ) -> Result<bool> {
-        if !self.can_resolve_call(call) {
+        if !self.can_resolve_call(call, state) {
             if publish_safety_error {
                 let err = self.check_unknown_call(call)?;
                 state.add_error_to_module(call.caller_module, err);

@@ -77,12 +77,27 @@ pub fn run(args: AnalyzeLibraryArgs) -> Result<()> {
         source_map::load_source_map(&args.db_path)
     })?;
 
+    let dep_caches: Vec<LibraryCache> = if !args.dep_caches.is_empty() {
+        time("Loading dep caches", || {
+            args.dep_caches
+                .par_iter()
+                .map(|p| {
+                    info!("Loading dep cache from {}", p.display());
+                    LibraryCache::read_from_file(p)
+                })
+                .collect::<Result<Vec<_>>>()
+        })?
+    } else {
+        Vec::new()
+    };
+
     let mut cache = if src_map.is_empty() {
         info!("Source map is empty, producing empty cache");
         LibraryCache::empty()
     } else {
         let root_dir = detect_root_dir(&src_map)?;
-        let result = run_pipeline(&src_map, &root_dir, CachingMode::Enabled)?;
+
+        let result = run_pipeline(&src_map, &root_dir, CachingMode::Enabled, &dep_caches)?;
 
         time("Building cache", || {
             LibraryCache::build(
@@ -93,18 +108,7 @@ pub fn run(args: AnalyzeLibraryArgs) -> Result<()> {
             )
         })
     };
-
-    if !args.dep_caches.is_empty() {
-        let dep_caches: Vec<LibraryCache> = time("Loading dep caches", || {
-            args.dep_caches
-                .par_iter()
-                .map(|p| {
-                    info!("Loading dep cache from {}", p.display());
-                    LibraryCache::read_from_file(p)
-                })
-                .collect::<Result<Vec<_>>>()
-        })?;
-
+    if !dep_caches.is_empty() {
         time("Merging dep caches", || {
             cache.merge_dep_caches(dep_caches);
         });
