@@ -182,6 +182,15 @@ fn merge_all_functions_and_methods(
     )
 }
 
+fn collect_re_exports(exports: &Exports, effect_table: &EffectTable) -> AHashSet<ModuleName> {
+    let mut re_exports: AHashSet<ModuleName> = exports
+        .get_re_exports()
+        .map(|(name, _)| name.as_module_name())
+        .collect();
+    get_all_safe_re_exports(effect_table, &mut re_exports);
+    re_exports
+}
+
 fn get_all_safe_re_exports(effect_table: &EffectTable, re_exports: &mut AHashSet<ModuleName>) {
     let unsafe_re_exports = effect_table
         .values()
@@ -830,27 +839,20 @@ struct ProjectInfo {
 
 impl ProjectInfo {
     pub fn new(mut analysis_map: AnalysisMap, exports: &Exports) -> Self {
-        let effect_table = time("    Merging all effects", || {
-            merge_all_effects(&analysis_map)
-        });
-        let (functions, methods) = time("    Merging all functions and methods", || {
-            merge_all_functions_and_methods(&analysis_map)
+        let (effect_table, (functions, methods)) = time("    Merging effects + functions", || {
+            rayon::join(
+                || merge_all_effects(&analysis_map),
+                || merge_all_functions_and_methods(&analysis_map),
+            )
         });
         let classes = time("    Merging all classes", || {
             merge_all_classes(&mut analysis_map)
         });
-        let re_exports = time("    Getting re-exports", || {
-            let mut re_exports = exports
-                .get_re_exports()
-                .map(|(name, _)| name.as_module_name())
-                .collect();
-            get_all_safe_re_exports(&effect_table, &mut re_exports);
-            re_exports
-        });
-        // Build reverse mapping: parent function → nested function scopes.
-        // Only includes nested functions (not class scopes).
-        let nested_functions = time("    Building nested function map", || {
-            build_nested_functions_map(&analysis_map)
+        let (re_exports, nested_functions) = time("    Getting re-exports + nested fns", || {
+            rayon::join(
+                || collect_re_exports(exports, &effect_table),
+                || build_nested_functions_map(&analysis_map),
+            )
         });
         Self {
             analysis_map,
