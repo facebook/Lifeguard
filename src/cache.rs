@@ -61,7 +61,7 @@ pub enum CachedSafety {
 }
 
 /// Detailed safety information for a module.
-#[derive(Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct CachedModuleSafety {
     pub errors: Vec<CachedError>,
     pub force_imports_eager_overrides: Vec<CachedError>,
@@ -191,15 +191,24 @@ impl LibraryCache {
 
     /// Merge consecutive modules with the same name (assumes sorted by name).
     fn merge_duplicate_modules(&mut self) {
-        let mut i = 0;
-        while i + 1 < self.modules.len() {
-            if self.modules[i].name == self.modules[i + 1].name {
-                let other = self.modules.remove(i + 1);
-                self.modules[i].merge(other);
+        if self.modules.len() < 2 {
+            return;
+        }
+
+        let mut write = 0;
+        for read in 1..self.modules.len() {
+            if self.modules[write].name == self.modules[read].name {
+                let name = self.modules[read].name;
+                let other = std::mem::replace(&mut self.modules[read], CachedModule::empty(name));
+                self.modules[write].merge(other);
             } else {
-                i += 1;
+                write += 1;
+                if write != read {
+                    self.modules.swap(write, read);
+                }
             }
         }
+        self.modules.truncate(write + 1);
     }
 
     /// Resolve missing imports against the merged cache and selectively clear
@@ -212,10 +221,10 @@ impl LibraryCache {
     pub fn resolve_cross_library_errors(&mut self) {
         let module_names: AHashSet<ModuleName> = self.modules.iter().map(|m| m.name).collect();
 
-        let func_safety_by_module: HashMap<ModuleName, HashMap<String, FunctionSafety>> = self
+        let mut func_safety_by_module: HashMap<ModuleName, HashMap<String, FunctionSafety>> = self
             .modules
-            .iter()
-            .map(|m| (m.name, m.function_safety.clone()))
+            .iter_mut()
+            .map(|m| (m.name, std::mem::take(&mut m.function_safety)))
             .collect();
 
         for module in &mut self.modules {
@@ -251,6 +260,12 @@ impl LibraryCache {
                 });
             }
         }
+
+        for module in &mut self.modules {
+            if let Some(fs) = func_safety_by_module.remove(&module.name) {
+                module.function_safety = fs;
+            }
+        }
     }
 
     /// Extract FQN-keyed function safety from multiple caches.
@@ -260,6 +275,8 @@ impl LibraryCache {
         caches: &[LibraryCache],
     ) -> DashMap<ModuleName, FunctionSafety> {
         let map = DashMap::new();
+        let mut pending_re_exports = Vec::new();
+
         for cache in caches {
             for module in &cache.modules {
                 for (local_name, safety) in &module.function_safety {
@@ -267,12 +284,14 @@ impl LibraryCache {
                     map.insert(fqn, *safety);
                 }
             }
+            for re_export in &cache.exports.re_exports {
+                pending_re_exports.push(re_export);
+            }
         }
-        let re_exports: Vec<_> = caches.iter().flat_map(|c| &c.exports.re_exports).collect();
 
         loop {
             let mut changed = false;
-            for re_export in &re_exports {
+            for re_export in &pending_re_exports {
                 let source_fqn = re_export
                     .imported_module
                     .append_str(&re_export.imported_attr);
@@ -396,6 +415,17 @@ fn resolve_implicit_imports(
 }
 
 impl CachedModule {
+    fn empty(name: ModuleName) -> Self {
+        CachedModule {
+            name,
+            safety: CachedSafety::Ok(CachedModuleSafety::default()),
+            imports: AHashSet::new(),
+            missing_imports: AHashSet::new(),
+            side_effect_imports: AHashSet::new(),
+            function_safety: HashMap::new(),
+        }
+    }
+
     pub fn is_safe(&self) -> bool {
         matches!(&self.safety, CachedSafety::Ok(s) if s.is_safe())
     }
