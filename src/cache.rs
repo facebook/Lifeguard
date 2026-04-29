@@ -559,7 +559,13 @@ mod tests {
 
         let sys_info = crate::pyrefly::sys_info::SysInfo::lg_default();
         let (import_graph, exports) = ImportGraph::make_with_exports(sources, &sys_info);
-        let output = project::run_analysis(sources, &exports, &import_graph, &sys_info);
+        let output = project::run_analysis(
+            sources,
+            &exports,
+            &import_graph,
+            &sys_info,
+            project::CachingMode::Enabled,
+        );
         LibraryCache::build(
             &output.safety_map,
             &import_graph,

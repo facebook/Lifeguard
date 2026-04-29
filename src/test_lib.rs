@@ -218,7 +218,14 @@ fn check_output(
 
     let safety_map = match check {
         Check::Errors => {
-            project::run_analysis(&sources, &exports, &import_graph, &sys_info).safety_map
+            project::run_analysis(
+                &sources,
+                &exports,
+                &import_graph,
+                &sys_info,
+                project::CachingMode::Disabled,
+            )
+            .safety_map
         }
         _ => SafetyMap::new(),
     };

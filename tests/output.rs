@@ -103,7 +103,13 @@ mod tests {
         let sources = TestSources::new(modules);
         let sys_info = SysInfo::lg_default();
         let (import_graph, exports) = ImportGraph::make_with_exports(&sources, &sys_info);
-        let output = project::run_analysis(&sources, &exports, &import_graph, &sys_info);
+        let output = project::run_analysis(
+            &sources,
+            &exports,
+            &import_graph,
+            &sys_info,
+            project::CachingMode::Disabled,
+        );
         let mut analysis =
             LifeGuardAnalysis::new(output.safety_map, import_graph, &exports, &test_options());
         analysis.propagate_side_effect_imports(&output.side_effect_imports);
@@ -722,7 +728,13 @@ mod tests {
         let sources = TestSources::new(modules);
         let sys_info = SysInfo::lg_default();
         let (import_graph, exports) = ImportGraph::make_with_exports(&sources, &sys_info);
-        let output = project::run_analysis(&sources, &exports, &import_graph, &sys_info);
+        let output = project::run_analysis(
+            &sources,
+            &exports,
+            &import_graph,
+            &sys_info,
+            project::CachingMode::Disabled,
+        );
         let mut analysis = LifeGuardAnalysis::new(
             output.safety_map,
             import_graph,
@@ -849,7 +861,13 @@ mod tests {
         let sources = TestSources::new(&modules);
         let sys_info = SysInfo::lg_default();
         let (import_graph, exports) = ImportGraph::make_with_exports(&sources, &sys_info);
-        let output = project::run_analysis(&sources, &exports, &import_graph, &sys_info);
+        let output = project::run_analysis(
+            &sources,
+            &exports,
+            &import_graph,
+            &sys_info,
+            project::CachingMode::Disabled,
+        );
         for module_name in ["a", "b", "c"] {
             let name = ModuleName::from_str(module_name);
             let entry = output.safety_map.get(&name).unwrap_or_else(|| {

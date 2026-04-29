@@ -18,6 +18,7 @@ use crate::module_safety;
 use crate::output::LifeGuardAnalysis;
 use crate::output::write_verbose;
 use crate::project;
+use crate::project::CachingMode;
 use crate::source_map::SourceMap;
 use crate::source_map::Sources;
 use crate::tracing::time;
@@ -40,7 +41,11 @@ pub struct PipelineResult {
 
 /// Run the analysis pipeline up to (but not including) final output generation.
 /// Returns intermediate results that can be consumed by different output formats.
-pub fn run_pipeline(src_map: &SourceMap, root_dir: &std::path::Path) -> Result<PipelineResult> {
+pub fn run_pipeline(
+    src_map: &SourceMap,
+    root_dir: &std::path::Path,
+    caching: CachingMode,
+) -> Result<PipelineResult> {
     let sys_info = crate::pyrefly::sys_info::SysInfo::lg_default();
 
     let sources = time("Building sources", || {
@@ -53,7 +58,7 @@ pub fn run_pipeline(src_map: &SourceMap, root_dir: &std::path::Path) -> Result<P
     report_memory("After creating import graph and exports");
 
     let output = time("Analyzing AST", || {
-        project::run_analysis(&sources, &exports, &import_graph, &sys_info)
+        project::run_analysis(&sources, &exports, &import_graph, &sys_info, caching)
     });
     report_memory("After analyzing AST");
 
@@ -83,7 +88,7 @@ pub fn process_source_map(
     root_dir: &std::path::Path,
     options: &Options,
 ) -> Result<LifeGuardAnalysis> {
-    let result = run_pipeline(src_map, root_dir)?;
+    let result = run_pipeline(src_map, root_dir, CachingMode::Disabled)?;
     let PipelineResult {
         sources,
         safety_map,

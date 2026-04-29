@@ -49,6 +49,12 @@ pub type AnalysisMap = HashMap<ModuleName, AnalyzedModule, ahash::RandomState>;
 pub type SafetyMap = DashMap<ModuleName, SafetyResult>;
 pub type SideEffectMap = AHashMap<ModuleName, AHashSet<ModuleName>>;
 pub type ParseErrors = DashMap<ModuleName, String>;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum CachingMode {
+    Enabled,
+    Disabled,
+}
 type ScopeImportsMap = AHashMap<ModuleName, AHashMap<ModuleName, AHashSet<ModuleName>>>;
 
 /// Shared immutable context for per-module analysis.
@@ -219,18 +225,20 @@ impl GlobalAnalysisState {
 
     /// Decompose FQN-keyed function safety verdicts into per-module local-name
     /// maps and embed them in the corresponding ModuleSafety entries.
-    fn into_safety_map(self) -> SafetyMap {
-        for entry in self.function_safety.iter() {
-            let fqn = entry.key();
-            for (parent, dot_pos) in fqn.iter_parents() {
-                if let Some(mut safety_entry) = self.safety_map.get_mut(&parent) {
-                    if let SafetyResult::Ok(module_safety) = safety_entry.value_mut() {
-                        let local_name = &fqn.as_str()[dot_pos + 1..];
-                        module_safety
-                            .function_safety
-                            .insert(local_name.to_string(), *entry.value());
+    fn into_safety_map(self, caching: CachingMode) -> SafetyMap {
+        if caching == CachingMode::Enabled {
+            for entry in self.function_safety.iter() {
+                let fqn = entry.key();
+                for (parent, dot_pos) in fqn.iter_parents() {
+                    if let Some(mut safety_entry) = self.safety_map.get_mut(&parent) {
+                        if let SafetyResult::Ok(module_safety) = safety_entry.value_mut() {
+                            let local_name = &fqn.as_str()[dot_pos + 1..];
+                            module_safety
+                                .function_safety
+                                .insert(local_name.to_string(), *entry.value());
+                        }
+                        break;
                     }
-                    break;
                 }
             }
         }
@@ -314,6 +322,7 @@ pub fn run_analysis(
     exports: &Exports,
     import_graph: &ImportGraph,
     sys_info: &SysInfo,
+    caching: CachingMode,
 ) -> AnalysisOutput {
     let (analysis_map, parse_errors) = analyze_all(sources, exports, import_graph, sys_info);
     let side_effect_imports = time("  Computing side-effect imports", || {
@@ -322,7 +331,9 @@ pub fn run_analysis(
     let info = time("  Building project info", || {
         ProjectInfo::new(analysis_map, exports)
     });
-    let safety_map = time("  Collecting errors", || info.collect_errors_from_project());
+    let safety_map = time("  Collecting errors", || {
+        info.collect_errors_from_project(caching)
+    });
     time("  Filtering out stubs", || {
         filter_out_stubs(&safety_map, sources)
     });
@@ -863,7 +874,7 @@ impl ProjectInfo {
         }
     }
 
-    pub fn collect_errors_from_project(&self) -> SafetyMap {
+    pub fn collect_errors_from_project(&self, caching: CachingMode) -> SafetyMap {
         let state = GlobalAnalysisState::new();
         state.init_safety_map(&self.analysis_map);
 
@@ -890,9 +901,11 @@ impl ProjectInfo {
             }
         });
 
-        self.precompute_constructor_safety(&state);
+        if caching == CachingMode::Enabled {
+            self.precompute_constructor_safety(&state);
+        }
 
-        state.into_safety_map()
+        state.into_safety_map(caching)
     }
 
     fn precompute_constructor_safety(&self, state: &GlobalAnalysisState) {

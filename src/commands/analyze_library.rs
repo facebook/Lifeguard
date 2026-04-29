@@ -14,6 +14,7 @@ use tracing::info;
 
 use crate::cache::LibraryCache;
 use crate::debug::report_peak_memory;
+use crate::project::CachingMode;
 use crate::runner::run_pipeline;
 use crate::source_map;
 use crate::source_map::SourceMap;
@@ -81,7 +82,7 @@ pub fn run(args: AnalyzeLibraryArgs) -> Result<()> {
         LibraryCache::empty()
     } else {
         let root_dir = detect_root_dir(&src_map)?;
-        let result = run_pipeline(&src_map, &root_dir)?;
+        let result = run_pipeline(&src_map, &root_dir, CachingMode::Enabled)?;
 
         time("Building cache", || {
             LibraryCache::build(
