@@ -74,7 +74,7 @@ impl Attribute {
         if self.module.as_str().is_empty() {
             ModuleName::from_str(self.attr.as_str())
         } else {
-            self.module.append(&self.attr)
+            self.module.append_str(self.attr.as_str())
         }
     }
 }
@@ -120,14 +120,17 @@ impl Exports {
         }
     }
 
-    /// Create with pre-allocated capacity based on expected number of modules.
-    /// Estimates ~4 exports and ~10 re-exports per module based on profiling data.
-    pub fn with_capacity(num_modules: usize) -> Self {
+    pub fn with_capacity(
+        exports: usize,
+        re_exports: usize,
+        all: usize,
+        return_types: usize,
+    ) -> Self {
         Self {
-            exports: AHashMap::with_capacity(num_modules * 4),
-            re_exports: AHashMap::with_capacity(num_modules * 10),
-            all: AHashMap::with_capacity(num_modules),
-            return_types: AHashMap::new(),
+            exports: AHashMap::with_capacity(exports),
+            re_exports: AHashMap::with_capacity(re_exports),
+            all: AHashMap::with_capacity(all),
+            return_types: AHashMap::with_capacity(return_types),
         }
     }
 
@@ -220,8 +223,23 @@ impl Exports {
 
     /// Merge a collection of per-module Exports into a single Exports.
     pub fn merge_all(all_exports: Vec<Exports>) -> Self {
-        let num_modules = all_exports.len();
-        let mut result = Self::with_capacity(num_modules);
+        let (total_exports, total_re_exports, total_all, total_return_types) = all_exports
+            .iter()
+            .fold((0, 0, 0, 0), |(e, re, a, rt), exports| {
+                (
+                    e + exports.exports.len(),
+                    re + exports.re_exports.len(),
+                    a + exports.all.len(),
+                    rt + exports.return_types.len(),
+                )
+            });
+
+        let mut result = Self::with_capacity(
+            total_exports,
+            total_re_exports,
+            total_all,
+            total_return_types,
+        );
         for exports in all_exports {
             result.merge(exports);
         }
