@@ -916,9 +916,9 @@ impl ProjectInfo {
 
     fn precompute_constructor_safety(&self, state: &GlobalAnalysisState) {
         let dummy_range = TextRange::default();
-        for cls_name in self.classes.keys() {
+        self.classes.par_keys().for_each(|cls_name| {
             if state.function_safety.contains_key(cls_name) {
-                continue;
+                return;
             }
             let effect = Effect::new(EffectKind::FunctionCall, *cls_name, dummy_range);
             // cls_name as caller_module makes UnsafeIfImported → Unsafe (conservative for cache).
@@ -932,27 +932,29 @@ impl ProjectInfo {
                 Ok(true) => state.mark_safe(cls_name),
                 Ok(false) | Err(_) => state.mark_unsafe(cls_name),
             }
-        }
+        });
     }
 
     fn precompute_function_safety(&self, state: &GlobalAnalysisState) {
         let dummy_range = TextRange::default();
-        for (func_name, func_module) in &self.functions {
-            if state.function_safety.contains_key(func_name) {
-                continue;
-            }
-            let effect = Effect::new(EffectKind::FunctionCall, *func_name, dummy_range);
-            let mut call = Call {
-                caller_module: func_module,
-                effect: &effect,
-                func: *func_name,
-                stack: CallStack::default(),
-            };
-            if let Err(e) = self.check_call_body(&mut call, state) {
-                tracing::warn!("precompute_function_safety: {}: {}", func_name.as_str(), e);
-                state.mark_unsafe(func_name);
-            }
-        }
+        self.functions
+            .par_iter()
+            .for_each(|(func_name, func_module)| {
+                if state.function_safety.contains_key(func_name) {
+                    return;
+                }
+                let effect = Effect::new(EffectKind::FunctionCall, *func_name, dummy_range);
+                let mut call = Call {
+                    caller_module: func_module,
+                    effect: &effect,
+                    func: *func_name,
+                    stack: CallStack::default(),
+                };
+                if let Err(e) = self.check_call_body(&mut call, state) {
+                    tracing::warn!("precompute_function_safety: {}: {}", func_name.as_str(), e);
+                    state.mark_unsafe(func_name);
+                }
+            });
     }
 
     fn check_load_imports_eagerly(

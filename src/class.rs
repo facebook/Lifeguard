@@ -7,6 +7,7 @@
 
 use ahash::AHashMap;
 use pyrefly_python::module_name::ModuleName;
+use rayon::prelude::*;
 use ruff_python_ast::name::Name;
 
 use crate::traits::ModuleNameExt;
@@ -100,8 +101,8 @@ impl ClassTable {
         self.table.get(&ModuleName::from_str(name))
     }
 
-    pub(crate) fn keys(&self) -> impl Iterator<Item = &ModuleName> {
-        self.table.keys()
+    pub(crate) fn par_keys(&self) -> impl ParallelIterator<Item = &ModuleName> {
+        self.table.par_iter().map(|(k, _)| k)
     }
 }
 
