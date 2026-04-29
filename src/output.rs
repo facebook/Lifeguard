@@ -440,26 +440,28 @@ impl LifeGuardAnalysis {
     /// and B is a passing module with non-empty failing deps, add B to A's failing
     /// deps so B is eagerly imported.
     pub fn propagate_side_effect_imports(&mut self, side_effect_imports: &SideEffectMap) {
-        for (module_name, se_imports) in side_effect_imports {
-            if !self.passing_modules.contains(module_name) {
-                continue;
-            }
-            let mut new_deps: SmallSet<ModuleName> = SmallSet::new();
-            for se_import in se_imports {
-                if let Some(deps) = self.output.lazy_eligible.get(se_import) {
-                    if !deps.is_empty() {
-                        new_deps.insert(*se_import);
+        side_effect_imports
+            .par_iter()
+            .for_each(|(module_name, se_imports)| {
+                if !self.passing_modules.contains(module_name) {
+                    return;
+                }
+                let mut new_deps: SmallSet<ModuleName> = SmallSet::new();
+                for se_import in se_imports {
+                    if let Some(deps) = self.output.lazy_eligible.get(se_import) {
+                        if !deps.is_empty() {
+                            new_deps.insert(*se_import);
+                        }
                     }
                 }
-            }
-            if !new_deps.is_empty() {
-                self.output
-                    .lazy_eligible
-                    .entry(*module_name)
-                    .or_default()
-                    .extend(new_deps.into_iter());
-            }
-        }
+                if !new_deps.is_empty() {
+                    self.output
+                        .lazy_eligible
+                        .entry(*module_name)
+                        .or_default()
+                        .extend(new_deps);
+                }
+            });
     }
 
     pub fn get_report(&self) -> String {
