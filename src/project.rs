@@ -227,7 +227,7 @@ impl GlobalAnalysisState {
     /// maps and embed them in the corresponding ModuleSafety entries.
     fn into_safety_map(self, caching: CachingMode) -> SafetyMap {
         if caching == CachingMode::Enabled {
-            for entry in self.function_safety.iter() {
+            self.function_safety.par_iter().for_each(|entry| {
                 let fqn = entry.key();
                 for (parent, dot_pos) in fqn.iter_parents() {
                     if let Some(mut safety_entry) = self.safety_map.get_mut(&parent) {
@@ -240,7 +240,7 @@ impl GlobalAnalysisState {
                         break;
                     }
                 }
-            }
+            });
         }
         self.safety_map
     }
