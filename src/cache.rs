@@ -93,6 +93,18 @@ pub struct CachedReExport {
 }
 
 impl LibraryCache {
+    pub fn empty() -> Self {
+        LibraryCache {
+            modules: Vec::new(),
+            exports: CachedExports {
+                definitions: Vec::new(),
+                re_exports: Vec::new(),
+                all: Vec::new(),
+                return_types: Vec::new(),
+            },
+        }
+    }
+
     /// Build a cache from the analysis pipeline results.
     pub fn build(
         safety_map: &SafetyMap,

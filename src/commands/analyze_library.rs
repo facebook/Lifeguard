@@ -76,17 +76,22 @@ pub fn run(args: AnalyzeLibraryArgs) -> Result<()> {
         source_map::load_source_map(&args.db_path)
     })?;
 
-    let root_dir = detect_root_dir(&src_map)?;
-    let result = run_pipeline(&src_map, &root_dir)?;
+    let mut cache = if src_map.is_empty() {
+        info!("Source map is empty, producing empty cache");
+        LibraryCache::empty()
+    } else {
+        let root_dir = detect_root_dir(&src_map)?;
+        let result = run_pipeline(&src_map, &root_dir)?;
 
-    let mut cache = time("Building cache", || {
-        LibraryCache::build(
-            &result.safety_map,
-            &result.import_graph,
-            &result.exports,
-            &result.side_effect_imports,
-        )
-    });
+        time("Building cache", || {
+            LibraryCache::build(
+                &result.safety_map,
+                &result.import_graph,
+                &result.exports,
+                &result.side_effect_imports,
+            )
+        })
+    };
 
     if !args.dep_caches.is_empty() {
         let dep_caches: Vec<LibraryCache> = time("Loading dep caches", || {
