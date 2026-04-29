@@ -79,6 +79,24 @@ impl Attribute {
     }
 }
 
+/// Follow a chain of `Attribute` mappings transitively, returning the final resolved attribute.
+/// Returns `None` if a cycle is detected.
+pub(crate) fn resolve_chain<F>(start: &Attribute, lookup: F) -> Option<Attribute>
+where
+    F: Fn(&Attribute) -> Option<Attribute>,
+{
+    let mut current = start.clone();
+    let mut seen = AHashSet::new();
+    while let Some(next) = lookup(&current) {
+        if seen.contains(&next) {
+            return None;
+        }
+        seen.insert(current);
+        current = next;
+    }
+    Some(current)
+}
+
 #[derive(Debug)]
 pub struct Exports {
     /// Map of definitions to the name of their containing module.
@@ -132,16 +150,9 @@ impl Exports {
     /// Follow re-export chains transitively to find the ultimate definition.
     /// Returns `None` if a cycle is detected.
     pub fn resolve_transitive(&self, name: &Attribute) -> Option<Attribute> {
-        let mut current = name.clone();
-        let mut seen = AHashSet::new();
-        while let Some((next, _)) = self.re_exports.get(&current) {
-            if seen.contains(next) {
-                return None;
-            }
-            seen.insert(current);
-            current = next.clone();
-        }
-        Some(current)
+        resolve_chain(name, |attr| {
+            self.re_exports.get(attr).map(|(a, _)| a.clone())
+        })
     }
 
     /// Check if a symbol is a class, following re-export chains transitively if needed.

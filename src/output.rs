@@ -25,6 +25,7 @@ use crate::errors::ErrorMetadata;
 use crate::errors::SafetyError;
 use crate::exports::Attribute;
 use crate::exports::Exports;
+use crate::exports::resolve_chain;
 use crate::imports::ImportGraph;
 use crate::module_parser::ParsedModule;
 use crate::module_safety::SafetyResult;
@@ -266,25 +267,13 @@ fn build_re_export_map_from_cache(
         })
         .collect();
 
-    let resolve = |start: &Attribute| -> Option<ModuleName> {
-        let mut current = start.clone();
-        let mut seen = AHashSet::new();
-        while let Some(next) = chain.get(&current) {
-            if seen.contains(next) {
-                return None;
-            }
-            seen.insert(current);
-            current = next.clone();
-        }
-        Some(current.module)
-    };
-
     let mut map: AHashMap<ModuleName, AHashSet<ModuleName>> = AHashMap::new();
     for re_export in re_exports {
         let imported = Attribute::new(re_export.imported_module, &re_export.imported_attr);
-        let Some(source_module) = resolve(&imported) else {
+        let Some(resolved) = resolve_chain(&imported, |attr| chain.get(attr).cloned()) else {
             continue;
         };
+        let source_module = resolved.module;
         if failing_modules.contains(&source_module) {
             map.entry(re_export.exported_module)
                 .or_default()
