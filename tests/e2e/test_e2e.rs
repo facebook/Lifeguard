@@ -98,6 +98,8 @@ mod tests {
     const ISO_DIR: &str = "test_dep_cache_merge";
     const SAMPLE_LIB: &str =
         "fbcode//safer_lazy_imports/lifeguard/testdata/sample_project:sample_lib";
+    const SAMPLE_PROJECT: &str =
+        "fbcode//safer_lazy_imports/lifeguard/testdata/sample_project:sample_project";
     const SAMPLE_PROJECT_LIB: &str =
         "fbcode//safer_lazy_imports/lifeguard/testdata/sample_project:sample_project-library";
     const ANALYZER: &str = "fbcode//safer_lazy_imports/lifeguard/src:analyzer";
@@ -379,9 +381,6 @@ mod tests {
         }
     }
 
-    const SAMPLE_PROJECT: &str =
-        "fbcode//safer_lazy_imports/lifeguard/testdata/sample_project:sample_project";
-
     #[test]
     fn test_binary_without_analyzer_has_no_analysis_output() {
         if !check_buck_availability() {
@@ -422,7 +421,7 @@ mod tests {
     }
 
     #[test]
-    fn test_library_without_toolchain_analyzer_has_no_cache() {
+    fn test_library_lazy_import_cache_subtarget_builds() {
         if !check_buck_availability() {
             return;
         }
@@ -433,17 +432,27 @@ mod tests {
                 ISO_DIR,
                 "build",
                 &format!("{SAMPLE_LIB}[lazy-import-cache]"),
+                "--show-full-simple-output",
             ])
             .output()
             .expect("failed to execute buck2 build");
         assert!(
-            !output.status.success(),
-            "lazy-import-cache should NOT be available without toolchain config"
+            output.status.success(),
+            "lazy-import-cache subtarget should build successfully:\n{}",
+            String::from_utf8_lossy(&output.stderr)
         );
-        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        let cache_path = String::from_utf8(output.stdout).unwrap();
+        let cache_path = cache_path.trim();
         assert!(
-            stderr.contains("lazy-import-cache") && stderr.contains("not available"),
-            "Expected 'not available' error for lazy-import-cache, got:\n{stderr}"
+            cache_path.ends_with("library-cache.bin"),
+            "Expected library-cache.bin artifact, got: {cache_path}"
+        );
+        let cache = LibraryCache::read_from_file(Path::new(cache_path))
+            .expect("Failed to read lazy-import-cache output");
+        assert!(
+            !cache.modules.is_empty(),
+            "lazy-import-cache should contain at least one module"
         );
     }
 }
