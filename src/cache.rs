@@ -230,9 +230,9 @@ impl LibraryCache {
             let mut resolved_modules: AHashSet<ModuleName> = AHashSet::new();
 
             for missing in module.missing_imports.drain() {
-                if let Some(resolved) = resolve_to_known_module(&missing, &module_names) {
-                    module.imports.insert(resolved);
-                    resolved_modules.insert(resolved);
+                if module_names.contains(&missing) {
+                    module.imports.insert(missing);
+                    resolved_modules.insert(missing);
                 } else {
                     still_missing.insert(missing);
                 }
