@@ -775,6 +775,10 @@ struct Call<'a> {
     effect: &'a Effect,
     func: ModuleName,
     stack: CallStack,
+    // Distinct from check_call_safety's publish_safety_error: that flag is true only at the
+    // top-level call (false for recursive calls to avoid double-counting), while is_module_scope
+    // stays true through the entire chain so check_call_params catches transitive param mutation.
+    is_module_scope: bool,
 }
 
 impl<'a> Call<'a> {
@@ -784,6 +788,7 @@ impl<'a> Call<'a> {
             effect: self.effect,
             func,
             stack: self.stack.clone(),
+            is_module_scope: self.is_module_scope,
         }
     }
 }
@@ -929,6 +934,7 @@ impl ProjectInfo {
                 effect: &effect,
                 func: *cls_name,
                 stack: CallStack::default(),
+                is_module_scope: false,
             };
             match self.check_constructor_call(&call, state) {
                 Ok(true) => state.mark_safe(cls_name),
@@ -951,6 +957,7 @@ impl ProjectInfo {
                     effect: &effect,
                     func: *func_name,
                     stack: CallStack::default(),
+                    is_module_scope: false,
                 };
                 if let Err(e) = self.check_call_body(&mut call, state) {
                     tracing::warn!("precompute_function_safety: {}: {}", func_name.as_str(), e);
@@ -1007,6 +1014,7 @@ impl ProjectInfo {
                     effect: eff,
                     func: eff.name,
                     stack: CallStack::new(*scope),
+                    is_module_scope: true,
                 };
                 self.check_call_safety(&mut call, state, true)?;
             } else if eff.kind == EffectKind::ImportedTypeAttr {
@@ -1023,6 +1031,7 @@ impl ProjectInfo {
                                 effect: eff,
                                 func: eff.name,
                                 stack: CallStack::new(*scope),
+                                is_module_scope: true,
                             };
                             self.check_call_safety(&mut call, state, true)?;
                         }
@@ -1183,10 +1192,10 @@ impl ProjectInfo {
 
         let effs = self.effect_table.get(&func);
 
-        if let Some(effs) = effs {
-            // Call param mutation is orthogonal to function safety; we always need to check for it
-            // even if the function safety is cached.
-            self.check_call_params(call, effs, state);
+        if call.is_module_scope {
+            if let Some(effs) = effs {
+                self.check_call_params(call, effs, state);
+            }
         }
 
         if let Some(safe) = state.function_safety.get(&func).map(|r| *r) {
@@ -1219,6 +1228,7 @@ impl ProjectInfo {
                             effect: eff,
                             func: eff.name,
                             stack: std::mem::take(&mut call.stack),
+                            is_module_scope: call.is_module_scope,
                         };
                         if !self.check_call_safety(&mut child_call, state, false)? {
                             // This function has called an unsafe function; mark it unsafe.
@@ -1278,6 +1288,7 @@ impl ProjectInfo {
                         effect: &child_effect,
                         func: *child,
                         stack: std::mem::take(&mut call.stack),
+                        is_module_scope: call.is_module_scope,
                     };
                     if !self.check_call_body(&mut child_call, state)? {
                         state.mark_unsafe(&func);
