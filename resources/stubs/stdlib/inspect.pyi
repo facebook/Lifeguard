@@ -316,7 +316,7 @@ if sys.version_info >= (3, 14):
         locals: Mapping[str, Any] | None = None,
         eval_str: bool = False,
         annotation_format: Format = Format.VALUE,  # noqa: Y011
-    ) -> Signature: ...
+    ) -> Signature: no_effects()
 
 elif sys.version_info >= (3, 10):
     def signature(
@@ -326,10 +326,10 @@ elif sys.version_info >= (3, 10):
         globals: Mapping[str, Any] | None = None,
         locals: Mapping[str, Any] | None = None,
         eval_str: bool = False,
-    ) -> Signature: ...
+    ) -> Signature: no_effects()
 
 else:
-    def signature(obj: _IntrospectableCallable, *, follow_wrapped: bool = True) -> Signature: ...
+    def signature(obj: _IntrospectableCallable, *, follow_wrapped: bool = True) -> Signature: no_effects()
 
 class _void: ...
 class _empty: ...
