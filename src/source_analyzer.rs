@@ -81,6 +81,16 @@ pub fn analyze(
     stubs: &Stubs,
     sys_info: &SysInfo,
 ) -> AnalyzedModule {
+    if parsed_module.is_thrift_generated {
+        trace!(
+            "Special-casing Thrift-generated module {}",
+            parsed_module.name.as_str()
+        );
+        let analyzer = SourceAnalyzer::new(parsed_module, exports, import_graph, stubs, sys_info);
+        let mut result = analyzer.analyze();
+        result.module_effects.effects = crate::effects::EffectTable::empty();
+        return result;
+    }
     trace!("Checking module {}", parsed_module.name.as_str());
     let analyzer = SourceAnalyzer::new(parsed_module, exports, import_graph, stubs, sys_info);
     analyzer.analyze()
