@@ -215,4 +215,34 @@ def g():
             vec![("test.dec", vec!["bar"])],
         );
     }
+
+    #[test]
+    fn test_property_setter_is_safe() {
+        let code = r#"
+class Foo:
+    @property
+    def bar(self):
+        return self._bar
+
+    @bar.setter
+    def bar(self, value):
+        self._bar = value
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_property_deleter_is_safe() {
+        let code = r#"
+class Foo:
+    @property
+    def bar(self):
+        return self._bar
+
+    @bar.deleter
+    def bar(self):
+        del self._bar
+"#;
+        check(code);
+    }
 }

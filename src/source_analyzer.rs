@@ -836,6 +836,14 @@ impl<'a> SourceAnalyzer<'a> {
         }
     }
 
+    fn is_property_decorator(expr: &Expr) -> bool {
+        if let Expr::Attribute(attr) = expr {
+            let name = attr.attr.as_str();
+            return name == "setter" || name == "getter" || name == "deleter";
+        }
+        false
+    }
+
     fn check_assign_target(&self, target: &Expr, output: &mut ModuleEffects) {
         if let Expr::Subscript(e) = target {
             if self.check_sys_modules_access(&e.value, e.range(), output) {
@@ -929,13 +937,14 @@ impl<'a> SourceAnalyzer<'a> {
                 args = Some(&func.arguments);
                 call = &func.func;
             }
+            if Self::is_property_decorator(call) {
+                continue;
+            }
             let Some(res) = self.info.resolve(&self.cursor, call) else {
                 self.check_unresolved_call(call, args, output, Some(CallKind::Decorator));
                 continue;
             };
             let Some(call_name) = res.expr_full_name else {
-                // Handle cases like @decorators[0] where the decorator is accessed via subscript.
-                // We can't statically determine the decorator, so mark it as unknown.
                 let name = match call {
                     Expr::Subscript(_) => "<subscript>",
                     _ => "<unknown>",
