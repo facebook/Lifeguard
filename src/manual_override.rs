@@ -49,6 +49,19 @@ const SAFE_FUNCTIONS_ARRAY: &[&str] = &[
     "pytest.mark.parametrize",
     // This seems to be the same util as bigcode.bcf above
     "transformers.utils.logging.get_logger",
+    // Meta-decorator that wraps functions while preserving signatures. Its body
+    // only mutates locally-created objects (the wrapper closure).
+    "decorator.decorator",
+    // Feature detection via importlib.metadata.version(). Mutates a module-level
+    // cache dict but has no external side effects.
+    "dns._features.have",
+    // Pure function that parses text into a dns.name.Name object. Transitively calls
+    // ContextVar.set()/reset() which are currently UnknownEffects in the stub.
+    "dns.name.from_text",
+    // Codec constructors that only store parameters in instance attributes.
+    "dns.name.IDNA2003Codec",
+    "dns.name.IDNA2008Codec",
+    "dns.name.Name",
 ];
 
 /// Copy of SAFE_FUNCTIONS_ARRAY as a global set for faster searching.
