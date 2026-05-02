@@ -16,6 +16,7 @@ use ruff_python_ast::ExprAttribute;
 use ruff_python_ast::ExprCall;
 use ruff_python_ast::ExprCompare;
 use ruff_python_ast::ExprContext;
+use ruff_python_ast::ExprLambda;
 use ruff_python_ast::ExprName;
 use ruff_python_ast::ExprSubscript;
 use ruff_python_ast::Identifier;
@@ -798,6 +799,10 @@ impl<'a> SourceAnalyzer<'a> {
 
     fn expr(&self, x: &Expr, output: &mut ModuleEffects) {
         match x {
+            Expr::Lambda(lambda) => {
+                self.check_lambda(lambda, output);
+                return;
+            }
             Expr::Call(call) => self.check_call(call, output),
             Expr::Attribute(e) => self.check_attr(e, output),
             Expr::Subscript(e) => self.check_subscript(e, output),
@@ -806,6 +811,19 @@ impl<'a> SourceAnalyzer<'a> {
             _ => (),
         }
         x.recurse(&mut |c| self.expr(c, output));
+    }
+
+    fn check_lambda(&self, lambda: &ExprLambda, output: &mut ModuleEffects) {
+        // TODO(T268531819): Since we cannot detect when a lambda is being called, we do not analyse
+        // the body. Parameter defaults are still checked since they execute at definition time.
+        if let Some(ref params) = lambda.parameters {
+            for default in params
+                .iter_non_variadic_params()
+                .filter_map(|p| p.default())
+            {
+                self.expr(default, output);
+            }
+        }
     }
 
     fn check_assign_target(&self, target: &Expr, output: &mut ModuleEffects) {

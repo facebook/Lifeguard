@@ -262,6 +262,48 @@ f(10)  # E: unknown-function-call
     }
 
     #[test]
+    fn test_lambda_body_not_analyzed() {
+        // Lambda bodies are skipped because we cannot detect when a
+        // lambda is being called
+        let code = r#"
+import os
+f = lambda: os.getcwd()
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_unsafe_lambda_call() {
+        // TODO: We cannot detect the actual error but we do raise unknown-function-call
+        let code = r#"
+import os
+f = lambda: os.getcwd()
+f()  # E: unknown-function-call
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_lambda_default_analyzed() {
+        let code = r#"
+import os
+f = lambda x=os.getcwd(): x  # E: unsafe-function-call
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_lambda_assigned_to_class_attr() {
+        let code = r#"
+class Foo:
+    pass
+
+Foo.__getstate__ = lambda self: self.__dict__.copy()
+"#;
+        check(code);
+    }
+
+    #[test]
     fn test_builtins() {
         let code = r#"
 a = input() # E: prohibited-call
