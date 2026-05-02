@@ -138,6 +138,10 @@ impl ModuleProvider for TestSources {
         !self.modules.contains_key(name) && self.stubs.get_raw_source(name).is_some()
     }
 
+    fn overrides_source(&self, name: &ModuleName) -> bool {
+        self.stub_modules.contains(name) && self.modules.contains_key(name)
+    }
+
     fn stubs(&self) -> &Stubs {
         &self.stubs
     }

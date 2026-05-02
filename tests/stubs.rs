@@ -112,4 +112,34 @@ Set.register(MyContainer)
 "#;
         check(code);
     }
+
+    #[test]
+    fn test_source_overriding_stub_retained_in_safety_map() {
+        use lifeguard::imports::ImportGraph;
+        use lifeguard::project;
+        use lifeguard::pyrefly::module_name::ModuleName;
+        use lifeguard::pyrefly::sys_info::SysInfo;
+        use lifeguard::test_lib::TestSources;
+        use lifeguard::traits::SysInfoExt;
+
+        let modules = vec![
+            ("a", "from b import foo\nfoo()"),
+            ("b", "def foo(): no_effects()"),
+        ];
+        let sources = TestSources::new_with_stubs(&modules, &["b"]);
+        let sys_info = SysInfo::lg_default();
+        let (import_graph, exports) = ImportGraph::make_with_exports(&sources, &sys_info);
+        let result = project::run_analysis(
+            &sources,
+            &exports,
+            &import_graph,
+            &sys_info,
+            project::CachingMode::Disabled,
+            None,
+        );
+        assert!(
+            result.safety_map.get(&ModuleName::from_str("b")).is_some(),
+            "source-overriding stub should remain in the safety map"
+        );
+    }
 }

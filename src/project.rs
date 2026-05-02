@@ -354,10 +354,10 @@ pub fn run_analysis(
     }
 }
 
-/// Filter out stubs from the safety map
+/// Filter out stubs without sources from the safety map
 fn filter_out_stubs(safety_map: &SafetyMap, sources: &impl ModuleProvider) {
     for name in sources.module_names_iter() {
-        if sources.is_stub(name) {
+        if sources.is_stub(name) && !sources.overrides_source(name) {
             safety_map.remove(name);
         }
     }

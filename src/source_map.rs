@@ -212,8 +212,12 @@ fn source_priority(path: &Path) -> anyhow::Result<u8> {
 
 /// Build a lightweight SourceInfoMap from the SourceMap and Stubs.
 /// Contains only metadata (name, source_type, is_init, path) — no parsed ASTs.
-fn make_source_info_map(source_map: &SourceMap, stubs: &Stubs) -> SourceInfoMap {
+fn make_source_info_map(
+    source_map: &SourceMap,
+    stubs: &Stubs,
+) -> (SourceInfoMap, AHashSet<ModuleName>) {
     let mut info_map = SourceInfoMap::default();
+    let mut overridden = AHashSet::new();
 
     // Add entries from the source map (real .py files)
     for (name, source_result) in source_map {
@@ -232,8 +236,11 @@ fn make_source_info_map(source_map: &SourceMap, stubs: &Stubs) -> SourceInfoMap 
         }
     }
 
-    // Add entries from stubs
+    // Add entries from stubs (overrides source when both exist)
     for (mod_name, _) in stubs.raw_sources_iter() {
+        if info_map.contains_key(mod_name) {
+            overridden.insert(*mod_name);
+        }
         info_map.insert(
             *mod_name,
             SourceInfo {
@@ -245,7 +252,7 @@ fn make_source_info_map(source_map: &SourceMap, stubs: &Stubs) -> SourceInfoMap 
         );
     }
 
-    info_map
+    (info_map, overridden)
 }
 
 /// Parse a single module on demand from its SourceInfo.
@@ -284,6 +291,7 @@ pub trait ModuleProvider: Sync {
     }
     fn parse(&self, name: &ModuleName) -> Option<AstResult>;
     fn is_stub(&self, name: &ModuleName) -> bool;
+    fn overrides_source(&self, name: &ModuleName) -> bool;
     fn stubs(&self) -> &Stubs;
 }
 
@@ -293,12 +301,13 @@ pub struct Sources {
     info_map: SourceInfoMap,
     root_dir: PathBuf,
     stubs: Stubs,
+    stub_overrides: AHashSet<ModuleName>,
 }
 
 impl Sources {
     pub fn new(source_map: &SourceMap, root_dir: PathBuf) -> Self {
         let stubs = Stubs::new();
-        let info_map = time("Building source info map", || {
+        let (info_map, stub_overrides) = time("Building source info map", || {
             make_source_info_map(source_map, &stubs)
         });
         report_memory("After building source info map");
@@ -306,6 +315,7 @@ impl Sources {
             info_map,
             root_dir,
             stubs,
+            stub_overrides,
         }
     }
 }
@@ -332,6 +342,10 @@ impl ModuleProvider for Sources {
         self.info_map
             .get(name)
             .is_some_and(|info| matches!(info.source_type, PySourceType::Stub))
+    }
+
+    fn overrides_source(&self, name: &ModuleName) -> bool {
+        self.stub_overrides.contains(name)
     }
 
     fn stubs(&self) -> &Stubs {
