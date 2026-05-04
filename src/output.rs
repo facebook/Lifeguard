@@ -23,9 +23,7 @@ use crate::cache::LibraryCache;
 use crate::errors::ErrorKind;
 use crate::errors::ErrorMetadata;
 use crate::errors::SafetyError;
-use crate::exports::Attribute;
 use crate::exports::Exports;
-use crate::exports::resolve_chain;
 use crate::imports::ImportGraph;
 use crate::module_parser::ParsedModule;
 use crate::module_safety::SafetyResult;
@@ -257,24 +255,29 @@ fn build_re_export_map_from_cache(
     re_exports: &[CachedReExport],
     failing_modules: &SmallSet<ModuleName>,
 ) -> AHashMap<ModuleName, AHashSet<ModuleName>> {
-    // Build a chain lookup so we can follow re-export chains transitively.
-    let chain: AHashMap<Attribute, Attribute> = re_exports
+    let chain: AHashMap<(ModuleName, &str), usize> = re_exports
         .iter()
-        .map(|r| {
-            (
-                Attribute::new(r.exported_module, &r.exported_attr),
-                Attribute::new(r.imported_module, &r.imported_attr),
-            )
-        })
+        .enumerate()
+        .map(|(i, r)| ((r.exported_module, r.exported_attr.as_str()), i))
         .collect();
 
+    let mut memo: AHashMap<usize, Option<ModuleName>> = AHashMap::with_capacity(re_exports.len());
+    let mut path_buf = Vec::new();
+    let mut visited_buf = AHashSet::new();
+
     let mut map: AHashMap<ModuleName, AHashSet<ModuleName>> = AHashMap::new();
-    for re_export in re_exports {
-        let imported = Attribute::new(re_export.imported_module, &re_export.imported_attr);
-        let Some(resolved) = resolve_chain(&imported, |attr| chain.get(attr).cloned()) else {
+    for (start_idx, re_export) in re_exports.iter().enumerate() {
+        let result = resolve_reexport_chain(
+            start_idx,
+            re_exports,
+            &chain,
+            &mut memo,
+            &mut path_buf,
+            &mut visited_buf,
+        );
+        let Some(source_module) = result else {
             continue;
         };
-        let source_module = resolved.module;
         if failing_modules.contains(&source_module) {
             map.entry(re_export.exported_module)
                 .or_default()
@@ -282,6 +285,46 @@ fn build_re_export_map_from_cache(
         }
     }
     map
+}
+
+fn resolve_reexport_chain(
+    start: usize,
+    re_exports: &[CachedReExport],
+    chain: &AHashMap<(ModuleName, &str), usize>,
+    memo: &mut AHashMap<usize, Option<ModuleName>>,
+    path: &mut Vec<usize>,
+    visited: &mut AHashSet<usize>,
+) -> Option<ModuleName> {
+    if let Some(&cached) = memo.get(&start) {
+        return cached;
+    }
+    path.clear();
+    visited.clear();
+    let mut cur_module = re_exports[start].imported_module;
+    let mut cur_attr = re_exports[start].imported_attr.as_str();
+
+    let result = loop {
+        match chain.get(&(cur_module, cur_attr)) {
+            Some(&idx) => {
+                if let Some(&cached) = memo.get(&idx) {
+                    break cached;
+                }
+                if !visited.insert(idx) {
+                    break None;
+                }
+                path.push(idx);
+                cur_module = re_exports[idx].imported_module;
+                cur_attr = &re_exports[idx].imported_attr;
+            }
+            None => break Some(cur_module),
+        }
+    };
+
+    memo.insert(start, result);
+    for &idx in path.iter() {
+        memo.insert(idx, result);
+    }
+    result
 }
 
 /// Build the lazy_eligible dict by scanning the import graph, handling cycles,
@@ -693,6 +736,7 @@ mod tests {
     use super::*;
     use crate::errors::ErrorKind;
     use crate::errors::SafetyError;
+    use crate::exports::Attribute;
     use crate::module_safety::ModuleSafety;
     use crate::module_safety::SafetyResult;
     use crate::test_lib::TestSources;
