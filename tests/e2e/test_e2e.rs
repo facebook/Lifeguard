@@ -88,7 +88,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Phase 2: Dependency cache merging tests
+    // Dependency cache merging tests
     // -----------------------------------------------------------------------
 
     use lifeguard::cache::CachedModule;
@@ -205,51 +205,37 @@ mod tests {
         );
     }
 
-    /// Test 2: Analyze sample_project-library (1 own src) with sample_lib cache as dep.
-    /// Uses source-db-no-deps for own sources only, merges dep cache.
-    /// Verifies the merged output matches a full (non-cached) analysis.
+    /// Test 2: analyze-library produces only own modules (--dep-cache is deprecated/ignored).
+    /// Merging is handled by analyze-binary.
     #[test]
-    fn test_dep_cache_merge_sample_project() {
+    fn test_analyze_library_produces_own_modules_only() {
         if !check_buck_availability() {
             return;
         }
         let tmp = tempfile::tempdir().unwrap();
 
-        // --- Step 1: Build sample_lib cache ---
+        // --- Build sample_lib cache ---
         let lib_db_path = build_source_db_no_deps(SAMPLE_LIB);
         let lib_cache_path = tmp.path().join("sample_lib_cache.bin");
         let lib_cache = run_analyze_library(&lib_db_path, &lib_cache_path, &[]);
         assert_eq!(get_module_names(&lib_cache).len(), 5);
 
-        // --- Step 2: Analyze sample_project-library's own sources only ---
+        // --- Analyze sample_project-library  ---
         let proj_db_path = build_source_db_no_deps(SAMPLE_PROJECT_LIB);
-        let merged_cache_path = tmp.path().join("merged_cache.bin");
-        let merged_cache =
-            run_analyze_library(&proj_db_path, &merged_cache_path, &[&lib_cache_path]);
+        let proj_cache_path = tmp.path().join("proj_cache.bin");
+        let proj_cache = run_analyze_library(&proj_db_path, &proj_cache_path, &[&lib_cache_path]);
 
-        let merged_names = get_module_names(&merged_cache);
+        let proj_names = get_module_names(&proj_cache);
 
-        // 1 own module + 5 from dep cache = 6 total
-        assert_eq!(merged_names.len(), 6, "merged cache should have 6 modules");
-        assert!(
-            merged_names.iter().any(|n| n.contains("main")),
-            "merged cache should contain main module"
+        assert_eq!(
+            proj_names.len(),
+            1,
+            "analyze-library should only contain own modules (dep caches are ignored)"
         );
-
-        // --- Step 3: Verify safety matches between dep cache and merged output ---
-        for lib_mod in &lib_cache.modules {
-            let lib_name = lib_mod.name.as_str();
-            let merged_mod = merged_cache
-                .modules
-                .iter()
-                .find(|m| m.name.as_str() == lib_name)
-                .unwrap_or_else(|| panic!("Module {lib_name} missing from merged cache"));
-            assert_eq!(
-                is_cached_module_safe(lib_mod),
-                is_cached_module_safe(merged_mod),
-                "Safety mismatch for module {lib_name}"
-            );
-        }
+        assert!(
+            proj_names.iter().any(|n| n.contains("main")),
+            "cache should contain main module"
+        );
     }
 
     /// Build the BXL source DB for a target and return the path to the merged_db.json file.
@@ -341,6 +327,8 @@ mod tests {
     }
 
     /// Verify analyze_binary produces the same output as a full baseline analyze.
+    /// Each library cache contains only its own modules (non-cumulative).
+    /// Analyze-binary receives all caches and merges them.
     #[test]
     fn test_analyze_binary_matches_baseline() {
         if !check_buck_availability() {
@@ -348,18 +336,19 @@ mod tests {
         }
         let tmp = tempfile::tempdir().unwrap();
 
-        // Build library caches
+        // Build per-library caches (non-cumulative)
         let lib_db_path = build_source_db_no_deps(SAMPLE_LIB);
         let lib_cache_path = tmp.path().join("sample_lib_cache.bin");
         run_analyze_library(&lib_db_path, &lib_cache_path, &[]);
 
         let proj_db_path = build_source_db_no_deps(SAMPLE_PROJECT_LIB);
         let proj_cache_path = tmp.path().join("proj_lib_cache.bin");
-        run_analyze_library(&proj_db_path, &proj_cache_path, &[&lib_cache_path]);
+        run_analyze_library(&proj_db_path, &proj_cache_path, &[]);
 
-        // Run analyze_binary from cached libraries
+        // Run analyze_binary with ALL library caches (merge happens here)
         let binary_output_path = tmp.path().join("binary_output.json");
-        let binary_output = run_analyze_binary(&binary_output_path, &[&proj_cache_path]);
+        let binary_output =
+            run_analyze_binary(&binary_output_path, &[&lib_cache_path, &proj_cache_path]);
 
         // Run baseline analyze on full source DB for comparison
         let full_db_path = build_bxl_source_db(SAMPLE_PROJECT_LIB);

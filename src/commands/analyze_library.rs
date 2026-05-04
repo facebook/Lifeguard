@@ -9,8 +9,8 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::Parser;
-use rayon::prelude::*;
 use tracing::info;
+use tracing::warn;
 
 use crate::cache::LibraryCache;
 use crate::debug::report_peak_memory;
@@ -30,10 +30,9 @@ pub struct AnalyzeLibraryArgs {
     /// Path to output cache file
     pub cache_output_path: PathBuf,
 
-    /// Paths to pre-computed dependency cache files.
-    /// When provided, the source db should contain only the target's own
-    /// source files. Results for dependency modules are merged from these caches.
-    #[arg(long = "dep-cache")]
+    /// Deprecated: dependency caches are no longer used during library analysis.
+    /// Cross-library resolution is handled entirely in the reduce step (analyze-binary).
+    #[arg(long = "dep-cache", hide = true)]
     pub dep_caches: Vec<PathBuf>,
 }
 
@@ -71,33 +70,26 @@ fn detect_root_dir(src_map: &SourceMap) -> Result<PathBuf> {
 pub fn run(args: AnalyzeLibraryArgs) -> Result<()> {
     let timer = ProcessTimer::new();
 
+    if !args.dep_caches.is_empty() {
+        warn!(
+            "--dep-cache is deprecated and ignored. \
+             Cross-library resolution is now handled entirely by analyze-binary."
+        );
+    }
+
     info!("Loading source db from {}", args.db_path.display());
 
     let src_map = time("Loading source db", || {
         source_map::load_source_map(&args.db_path)
     })?;
 
-    let dep_caches: Vec<LibraryCache> = if !args.dep_caches.is_empty() {
-        time("Loading dep caches", || {
-            args.dep_caches
-                .par_iter()
-                .map(|p| {
-                    info!("Loading dep cache from {}", p.display());
-                    LibraryCache::read_from_file(p)
-                })
-                .collect::<Result<Vec<_>>>()
-        })?
-    } else {
-        Vec::new()
-    };
-
-    let mut cache = if src_map.is_empty() {
+    let cache = if src_map.is_empty() {
         info!("Source map is empty, producing empty cache");
         LibraryCache::empty()
     } else {
         let root_dir = detect_root_dir(&src_map)?;
 
-        let result = run_pipeline(&src_map, &root_dir, CachingMode::Enabled, &dep_caches)?;
+        let result = run_pipeline(&src_map, &root_dir, CachingMode::Enabled)?;
 
         time("Building cache", || {
             LibraryCache::build(
@@ -108,11 +100,6 @@ pub fn run(args: AnalyzeLibraryArgs) -> Result<()> {
             )
         })
     };
-    if !dep_caches.is_empty() {
-        time("Merging dep caches", || {
-            cache.merge_dep_caches(dep_caches);
-        });
-    }
 
     time("Writing cache", || {
         cache.write_to_file(&args.cache_output_path)

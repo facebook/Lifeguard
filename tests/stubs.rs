@@ -135,7 +135,6 @@ Set.register(MyContainer)
             &import_graph,
             &sys_info,
             project::CachingMode::Disabled,
-            None,
         );
         assert!(
             result.safety_map.get(&ModuleName::from_str("b")).is_some(),

@@ -37,7 +37,6 @@ mod tests {
             &import_graph,
             &sys_info,
             project::CachingMode::Disabled,
-            None,
         );
         let mut analysis =
             LifeGuardAnalysis::new(output.safety_map, import_graph, &exports, &test_options());

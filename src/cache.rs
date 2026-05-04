@@ -9,7 +9,6 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use ahash::AHashSet;
-use dashmap::DashMap;
 use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
 use ruff_text_size::TextRange;
@@ -236,8 +235,10 @@ impl LibraryCache {
                 continue;
             }
 
-            let mut still_missing: AHashSet<ModuleName> = AHashSet::new();
-            let mut resolved_modules: AHashSet<ModuleName> = AHashSet::new();
+            let mut still_missing: AHashSet<ModuleName> =
+                AHashSet::with_capacity(module.missing_imports.len());
+            let mut resolved_modules: AHashSet<ModuleName> =
+                AHashSet::with_capacity(module.missing_imports.len());
 
             for missing in module.missing_imports.drain() {
                 if module_names.contains(&missing) {
@@ -266,51 +267,6 @@ impl LibraryCache {
                 module.function_safety = fs;
             }
         }
-    }
-
-    /// Extract FQN-keyed function safety from multiple caches.
-    /// Also propagates safety through re-exports so callers using
-    /// the re-exported name can resolve the function.
-    pub fn extract_function_safety_from_caches(
-        caches: &[LibraryCache],
-    ) -> DashMap<ModuleName, FunctionSafety> {
-        let map = DashMap::new();
-        let mut pending_re_exports = Vec::new();
-
-        for cache in caches {
-            for module in &cache.modules {
-                for (local_name, safety) in &module.function_safety {
-                    let fqn = module.name.append_str(local_name);
-                    map.insert(fqn, *safety);
-                }
-            }
-            for re_export in &cache.exports.re_exports {
-                pending_re_exports.push(re_export);
-            }
-        }
-
-        loop {
-            let mut changed = false;
-            for re_export in &pending_re_exports {
-                let source_fqn = re_export
-                    .imported_module
-                    .append_str(&re_export.imported_attr);
-                let safety = map.get(&source_fqn).map(|s| *s);
-                if let Some(safety) = safety {
-                    let exported_fqn = re_export
-                        .exported_module
-                        .append_str(&re_export.exported_attr);
-                    if !map.contains_key(&exported_fqn) {
-                        map.insert(exported_fqn, safety);
-                        changed = true;
-                    }
-                }
-            }
-            if !changed {
-                break;
-            }
-        }
-        map
     }
 
     /// Reconstruct a SafetyMap from cached module data.
@@ -637,7 +593,6 @@ mod tests {
             &import_graph,
             &sys_info,
             project::CachingMode::Enabled,
-            None,
         );
         LibraryCache::build(
             &output.safety_map,

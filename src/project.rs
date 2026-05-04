@@ -217,10 +217,10 @@ struct GlobalAnalysisState {
 }
 
 impl GlobalAnalysisState {
-    fn new(dep_function_safety: Option<DashMap<ModuleName, FunctionSafety>>) -> Self {
+    fn new() -> Self {
         Self {
             safety_map: SafetyMap::new(),
-            function_safety: dep_function_safety.unwrap_or_default(),
+            function_safety: DashMap::new(),
         }
     }
 
@@ -332,7 +332,6 @@ pub fn run_analysis(
     import_graph: &ImportGraph,
     sys_info: &SysInfo,
     caching: CachingMode,
-    dep_function_safety: Option<DashMap<ModuleName, FunctionSafety>>,
 ) -> AnalysisOutput {
     let (analysis_map, parse_errors) = analyze_all(sources, exports, import_graph, sys_info);
     let side_effect_imports = time("  Computing side-effect imports", || {
@@ -342,7 +341,7 @@ pub fn run_analysis(
         ProjectInfo::new(analysis_map, exports)
     });
     let safety_map = time("  Collecting errors", || {
-        info.collect_errors_from_project(caching, dep_function_safety)
+        info.collect_errors_from_project(caching)
     });
     time("  Filtering out stubs", || {
         filter_out_stubs(&safety_map, sources)
@@ -882,12 +881,8 @@ impl ProjectInfo {
         }
     }
 
-    pub fn collect_errors_from_project(
-        &self,
-        caching: CachingMode,
-        dep_function_safety: Option<DashMap<ModuleName, FunctionSafety>>,
-    ) -> SafetyMap {
-        let state = GlobalAnalysisState::new(dep_function_safety);
+    pub fn collect_errors_from_project(&self, caching: CachingMode) -> SafetyMap {
+        let state = GlobalAnalysisState::new();
         state.init_safety_map(&self.analysis_map);
 
         self.analysis_map.par_iter().for_each(|(mod_name, result)| {
