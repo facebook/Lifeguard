@@ -125,23 +125,18 @@ mod tests {
     }
 
     /// Run analyze-library and return the parsed cache.
-    fn run_analyze_library(db_path: &str, cache_path: &Path, dep_caches: &[&Path]) -> LibraryCache {
-        let mut args = vec![
-            "--isolation-dir".to_string(),
-            ISO_DIR.to_string(),
-            "run".to_string(),
-            ANALYZER.to_string(),
-            "--".to_string(),
-            "analyze-library".to_string(),
-            db_path.to_string(),
-            cache_path.to_str().unwrap().to_string(),
-        ];
-        for dep in dep_caches {
-            args.push("--dep-cache".to_string());
-            args.push(dep.to_str().unwrap().to_string());
-        }
+    fn run_analyze_library(db_path: &str, cache_path: &Path) -> LibraryCache {
         let output = Command::new("buck2")
-            .args(&args)
+            .args([
+                "--isolation-dir",
+                ISO_DIR,
+                "run",
+                ANALYZER,
+                "--",
+                "analyze-library",
+                db_path,
+                cache_path.to_str().unwrap(),
+            ])
             .output()
             .expect("failed to execute analyzer");
         assert!(
@@ -176,7 +171,7 @@ mod tests {
         let db_path = build_source_db_no_deps(SAMPLE_LIB);
 
         let cache_path = tmp.path().join("sample_lib_cache.bin");
-        let cache = run_analyze_library(&db_path, &cache_path, &[]);
+        let cache = run_analyze_library(&db_path, &cache_path);
 
         let names = get_module_names(&cache);
         assert_eq!(names.len(), 5, "sample_lib cache should have 5 modules");
@@ -205,8 +200,8 @@ mod tests {
         );
     }
 
-    /// Test 2: analyze-library produces only own modules (--dep-cache is deprecated/ignored).
-    /// Merging is handled by analyze-binary.
+    /// Test 2: analyze-library produces only the library's own modules.
+    /// Merging is handled by analyze-binary in the reduce step.
     #[test]
     fn test_analyze_library_produces_own_modules_only() {
         if !check_buck_availability() {
@@ -214,23 +209,21 @@ mod tests {
         }
         let tmp = tempfile::tempdir().unwrap();
 
-        // --- Build sample_lib cache ---
         let lib_db_path = build_source_db_no_deps(SAMPLE_LIB);
         let lib_cache_path = tmp.path().join("sample_lib_cache.bin");
-        let lib_cache = run_analyze_library(&lib_db_path, &lib_cache_path, &[]);
+        let lib_cache = run_analyze_library(&lib_db_path, &lib_cache_path);
         assert_eq!(get_module_names(&lib_cache).len(), 5);
 
-        // --- Analyze sample_project-library  ---
         let proj_db_path = build_source_db_no_deps(SAMPLE_PROJECT_LIB);
         let proj_cache_path = tmp.path().join("proj_cache.bin");
-        let proj_cache = run_analyze_library(&proj_db_path, &proj_cache_path, &[&lib_cache_path]);
+        let proj_cache = run_analyze_library(&proj_db_path, &proj_cache_path);
 
         let proj_names = get_module_names(&proj_cache);
 
         assert_eq!(
             proj_names.len(),
             1,
-            "analyze-library should only contain own modules (dep caches are ignored)"
+            "analyze-library should only contain own modules"
         );
         assert!(
             proj_names.iter().any(|n| n.contains("main")),
@@ -339,11 +332,11 @@ mod tests {
         // Build per-library caches (non-cumulative)
         let lib_db_path = build_source_db_no_deps(SAMPLE_LIB);
         let lib_cache_path = tmp.path().join("sample_lib_cache.bin");
-        run_analyze_library(&lib_db_path, &lib_cache_path, &[]);
+        run_analyze_library(&lib_db_path, &lib_cache_path);
 
         let proj_db_path = build_source_db_no_deps(SAMPLE_PROJECT_LIB);
         let proj_cache_path = tmp.path().join("proj_lib_cache.bin");
-        run_analyze_library(&proj_db_path, &proj_cache_path, &[]);
+        run_analyze_library(&proj_db_path, &proj_cache_path);
 
         // Run analyze_binary with ALL library caches (merge happens here)
         let binary_output_path = tmp.path().join("binary_output.json");
