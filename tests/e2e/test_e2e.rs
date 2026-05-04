@@ -431,6 +431,8 @@ mod tests {
                 "--isolation-dir",
                 ISO_DIR,
                 "build",
+                "-c",
+                "python.use_lifeguard_incremental=true",
                 &format!("{SAMPLE_LIB}[lazy-import-cache]"),
                 "--show-full-simple-output",
             ])
