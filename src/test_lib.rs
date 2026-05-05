@@ -49,6 +49,7 @@ use crate::traits::SysInfoExt;
 pub struct TestSources {
     modules: HashMap<ModuleName, String, ahash::RandomState>,
     stub_modules: AHashSet<ModuleName>,
+    parse_errors: AHashSet<ModuleName>,
     stubs: Stubs,
     names: Vec<ModuleName>,
 }
@@ -84,9 +85,21 @@ impl TestSources {
         Self {
             modules: module_map,
             stub_modules,
+            parse_errors: AHashSet::new(),
             stubs,
             names,
         }
+    }
+
+    pub fn with_parse_errors(mut self, error_modules: &[&str]) -> Self {
+        for name in error_modules {
+            let mod_name = ModuleName::from_str(name);
+            if !self.names.contains(&mod_name) {
+                self.names.push(mod_name);
+            }
+            self.parse_errors.insert(mod_name);
+        }
+        self
     }
 
     pub fn get_code(&self, name: &ModuleName) -> Option<&str> {
@@ -108,6 +121,10 @@ impl ModuleProvider for TestSources {
     }
 
     fn parse(&self, name: &ModuleName) -> Option<AstResult> {
+        if self.parse_errors.contains(name) {
+            return Some(AstResult::ParserError(anyhow::anyhow!("parse error")));
+        }
+
         // Test modules take priority over stubs
         if let Some(code) = self.modules.get(name) {
             if self.stub_modules.contains(name) {

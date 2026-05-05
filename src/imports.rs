@@ -465,14 +465,28 @@ impl<'a> ImportGraphBuilder<'a> {
     fn build(mut self, sources: &impl ModuleProvider) -> ImportGraph {
         self.add_nodes(sources.module_names_iter());
 
-        let all_imports: Vec<(ModuleName, Imports)> = time("  Collecting all import edges", || {
-            sources
-                .module_names_par_iter()
-                .filter_map(|name| {
-                    let ast_result = sources.parse(name)?;
-                    self.collect_imports(*name, &ast_result)
-                })
-                .collect()
+        let results: Vec<Result<(ModuleName, Imports), ModuleName>> =
+            time("  Collecting all import edges", || {
+                sources
+                    .module_names_par_iter()
+                    .filter_map(|name| {
+                        let ast_result = sources.parse(name)?;
+                        if ast_result.as_parsed().is_err() {
+                            return Some(Err(*name));
+                        }
+                        self.collect_imports(*name, &ast_result).map(Ok)
+                    })
+                    .collect()
+            });
+
+        let mut all_imports = Vec::new();
+        time("  Splitting results and removing unparseable nodes", || {
+            for result in results {
+                match result {
+                    Ok(imports) => all_imports.push(imports),
+                    Err(name) => self.graph.remove_node(&name),
+                }
+            }
         });
 
         self.add_edges_and_finish(all_imports)
@@ -481,21 +495,32 @@ impl<'a> ImportGraphBuilder<'a> {
     fn build_with_exports(mut self, sources: &impl ModuleProvider) -> (ImportGraph, Exports) {
         self.add_nodes(sources.module_names_iter());
 
-        let results: Vec<((ModuleName, Imports), Exports)> =
+        let results: Vec<Result<((ModuleName, Imports), Exports), ModuleName>> =
             time("  Collecting imports and exports", || {
                 sources
                     .module_names_par_iter()
                     .filter_map(|name| {
                         let ast_result = sources.parse(name)?;
+                        if ast_result.as_parsed().is_err() {
+                            return Some(Err(*name));
+                        }
                         let imports = self.collect_imports(*name, &ast_result)?;
                         let module = ast_result.as_parsed().ok()?;
                         let exports = Exports::new_unfiltered(module, self.sys_info);
-                        Some((imports, exports))
+                        Some(Ok((imports, exports)))
                     })
                     .collect()
             });
 
-        let (all_imports, all_exports): (Vec<_>, Vec<_>) = results.into_iter().unzip();
+        let mut successes = Vec::new();
+        for result in results {
+            match result {
+                Ok(pair) => successes.push(pair),
+                Err(name) => self.graph.remove_node(&name),
+            }
+        }
+
+        let (all_imports, all_exports): (Vec<_>, Vec<_>) = successes.into_iter().unzip();
         let import_graph = self.add_edges_and_finish(all_imports);
 
         let mut merged_exports = time("  Merging exports", || Exports::merge_all(all_exports));

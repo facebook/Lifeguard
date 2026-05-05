@@ -938,4 +938,49 @@ mod tests {
             "verbose output should show the error message"
         );
     }
+
+    #[test]
+    fn test_parse_failed_module_in_eager_dict() {
+        let a_code = r#"
+            import broken
+            def f():
+                pass
+        "#;
+
+        let modules = vec![("a", a_code)];
+        let sources = TestSources::new(&modules).with_parse_errors(&["broken"]);
+        let sys_info = SysInfo::lg_default();
+        let (import_graph, exports) = ImportGraph::make_with_exports(&sources, &sys_info);
+        let output = project::run_analysis(
+            &sources,
+            &exports,
+            &import_graph,
+            &sys_info,
+            project::CachingMode::Disabled,
+            None,
+        );
+
+        for entry in output.parse_errors.iter() {
+            output.safety_map.insert(
+                *entry.key(),
+                SafetyResult::AnalysisError(anyhow::anyhow!("Parse error: {}", entry.value())),
+            );
+        }
+
+        let mut result =
+            LifeGuardAnalysis::new(output.safety_map, import_graph, &exports, &test_options());
+        result.propagate_side_effect_imports(&output.side_effect_imports);
+
+        assert!(
+            result
+                .failing_modules
+                .contains(&ModuleName::from_str("broken")),
+            "parse-failed module should be in failing_modules"
+        );
+
+        assert!(
+            has_lazy_eligible_dep(&result, "a", "broken"),
+            "module importing a parse-failed module should have it in lazy_eligible deps"
+        );
+    }
 }

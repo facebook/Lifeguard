@@ -282,4 +282,57 @@ else:
 
         assert_deps(&g, "main", vec!["a"]);
     }
+
+    #[test]
+    fn test_parse_failed_module_treated_as_missing() {
+        let sources = TestSources::new(&[("a", "import b")]).with_parse_errors(&["b"]);
+        let b = ModuleName::from_str("b");
+
+        let sys_info = SysInfo::lg_default();
+        let g = ImportGraph::make(&sources, &sys_info);
+
+        assert!(
+            !g.contains(&b),
+            "parse-failed module should not be a graph node"
+        );
+
+        assert!(
+            g.has_missing_import(&ModuleName::from_str("a"), &b),
+            "import of parse-failed module should be in the missing set"
+        );
+    }
+
+    #[test]
+    fn test_import_from_parse_failed_module() {
+        let sources =
+            TestSources::new(&[("a", "from broken import foo")]).with_parse_errors(&["broken"]);
+        let broken = ModuleName::from_str("broken");
+
+        let sys_info = SysInfo::lg_default();
+        let g = ImportGraph::make(&sources, &sys_info);
+
+        assert!(!g.contains(&broken));
+        assert!(
+            g.has_missing_import(&ModuleName::from_str("a"), &broken),
+            "from-import of parse-failed module should be in the missing set"
+        );
+    }
+
+    #[test]
+    fn test_parse_failed_submodule_in_package() {
+        let sources =
+            TestSources::new(&[("a", "pass"), ("c", "import a.b")]).with_parse_errors(&["a.b"]);
+        let a_b = ModuleName::from_str("a.b");
+
+        let sys_info = SysInfo::lg_default();
+        let g = ImportGraph::make(&sources, &sys_info);
+
+        assert!(g.contains(&ModuleName::from_str("a")));
+        assert!(!g.contains(&a_b));
+        assert_deps(&g, "c", vec!["a"]);
+        assert!(
+            g.has_missing_import(&ModuleName::from_str("c"), &a_b),
+            "import of parse-failed submodule should be in the missing set"
+        );
+    }
 }

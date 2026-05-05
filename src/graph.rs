@@ -85,6 +85,21 @@ impl Graph {
         self.find_edges(node, Direction::Incoming)
     }
 
+    /// Remove a node from the graph entirely.
+    pub(crate) fn remove_node(&mut self, name: &ModuleName) {
+        if let Some(ix) = self.nodes.remove(name) {
+            let last_ix = NodeIndex::new(self.graph.node_count() - 1);
+            self.graph.remove_node(ix);
+            if ix != last_ix {
+                let &swapped_name = self
+                    .graph
+                    .node_weight(ix)
+                    .expect("petgraph swap-remove guarantees the swapped node exists");
+                self.nodes.insert(swapped_name, ix);
+            }
+        }
+    }
+
     /// Check if a node exists in the graph.
     pub fn contains(&self, node: &ModuleName) -> bool {
         self.nodes.contains_key(node)
