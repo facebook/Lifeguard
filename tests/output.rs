@@ -957,7 +957,6 @@ mod tests {
             &import_graph,
             &sys_info,
             project::CachingMode::Disabled,
-            None,
         );
 
         for entry in output.parse_errors.iter() {
