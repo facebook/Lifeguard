@@ -399,7 +399,7 @@ pub fn check_imports(
             )
         })
         .collect();
-    expected_pending_imports.sort_by(|a, b| a.0.cmp(&b.0));
+    expected_pending_imports.sort_by_key(|a| a.0);
 
     let mut expected_called_imports: Vec<(ModuleName, Vec<ModuleName>)> = module_effects
         .called_imports
@@ -416,7 +416,7 @@ pub fn check_imports(
             )
         })
         .collect();
-    expected_called_imports.sort_by(|a, b| a.0.cmp(&b.0));
+    expected_called_imports.sort_by_key(|a| a.0);
 
     let called_imports_as_module_names: Vec<(ModuleName, Vec<ModuleName>)> = called_imports
         .iter()

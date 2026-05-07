@@ -446,11 +446,9 @@ impl<'a, 'b> BindingsTableBuilder<'a, 'b> {
             // rest of the name into account
             let parts = expr_name.components();
             match alias {
-                Alias::Global(Value::Class(c)) => {
-                    if parts.len() == 1 {
-                        // We have an undotted name that aliases a class; return the class
-                        return Some(*c);
-                    }
+                Alias::Global(Value::Class(c)) if parts.len() == 1 => {
+                    // We have an undotted name that aliases a class; return the class
+                    return Some(*c);
                 }
                 Alias::Global(Value::Module(m)) => {
                     // The prefix of `expr_name` is an aliased module; replace it with the actual
