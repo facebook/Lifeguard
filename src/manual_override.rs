@@ -49,6 +49,9 @@ const SAFE_FUNCTIONS_ARRAY: &[&str] = &[
     "pytest.mark.parametrize",
     // This seems to be the same util as bigcode.bcf above
     "transformers.utils.logging.get_logger",
+    // Pure wrapper: reads __qualname__/__module__, creates an idempotent logger,
+    // returns a functools.wraps closure. No I/O or state mutation at decoration time.
+    "libfb.py.asyncio.decorators.retryable",
     // Meta-decorator that wraps functions while preserving signatures. Its body
     // only mutates locally-created objects (the wrapper closure).
     "decorator.decorator",
