@@ -63,6 +63,18 @@ const SAFE_FUNCTIONS_ARRAY: &[&str] = &[
     // Pysa marker decorator: wraps with a trivial pass-through via functools.wraps.
     // No registration, no global state, purely for static taint analysis.
     "confucius.analects.base.agentic_function.agent_function",
+    // langchain_core.prompts uses PEP 562 __getattr__ for lazy re-exports. The
+    // source exists in the DB but the analyzer can't follow the dynamic dispatch.
+    // All are pure data constructors building template objects from strings.
+    "langchain_core.prompts.ChatPromptTemplate.from_messages",
+    "langchain_core.prompts.ChatPromptTemplate.from_template",
+    "langchain_core.prompts.PromptTemplate.from_template",
+    "langchain_core.prompts.PromptTemplate.from_file",
+    "langchain_core.prompts.prompt.PromptTemplate.from_template",
+    "langchain_core.prompts.prompt.PromptTemplate.from_file",
+    "langchain_core.prompts.chat.ChatPromptTemplate.from_messages",
+    "langchain_core.prompts.chat.HumanMessagePromptTemplate.from_template",
+    "langchain_core.prompts.chat.SystemMessagePromptTemplate.from_template",
     // Meta-decorator that wraps functions while preserving signatures. Its body
     // only mutates locally-created objects (the wrapper closure).
     "decorator.decorator",
