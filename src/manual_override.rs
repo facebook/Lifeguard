@@ -84,6 +84,14 @@ const SAFE_FUNCTIONS_ARRAY: &[&str] = &[
     "langchain_core.prompts.chat.ChatPromptTemplate.from_messages",
     "langchain_core.prompts.chat.HumanMessagePromptTemplate.from_template",
     "langchain_core.prompts.chat.SystemMessagePromptTemplate.from_template",
+    // attrs class decorator: generates __init__/__repr__/etc via class introspection.
+    // No global state mutation, no I/O. Same category as @dataclass.
+    "attr.s",
+    "attr.attrs",
+    // pytest hookimpl: pure marker decorator that tags a function for the plugin
+    // system. Registration happens later when pytest collects plugins, not at
+    // decoration time.
+    "_pytest.config.hookimpl",
     // Meta-decorator that wraps functions while preserving signatures. Its body
     // only mutates locally-created objects (the wrapper closure).
     "decorator.decorator",
