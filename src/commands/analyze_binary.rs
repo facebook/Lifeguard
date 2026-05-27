@@ -27,9 +27,9 @@ pub struct AnalyzeBinaryArgs {
     /// Path to output file
     pub output_path: PathBuf,
 
-    /// Paths to pre-computed library cache files (from analyze-library).
-    #[arg(long = "cache", required = true)]
-    pub caches: Vec<PathBuf>,
+    /// Path to a manifest file listing cache paths (one per line).
+    #[arg(long = "cache-manifest")]
+    pub cache_manifest: PathBuf,
 
     /// Sort output keys and values for deterministic results
     #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
@@ -43,8 +43,16 @@ pub struct AnalyzeBinaryArgs {
 pub fn run(args: AnalyzeBinaryArgs) -> Result<()> {
     let timer = ProcessTimer::new();
 
+    let cache_paths: Vec<PathBuf> = std::fs::read_to_string(&args.cache_manifest)?
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(PathBuf::from)
+        .collect();
+
+    anyhow::ensure!(!cache_paths.is_empty(), "no cache paths provided");
+
     let mut caches: Vec<LibraryCache> = time("Loading caches", || {
-        args.caches
+        cache_paths
             .par_iter()
             .map(|p| {
                 info!("Loading cache from {}", p.display());
