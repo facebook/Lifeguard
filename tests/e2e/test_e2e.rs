@@ -415,6 +415,8 @@ mod tests {
                 "build",
                 "-c",
                 "python.use_lifeguard_incremental=true",
+                "-c",
+                "python.safer_lazy_imports_mode=build_local",
                 &format!("{SAMPLE_LIB}[lazy-import-cache]"),
                 "--show-full-simple-output",
             ])
