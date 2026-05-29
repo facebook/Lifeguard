@@ -264,22 +264,28 @@ mod tests {
         output_path: &std::path::Path,
         cache_paths: &[&std::path::Path],
     ) -> serde_json::Value {
-        let mut args = vec![
-            "--isolation-dir".to_string(),
-            ISO_DIR.to_string(),
-            "run".to_string(),
-            ANALYZER.to_string(),
-            "--".to_string(),
-            "analyze-binary".to_string(),
-            output_path.to_str().unwrap().to_string(),
-            "--sorted-output".to_string(),
-        ];
-        for cache in cache_paths {
-            args.push("--cache".to_string());
-            args.push(cache.to_str().unwrap().to_string());
-        }
+        let manifest_dir = tempfile::tempdir().unwrap();
+        let manifest_path = manifest_dir.path().join("cache-manifest.txt");
+        let manifest_content: String = cache_paths
+            .iter()
+            .map(|p| p.to_str().unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&manifest_path, &manifest_content).expect("Failed to write cache manifest");
+
         let output = Command::new("buck2")
-            .args(&args)
+            .args([
+                "--isolation-dir",
+                ISO_DIR,
+                "run",
+                ANALYZER,
+                "--",
+                "analyze-binary",
+                output_path.to_str().unwrap(),
+                "--sorted-output",
+                "--cache-manifest",
+                manifest_path.to_str().unwrap(),
+            ])
             .output()
             .expect("failed to execute analyzer");
         assert!(
