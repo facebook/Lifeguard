@@ -1123,12 +1123,49 @@ impl ProjectInfo {
     }
 
     fn check_call(&self, call: &mut Call, state: &GlobalAnalysisState) -> Result<bool> {
-        if self.classes.contains(&call.func) {
+        let mut ret = if self.classes.contains(&call.func) {
             // This is a class constructor
-            self.check_constructor_call(call, state)
+            self.check_constructor_call(call, state)?
         } else {
-            self.check_call_body(call, state)
+            self.check_call_body(call, state)?
+        };
+        // A parameterized decorator @deco(args) also calls the function deco returns,
+        // so its nested functions' effects run at import time too. This is checked at
+        // the call site, not folded into check_call_body's cached verdict: that verdict
+        // must stay independent of the call kind that first reached the function.
+        if self.is_parameterized_decorator_call(call) {
+            ret &= self.check_decorator_nested_functions(call, state)?;
         }
+        Ok(ret)
+    }
+
+    /// Check the nested functions of a parameterized decorator call without
+    /// mutating the cached safety verdict of the decorator function itself.
+    fn check_decorator_nested_functions(
+        &self,
+        call: &mut Call,
+        state: &GlobalAnalysisState,
+    ) -> Result<bool> {
+        let Some(children) = self.nested_functions.get(&call.func) else {
+            return Ok(true);
+        };
+        let mut ret = true;
+        for child in children {
+            // Use a FunctionCall effect for the child so we don't re-enter the
+            // parameterized decorator path (which would cause infinite recursion).
+            let child_effect = Effect::new(EffectKind::FunctionCall, *child, call.effect.range);
+            let mut child_call = Call {
+                caller_module: call.caller_module,
+                effect: &child_effect,
+                func: *child,
+                stack: std::mem::take(&mut call.stack),
+                is_module_scope: call.is_module_scope,
+            };
+            let child_ret = self.check_call_body(&mut child_call, state)?;
+            call.stack = child_call.stack;
+            ret &= child_ret;
+        }
+        Ok(ret)
     }
 
     fn check_constructor_call(&self, call: &Call, state: &GlobalAnalysisState) -> Result<bool> {
@@ -1285,34 +1322,6 @@ impl ProjectInfo {
                         }
                         _ => (),
                     }
-                }
-            }
-        }
-
-        // For parameterized decorator calls like @register("name"), Python calls
-        // register("name") which returns a function, then calls that returned function
-        // with the decorated class/function. So the nested function's effects execute
-        // at import time. We check each nested function via check_call_body to get
-        // full transitive call graph analysis.
-        if self.is_parameterized_decorator_call(call) {
-            if let Some(children) = self.nested_functions.get(&func) {
-                for child in children {
-                    // Use a FunctionCall effect for the child so we don't re-enter the
-                    // parameterized decorator path (which would cause infinite recursion).
-                    let child_effect =
-                        Effect::new(EffectKind::FunctionCall, *child, call.effect.range);
-                    let mut child_call = Call {
-                        caller_module: call.caller_module,
-                        effect: &child_effect,
-                        func: *child,
-                        stack: std::mem::take(&mut call.stack),
-                        is_module_scope: call.is_module_scope,
-                    };
-                    if !self.check_call_body(&mut child_call, state)? {
-                        state.mark_unsafe(&func);
-                        ret = false;
-                    }
-                    call.stack = child_call.stack;
                 }
             }
         }
