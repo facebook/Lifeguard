@@ -180,7 +180,7 @@ mod tests {
     }
 
     /// Test 1: Baseline — analyze sample_lib (no deps).
-    /// Uses source-db-no-deps to get only sample_lib's own 5 source files.
+    /// Uses source-db-no-deps to get only sample_lib's own source files.
     #[test]
     fn test_dep_cache_baseline_sample_lib() {
         if !check_buck_availability() {
@@ -193,11 +193,12 @@ mod tests {
         let cache = run_analyze_library(&db_path, &cache_path);
 
         let names = get_module_names(&cache);
-        assert_eq!(names.len(), 5, "sample_lib cache should have 5 modules");
+        assert_eq!(names.len(), 6, "sample_lib cache should have 6 modules");
 
         for expected in &[
             "has_finalizer",
             "importer",
+            "pkg.sub",
             "safe_module",
             "unsafe_module",
             "uses_exec",
@@ -238,7 +239,7 @@ mod tests {
         let lib_db_path = build_source_db_no_deps(SAMPLE_LIB);
         let lib_cache_path = tmp.path().join("sample_lib_cache.bin");
         let lib_cache = run_analyze_library(&lib_db_path, &lib_cache_path);
-        assert_eq!(get_module_names(&lib_cache).len(), 5);
+        assert_eq!(get_module_names(&lib_cache).len(), 6);
 
         let proj_db_path = build_source_db_no_deps(SAMPLE_PROJECT_LIB);
         let proj_cache_path = tmp.path().join("proj_cache.bin");
@@ -248,12 +249,16 @@ mod tests {
 
         assert_eq!(
             proj_names.len(),
-            1,
-            "analyze-library should only contain own modules"
+            2,
+            "analyze-library should only contain own modules (main + pkg)"
         );
         assert!(
             proj_names.iter().any(|n| n.contains("main")),
             "cache should contain main module"
+        );
+        assert!(
+            proj_names.iter().any(|n| n.contains("pkg")),
+            "cache should contain pkg module"
         );
     }
 
