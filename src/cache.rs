@@ -482,6 +482,19 @@ fn retain_unverified_errors(
     safety.errors.len() < before
 }
 
+fn lookup_in_safety_map(local_name: &str, fs: &HashMap<String, FunctionSafetyInfo>) -> bool {
+    let is_safe = |key: &str| {
+        fs.get(key)
+            .is_some_and(|info| info.verdict == FunctionSafety::Safe)
+    };
+    if is_safe(local_name) {
+        return true;
+    }
+    local_name
+        .split_once('.')
+        .is_some_and(|(prefix, _)| is_safe(prefix))
+}
+
 /// Check if a function call can be verified as safe using cached per-function
 /// safety verdicts from the resolved modules.
 ///
@@ -499,12 +512,9 @@ fn is_call_verified_safe(
     for (parent, dot_pos) in fqn.iter_parents() {
         if resolved_modules.contains(&parent) {
             let local_name = &func_name[dot_pos + 1..];
-            if let Some(fs) = func_safety_by_module.get(&parent) {
-                return fs
-                    .get(local_name)
-                    .is_some_and(|info| info.verdict == FunctionSafety::Safe);
-            }
-            return false;
+            return func_safety_by_module
+                .get(&parent)
+                .is_some_and(|fs| lookup_in_safety_map(local_name, fs));
         }
     }
 
@@ -1583,6 +1593,34 @@ mod tests {
         assert!(
             top.is_safe(),
             "top should be safe: f() only reaches the now-resolved safe g()"
+        );
+    }
+
+    #[test]
+    fn test_dotted_local_name_class_safety() {
+        let mut fs = HashMap::new();
+        fs.insert(
+            "MyClass".to_string(),
+            FunctionSafetyInfo::new(FunctionSafety::Safe),
+        );
+        let mut func_safety_by_module = HashMap::new();
+        func_safety_by_module.insert(mn("dep"), fs);
+
+        let resolved: AHashSet<ModuleName> = [mn("dep")].into_iter().collect();
+
+        assert!(
+            is_call_verified_safe("dep.MyClass.method", &resolved, &func_safety_by_module),
+            "dep.MyClass.method should resolve via Class-level safety"
+        );
+
+        assert!(
+            is_call_verified_safe("dep.MyClass", &resolved, &func_safety_by_module),
+            "dep.MyClass should match directly"
+        );
+
+        assert!(
+            !is_call_verified_safe("dep.OtherClass.method", &resolved, &func_safety_by_module),
+            "dep.OtherClass.method should not match when OtherClass is not safe"
         );
     }
 }
