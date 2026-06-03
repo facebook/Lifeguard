@@ -230,6 +230,11 @@ impl ImportGraph {
         self.graph.neighbors(name)
     }
 
+    /// Get all modules that directly import a module.
+    pub fn get_importers(&self, name: &ModuleName) -> impl Iterator<Item = &ModuleName> {
+        self.graph.reverse_neighbors(name)
+    }
+
     /// Check if a module name is found in the graph.
     pub fn contains(&self, name: &ModuleName) -> bool {
         self.graph.contains(name)

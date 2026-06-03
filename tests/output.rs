@@ -717,6 +717,88 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_implicit_import_propagates_to_provider_guard() {
+        // Thrift `.ttypes` pattern: `consumer` imports `pkg.structs.ttypes` (which
+        // loads `pkg.crossdb.ttypes`) and references `pkg.crossdb.ttypes.AmeLocation`
+        // without importing it. The implicit dep must also guard the provider so
+        // `consumer`'s import of it loads eagerly.
+        let leaf = r#"
+            class AmeLocation:
+                pass
+        "#;
+        let provider = r#"
+            import pkg.crossdb.ttypes
+        "#;
+        let consumer = r#"
+            import pkg.structs.ttypes
+            x = pkg.crossdb.ttypes.AmeLocation
+        "#;
+        let modules = vec![
+            ("pkg.__init__", ""),
+            ("pkg.crossdb.__init__", ""),
+            ("pkg.structs.__init__", ""),
+            ("pkg.crossdb.ttypes", leaf),
+            ("pkg.structs.ttypes", provider),
+            ("consumer", consumer),
+        ];
+
+        let result = run_lifeguard_analysis(&modules);
+
+        assert!(
+            has_lazy_eligible_dep(&result, "consumer", "pkg.crossdb.ttypes"),
+            "consumer should have pkg.crossdb.ttypes as an implicit import guard"
+        );
+        assert!(
+            has_lazy_eligible_dep(&result, "pkg.structs.ttypes", "pkg.crossdb.ttypes"),
+            "pkg.structs.ttypes should have pkg.crossdb.ttypes in its guard list"
+        );
+    }
+
+    #[test]
+    fn test_implicit_import_propagates_along_multi_hop_path() {
+        // Same as above but the provider reaches the leaf through an intermediate
+        // module: consumer -> mid -> provider -> leaf. Every passing module on the
+        // path must be guarded with the leaf.
+        let leaf = r#"
+            class AmeLocation:
+                pass
+        "#;
+        let provider = r#"
+            import pkg.crossdb.ttypes
+        "#;
+        let mid = r#"
+            import pkg.provider.ttypes
+        "#;
+        let consumer = r#"
+            import pkg.mid.ttypes
+            x = pkg.crossdb.ttypes.AmeLocation
+        "#;
+        let modules = vec![
+            ("pkg.__init__", ""),
+            ("pkg.crossdb.__init__", ""),
+            ("pkg.provider.__init__", ""),
+            ("pkg.mid.__init__", ""),
+            ("pkg.crossdb.ttypes", leaf),
+            ("pkg.provider.ttypes", provider),
+            ("pkg.mid.ttypes", mid),
+            ("consumer", consumer),
+        ];
+
+        let result = run_lifeguard_analysis(&modules);
+
+        assert!(
+            has_lazy_eligible_dep(&result, "consumer", "pkg.crossdb.ttypes"),
+            "consumer should have pkg.crossdb.ttypes as an implicit import guard"
+        );
+        for provider in ["pkg.mid.ttypes", "pkg.provider.ttypes"] {
+            assert!(
+                has_lazy_eligible_dep(&result, provider, "pkg.crossdb.ttypes"),
+                "{provider} should have pkg.crossdb.ttypes in its guard list"
+            );
+        }
+    }
+
     fn verbose_test_options() -> Options {
         Options {
             verbose_output_path: Some(std::path::PathBuf::from("/tmp/test_verbose")),

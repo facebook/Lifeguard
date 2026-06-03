@@ -86,6 +86,42 @@ mod tests {
     }
 
     #[test]
+    fn test_catch_implicit_import_transitive_chained_attr() {
+        // Thrift `.ttypes` pattern: consumer imports `pkg.a.ttypes` (binding `pkg`) and references
+        // `pkg.b.ttypes.AmeLocation` without importing `pkg.b.ttypes`, relying on `pkg.a.ttypes`
+        // to load it transitively -- so `pkg.b.ttypes` is an implicit import of consumer.
+        let consumer = r#"
+            import pkg.a.ttypes
+
+            x = pkg.b.ttypes.AmeLocation
+        "#;
+        let pkg_a_ttypes = r#"
+            import pkg.b.ttypes
+        "#;
+        let pkg_b_ttypes = r#"
+            class AmeLocation:
+                pass
+        "#;
+        let modules = vec![
+            ("consumer", consumer),
+            ("pkg.a.ttypes", pkg_a_ttypes),
+            ("pkg.b.ttypes", pkg_b_ttypes),
+            ("pkg.__init__", ""),
+            ("pkg.a.__init__", ""),
+            ("pkg.b.__init__", ""),
+        ];
+
+        // `pkg.b.ttypes` is the real module the consumer needs eagerly loaded. The
+        // chained attribute access also surfaces `pkg.b.ttypes.AmeLocation` (the class)
+        // and `pkg.b` (the package) as called imports.
+        let implicit_imports = vec![(
+            "consumer",
+            vec!["pkg.b", "pkg.b.ttypes", "pkg.b.ttypes.AmeLocation"],
+        )];
+        check_errors_and_implicit_imports(modules, implicit_imports);
+    }
+
+    #[test]
     fn test_no_implicit_import_simple() {
         let __main__ = r#"
             import foo.bar

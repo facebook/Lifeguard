@@ -388,7 +388,8 @@ fn build_lazy_eligible(
     };
     add_cycle_deps(all_cycles, &cycle_ctx);
 
-    // Add implicit imports to lazy_eligible dict.
+    // Guard each consumer with its implicit imports, then also guard the provider
+    // path so the import is loaded before the consumer's body references it.
     for (module_name, implicit_imports_set) in &classified.implicit_imports {
         if classified.passing_modules.contains(module_name) {
             lazy_eligible
@@ -397,8 +398,73 @@ fn build_lazy_eligible(
                 .extend(implicit_imports_set.iter().copied());
         }
     }
+    time("  Propagating implicit imports", || {
+        propagate_implicit_imports_along_paths(import_graph, classified, &lazy_eligible)
+    });
 
     lazy_eligible
+}
+
+/// All modules that transitively import `target` (excluding `target` itself).
+fn transitive_importers(import_graph: &ImportGraph, target: &ModuleName) -> AHashSet<ModuleName> {
+    let mut seen = AHashSet::new();
+    let mut stack: Vec<ModuleName> = import_graph.get_importers(target).copied().collect();
+    while let Some(m) = stack.pop() {
+        if seen.insert(m) {
+            stack.extend(import_graph.get_importers(&m).copied());
+        }
+    }
+    seen
+}
+
+/// Guard every passing module on an import path `consumer -> ... -> target` with
+/// `target`, forcing the path eager until `target` is loaded.
+fn propagate_implicit_imports_along_paths(
+    import_graph: &ImportGraph,
+    classified: &ClassifiedModules,
+    lazy_eligible: &DashMap<ModuleName, SmallSet<ModuleName>>,
+) {
+    // Group by target so each is walked once, not once per consumer.
+    let mut consumers_by_target: AHashMap<ModuleName, Vec<ModuleName>> = AHashMap::new();
+    for (consumer, targets) in &classified.implicit_imports {
+        if classified.passing_modules.contains(consumer) {
+            for target in targets {
+                consumers_by_target
+                    .entry(*target)
+                    .or_default()
+                    .push(*consumer);
+            }
+        }
+    }
+
+    consumers_by_target
+        .par_iter()
+        .for_each(|(target, consumers)| {
+            let ancestors = transitive_importers(import_graph, target);
+            // Walk forward from the consumers within `target`'s ancestors,
+            // guarding each passing module reached.
+            let mut visited = AHashSet::new();
+            let mut stack: Vec<ModuleName> = consumers
+                .iter()
+                .flat_map(|c| import_graph.get_imports(c))
+                .filter(|m| ancestors.contains(*m))
+                .copied()
+                .collect();
+            while let Some(m) = stack.pop() {
+                if !visited.insert(m) {
+                    continue;
+                }
+                if classified.passing_modules.contains(&m) {
+                    lazy_eligible.entry(m).or_default().insert(*target);
+                }
+                stack.extend(
+                    import_graph
+                        .get_imports(&m)
+                        .filter(|n| ancestors.contains(*n))
+                        .copied(),
+                );
+            }
+        });
 }
 
 impl LifeGuardAnalysis {
