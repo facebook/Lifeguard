@@ -126,5 +126,5 @@ clap = { version = "4.6.0", features = ["derive", "env", "string", "unicode", "w
 lifeguard = { path = "../src" }
 ruff_text_size = { git = "https://github.com/astral-sh/ruff/", rev = "db5aa0a5f1b92cb91d910bf0866a967554dd94f5" }
 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
-starlark_map = "0.13.0"
+starlark_map = "0.13"
 tempfile = "3.27.0"
