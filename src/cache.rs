@@ -294,7 +294,12 @@ impl LibraryCache {
                 continue;
             };
             for (func_name, info) in fs {
-                if can_promote_missing_dep_function(info, module_names, func_safety_by_module) {
+                if can_promote_missing_dep_function(
+                    info,
+                    module_names,
+                    func_safety_by_module,
+                    globally_safe_funcs,
+                ) {
                     to_promote.push((module.name, func_name.clone()));
                 }
             }
@@ -552,6 +557,7 @@ fn can_promote_missing_dep_function(
     info: &FunctionSafetyInfo,
     module_names: &AHashSet<ModuleName>,
     func_safety_by_module: &HashMap<ModuleName, HashMap<String, FunctionSafetyInfo>>,
+    globally_safe_funcs: &AHashSet<String>,
 ) -> bool {
     info.verdict == FunctionSafety::UnsafeMissingDep
         // Promote only with positive evidence: a non-empty callee set,
@@ -559,7 +565,12 @@ fn can_promote_missing_dep_function(
         // verdict) stays conservatively unsafe.
         && !info.missing_dep_callees.is_empty()
         && info.missing_dep_callees.iter().all(|callee| {
-            is_call_verified_safe(callee.as_str(), module_names, func_safety_by_module)
+            is_call_verified_safe_indexed(
+                callee.as_str(),
+                module_names,
+                func_safety_by_module,
+                globally_safe_funcs,
+            )
         })
 }
 
