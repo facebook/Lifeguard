@@ -12,13 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-def memoize(fn): no_effects()
-def memoize_multiple(fn): no_effects()
-def retryable(fn=None, **kwargs): no_effects()
-def run_once(fn): no_effects()
+# All of these are pure-wrapper decorators: at decoration time they only
+# validate arguments and return an `argmap` wrapper, with no module-scope side
+# effects. The actual logic runs lazily when the decorated function is called.
 
-class lazy_classproperty:
-    def __init__(self, fget): no_effects()
+def not_implemented_for(*graph_types): no_effects()
 
-class thread_safe_lazy_classproperty:
-    def __init__(self, fget): no_effects()
+def open_file(path_arg, mode=...): no_effects()
+
+def nodes_or_number(which_args): no_effects()
+
+def np_random_state(random_state_argument): no_effects()
+
+def py_random_state(random_state_argument): no_effects()
+
+class argmap:
+    def __init__(self, func, *args, **kwargs): no_effects()

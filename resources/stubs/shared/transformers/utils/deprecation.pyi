@@ -12,13 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-def memoize(fn): no_effects()
-def memoize_multiple(fn): no_effects()
-def retryable(fn=None, **kwargs): no_effects()
-def run_once(fn): no_effects()
+class Action: ...
 
-class lazy_classproperty:
-    def __init__(self, fget): no_effects()
-
-class thread_safe_lazy_classproperty:
-    def __init__(self, fget): no_effects()
+def deprecate_kwarg(
+    old_name,
+    version,
+    new_name=...,
+    warn_if_greater_or_equal_version=...,
+    raise_if_greater_or_equal_version=...,
+    raise_if_both_names=...,
+    additional_message=...,
+): no_effects()

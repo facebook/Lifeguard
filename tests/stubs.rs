@@ -142,6 +142,47 @@ Set.register(MyContainer)
     }
 
     #[test]
+    fn test_libfb_lazy_classproperty_safe() {
+        let code = r#"
+from libfb.py.decorators import lazy_classproperty, thread_safe_lazy_classproperty
+
+class C:
+    @lazy_classproperty
+    def foo(cls):
+        return 1
+
+    @thread_safe_lazy_classproperty
+    def bar(cls):
+        return 2
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_networkx_not_implemented_for_safe() {
+        let code = r#"
+from networkx.utils.decorators import not_implemented_for
+
+@not_implemented_for("directed")
+def f(g):
+    return g
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_transformers_deprecate_kwarg_safe() {
+        let code = r#"
+from transformers.utils.deprecation import deprecate_kwarg
+
+@deprecate_kwarg("old", version="5.0.0", new_name="new")
+def f(new=1):
+    return new
+"#;
+        check(code);
+    }
+
+    #[test]
     fn test_pydantic_stub_class_body_calls_safe() {
         // Regression test for the bundled pydantic/__init__.pyi stub.
         // Pydantic's runtime __init__.py exposes Field/ConfigDict/field_serializer
