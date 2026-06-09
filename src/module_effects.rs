@@ -44,7 +44,7 @@ pub struct ModuleEffects {
     // we get the canonical value using the re_exports table
     pub indirectly_called_methods: AHashMap<ModuleName, ModuleName>,
 
-    // Modules imported via non-lazy import statements. Used to distinguish
+    // Modules imported without use of the `lazy` keyword. Used to distinguish
     // side-effect imports from explicit lazy imports that have no effect when unused.
     pub eager_imports: AHashSet<ModuleName>,
 }
