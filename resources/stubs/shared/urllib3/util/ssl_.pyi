@@ -12,5 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-def extract_zipped_paths(path: str) -> str: no_effects()
+import ssl
 
+def create_urllib3_context(*args: object, **kwargs: object) -> ssl.SSLContext: no_effects()

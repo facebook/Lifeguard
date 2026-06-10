@@ -91,15 +91,17 @@ if sys.version_info < (3, 12):
         do_handshake_on_connect: bool = True,
         suppress_ragged_eofs: bool = True,
         ciphers: str | None = None,
-    ) -> SSLSocket: ...
+    ) -> SSLSocket: unsafe()
 
+# Builds and configures a fresh, locally-created SSLContext (reading CA files /
+# env). No external mutation or network, so safe to defer for lazy imports.
 def create_default_context(
     purpose: Purpose = ...,
     *,
     cafile: StrOrBytesPath | None = None,
     capath: StrOrBytesPath | None = None,
     cadata: str | ReadableBuffer | None = None,
-) -> SSLContext: ...
+) -> SSLContext: no_effects()
 
 if sys.version_info >= (3, 10):
     def _create_unverified_context(
@@ -113,7 +115,7 @@ if sys.version_info >= (3, 10):
         cafile: StrOrBytesPath | None = None,
         capath: StrOrBytesPath | None = None,
         cadata: str | ReadableBuffer | None = None,
-    ) -> SSLContext: ...
+    ) -> SSLContext: no_effects()
 
 else:
     def _create_unverified_context(
@@ -127,25 +129,26 @@ else:
         cafile: StrOrBytesPath | None = None,
         capath: StrOrBytesPath | None = None,
         cadata: str | ReadableBuffer | None = None,
-    ) -> SSLContext: ...
+    ) -> SSLContext: no_effects()
 
 _create_default_https_context: Callable[..., SSLContext]
 
 if sys.version_info < (3, 12):
-    def match_hostname(cert: _PeerCertRetDictType, hostname: str) -> None: ...
+    def match_hostname(cert: _PeerCertRetDictType, hostname: str) -> None: no_effects()
 
-def cert_time_to_seconds(cert_time: str) -> int: ...
+def cert_time_to_seconds(cert_time: str) -> int: no_effects()
 
+# Opens a network connection to the server to fetch its certificate.
 if sys.version_info >= (3, 10):
     def get_server_certificate(
         addr: tuple[str, int], ssl_version: int = ..., ca_certs: str | None = None, timeout: float = ...
-    ) -> str: ...
+    ) -> str: unsafe()
 
 else:
-    def get_server_certificate(addr: tuple[str, int], ssl_version: int = ..., ca_certs: str | None = None) -> str: ...
+    def get_server_certificate(addr: tuple[str, int], ssl_version: int = ..., ca_certs: str | None = None) -> str: unsafe()
 
-def DER_cert_to_PEM_cert(der_cert_bytes: ReadableBuffer) -> str: ...
-def PEM_cert_to_DER_cert(pem_cert_string: str) -> bytes: ...
+def DER_cert_to_PEM_cert(der_cert_bytes: ReadableBuffer) -> str: no_effects()
+def PEM_cert_to_DER_cert(pem_cert_string: str) -> bytes: no_effects()
 
 class DefaultVerifyPaths(NamedTuple):
     cafile: str
@@ -155,7 +158,7 @@ class DefaultVerifyPaths(NamedTuple):
     openssl_capath_env: str
     openssl_capath: str
 
-def get_default_verify_paths() -> DefaultVerifyPaths: ...
+def get_default_verify_paths() -> DefaultVerifyPaths: no_effects()
 
 class VerifyMode(enum.IntEnum):
     CERT_NONE = 0
@@ -318,17 +321,17 @@ class _ASN1ObjectBase(NamedTuple):
     oid: str
 
 class _ASN1Object(_ASN1ObjectBase):
-    def __new__(cls, oid: str) -> Self: ...
+    def __new__(cls, oid: str) -> Self: no_effects()
     @classmethod
-    def fromnid(cls, nid: int) -> Self: ...
+    def fromnid(cls, nid: int) -> Self: no_effects()
     @classmethod
-    def fromname(cls, name: str) -> Self: ...
+    def fromname(cls, name: str) -> Self: no_effects()
 
 class Purpose(_ASN1Object, enum.Enum):
     # Normally this class would inherit __new__ from _ASN1Object, but
     # because this is an enum, the inherited __new__ is replaced at runtime with
     # Enum.__new__.
-    def __new__(cls, value: object) -> Self: ...
+    def __new__(cls, value: object) -> Self: no_effects()
     SERVER_AUTH = (129, "serverAuth", "TLS Web Server Authentication", "1.3.6.1.5.5.7.3.2")  # pyright: ignore[reportCallIssue]
     CLIENT_AUTH = (130, "clientAuth", "TLS Web Client Authentication", "1.3.6.1.5.5.7.3.1")  # pyright: ignore[reportCallIssue]
 
@@ -340,53 +343,57 @@ class SSLSocket(socket.socket):
     @property
     def session_reused(self) -> bool | None: ...
     def __init__(self, *args: Any, **kwargs: Any) -> None: ...
-    def connect(self, addr: socket._Address) -> None: ...
-    def connect_ex(self, addr: socket._Address) -> int: ...
-    def recv(self, buflen: int = 1024, flags: int = 0) -> bytes: ...
-    def recv_into(self, buffer: WriteableBuffer, nbytes: int | None = None, flags: int = 0) -> int: ...
-    def recvfrom(self, buflen: int = 1024, flags: int = 0) -> tuple[bytes, socket._RetAddress]: ...
+    # Network reads just retrieve data — their timing is irrelevant for lazy
+    # imports, so they are safe to defer. Writes / connection setup / teardown
+    # are externally-observable effects whose timing matters, so they are unsafe.
+    def connect(self, addr: socket._Address) -> None: unsafe()
+    def connect_ex(self, addr: socket._Address) -> int: unsafe()
+    def recv(self, buflen: int = 1024, flags: int = 0) -> bytes: no_effects()
+    def recv_into(self, buffer: WriteableBuffer, nbytes: int | None = None, flags: int = 0) -> int: no_effects()
+    def recvfrom(self, buflen: int = 1024, flags: int = 0) -> tuple[bytes, socket._RetAddress]: no_effects()
     def recvfrom_into(
         self, buffer: WriteableBuffer, nbytes: int | None = None, flags: int = 0
-    ) -> tuple[int, socket._RetAddress]: ...
-    def send(self, data: ReadableBuffer, flags: int = 0) -> int: ...
-    def sendall(self, data: ReadableBuffer, flags: int = 0) -> None: ...
+    ) -> tuple[int, socket._RetAddress]: no_effects()
+    def send(self, data: ReadableBuffer, flags: int = 0) -> int: unsafe()
+    def sendall(self, data: ReadableBuffer, flags: int = 0) -> None: unsafe()
     @overload
-    def sendto(self, data: ReadableBuffer, flags_or_addr: socket._Address, addr: None = None) -> int: ...
+    def sendto(self, data: ReadableBuffer, flags_or_addr: socket._Address, addr: None = None) -> int: unsafe()
     @overload
     def sendto(self, data: ReadableBuffer, flags_or_addr: int, addr: socket._Address) -> int: ...
-    def shutdown(self, how: int) -> None: ...
-    def read(self, len: int = 1024, buffer: bytearray | None = None) -> bytes: ...
-    def write(self, data: ReadableBuffer) -> int: ...
-    def do_handshake(self, block: bool = False) -> None: ...  # block is undocumented
+    def shutdown(self, how: int) -> None: unsafe()
+    def read(self, len: int = 1024, buffer: bytearray | None = None) -> bytes: no_effects()
+    def write(self, data: ReadableBuffer) -> int: unsafe()
+    def do_handshake(self, block: bool = False) -> None: unsafe()  # block is undocumented
+    # Read accessors for connection/cert state.
     @overload
-    def getpeercert(self, binary_form: Literal[False] = False) -> _PeerCertRetDictType | None: ...
+    def getpeercert(self, binary_form: Literal[False] = False) -> _PeerCertRetDictType | None: no_effects()
     @overload
     def getpeercert(self, binary_form: Literal[True]) -> bytes | None: ...
     @overload
     def getpeercert(self, binary_form: bool) -> _PeerCertRetType: ...
-    def cipher(self) -> tuple[str, str, int] | None: ...
-    def shared_ciphers(self) -> list[tuple[str, str, int]] | None: ...
-    def compression(self) -> str | None: ...
-    def get_channel_binding(self, cb_type: str = "tls-unique") -> bytes | None: ...
-    def selected_alpn_protocol(self) -> str | None: ...
+    def cipher(self) -> tuple[str, str, int] | None: no_effects()
+    def shared_ciphers(self) -> list[tuple[str, str, int]] | None: no_effects()
+    def compression(self) -> str | None: no_effects()
+    def get_channel_binding(self, cb_type: str = "tls-unique") -> bytes | None: no_effects()
+    def selected_alpn_protocol(self) -> str | None: no_effects()
     if sys.version_info >= (3, 10):
         @deprecated("Deprecated in 3.10. Use ALPN instead.")
-        def selected_npn_protocol(self) -> str | None: ...
+        def selected_npn_protocol(self) -> str | None: no_effects()
     else:
-        def selected_npn_protocol(self) -> str | None: ...
+        def selected_npn_protocol(self) -> str | None: no_effects()
 
-    def accept(self) -> tuple[SSLSocket, socket._RetAddress]: ...
-    def unwrap(self) -> socket.socket: ...
-    def version(self) -> str | None: ...
-    def pending(self) -> int: ...
-    def verify_client_post_handshake(self) -> None: ...
+    def accept(self) -> tuple[SSLSocket, socket._RetAddress]: unsafe()
+    def unwrap(self) -> socket.socket: unsafe()
+    def version(self) -> str | None: no_effects()
+    def pending(self) -> int: no_effects()
+    def verify_client_post_handshake(self) -> None: unsafe()
     # These methods always raise `NotImplementedError`:
     def recvmsg(self, *args: Never, **kwargs: Never) -> Never: ...  # type: ignore[override]
     def recvmsg_into(self, *args: Never, **kwargs: Never) -> Never: ...  # type: ignore[override]
     def sendmsg(self, *args: Never, **kwargs: Never) -> Never: ...  # type: ignore[override]
     if sys.version_info >= (3, 13):
-        def get_verified_chain(self) -> list[bytes]: ...
-        def get_unverified_chain(self) -> list[bytes]: ...
+        def get_verified_chain(self) -> list[bytes]: no_effects()
+        def get_unverified_chain(self) -> list[bytes]: no_effects()
 
 class TLSVersion(enum.IntEnum):
     MINIMUM_SUPPORTED = -2
@@ -418,36 +425,39 @@ class SSLContext(_SSLContext):
     if sys.version_info >= (3, 10):
         # Using the default (None) for the `protocol` parameter is deprecated,
         # but there isn't a good way of marking that in the stub unless/until PEP 702 is accepted
-        def __new__(cls, protocol: int | None = None, *args: Any, **kwargs: Any) -> Self: ...
+        def __new__(cls, protocol: int | None = None, *args: Any, **kwargs: Any) -> Self: no_effects()
     else:
-        def __new__(cls, protocol: int = ..., *args: Any, **kwargs: Any) -> Self: ...
+        def __new__(cls, protocol: int = ..., *args: Any, **kwargs: Any) -> Self: no_effects()
 
-    def load_default_certs(self, purpose: Purpose = ...) -> None: ...
+    # load_* / set_* configure (mutate) the context object. Safe on a freshly
+    # constructed / own context; flagged when mutating an imported/shared one.
+    def load_default_certs(self, purpose: Purpose = ...) -> None: mutation()
     def load_verify_locations(
         self,
         cafile: StrOrBytesPath | None = None,
         capath: StrOrBytesPath | None = None,
         cadata: str | ReadableBuffer | None = None,
-    ) -> None: ...
+    ) -> None: mutation()
     @overload
-    def get_ca_certs(self, binary_form: Literal[False] = False) -> list[_PeerCertRetDictType]: ...
+    def get_ca_certs(self, binary_form: Literal[False] = False) -> list[_PeerCertRetDictType]: no_effects()
     @overload
     def get_ca_certs(self, binary_form: Literal[True]) -> list[bytes]: ...
     @overload
     def get_ca_certs(self, binary_form: bool = False) -> Any: ...
-    def get_ciphers(self) -> list[_Cipher]: ...
-    def set_default_verify_paths(self) -> None: ...
-    def set_ciphers(self, cipherlist: str, /) -> None: ...
-    def set_alpn_protocols(self, alpn_protocols: Iterable[str]) -> None: ...
+    def get_ciphers(self) -> list[_Cipher]: no_effects()
+    def set_default_verify_paths(self) -> None: mutation()
+    def set_ciphers(self, cipherlist: str, /) -> None: mutation()
+    def set_alpn_protocols(self, alpn_protocols: Iterable[str]) -> None: mutation()
     if sys.version_info >= (3, 10):
         @deprecated("Deprecated in 3.10. Use ALPN instead.")
-        def set_npn_protocols(self, npn_protocols: Iterable[str]) -> None: ...
+        def set_npn_protocols(self, npn_protocols: Iterable[str]) -> None: mutation()
     else:
-        def set_npn_protocols(self, npn_protocols: Iterable[str]) -> None: ...
+        def set_npn_protocols(self, npn_protocols: Iterable[str]) -> None: mutation()
 
-    def set_servername_callback(self, server_name_callback: _SrvnmeCbType | None) -> None: ...
-    def load_dh_params(self, path: str, /) -> None: ...
-    def set_ecdh_curve(self, name: str, /) -> None: ...
+    def set_servername_callback(self, server_name_callback: _SrvnmeCbType | None) -> None: mutation()
+    def load_dh_params(self, path: str, /) -> None: mutation()
+    def set_ecdh_curve(self, name: str, /) -> None: mutation()
+    # Creates an SSLSocket; may perform a TLS handshake over the network.
     def wrap_socket(
         self,
         sock: socket.socket,
@@ -456,7 +466,8 @@ class SSLContext(_SSLContext):
         suppress_ragged_eofs: bool = True,
         server_hostname: str | bytes | None = None,
         session: SSLSession | None = None,
-    ) -> SSLSocket: ...
+    ) -> SSLSocket: unsafe()
+    # Memory-BIO wrapper construction; no socket or network involved.
     def wrap_bio(
         self,
         incoming: MemoryBIO,
@@ -464,8 +475,10 @@ class SSLContext(_SSLContext):
         server_side: bool = False,
         server_hostname: str | bytes | None = None,
         session: SSLSession | None = None,
-    ) -> SSLObject: ...
+    ) -> SSLObject: no_effects()
 
+# SSLObject operates on in-memory BIO buffers (no socket). read/write/handshake
+# mutate the object's internal TLS state; the accessors are pure reads.
 class SSLObject:
     context: SSLContext
     @property
@@ -476,33 +489,33 @@ class SSLObject:
     @property
     def session_reused(self) -> bool: ...
     def __init__(self, *args: Any, **kwargs: Any) -> None: ...
-    def read(self, len: int = 1024, buffer: bytearray | None = None) -> bytes: ...
-    def write(self, data: ReadableBuffer) -> int: ...
+    def read(self, len: int = 1024, buffer: bytearray | None = None) -> bytes: mutation()
+    def write(self, data: ReadableBuffer) -> int: mutation()
     @overload
-    def getpeercert(self, binary_form: Literal[False] = False) -> _PeerCertRetDictType | None: ...
+    def getpeercert(self, binary_form: Literal[False] = False) -> _PeerCertRetDictType | None: no_effects()
     @overload
     def getpeercert(self, binary_form: Literal[True]) -> bytes | None: ...
     @overload
     def getpeercert(self, binary_form: bool) -> _PeerCertRetType: ...
-    def selected_alpn_protocol(self) -> str | None: ...
+    def selected_alpn_protocol(self) -> str | None: no_effects()
     if sys.version_info >= (3, 10):
         @deprecated("Deprecated in 3.10. Use ALPN instead.")
-        def selected_npn_protocol(self) -> str | None: ...
+        def selected_npn_protocol(self) -> str | None: no_effects()
     else:
-        def selected_npn_protocol(self) -> str | None: ...
+        def selected_npn_protocol(self) -> str | None: no_effects()
 
-    def cipher(self) -> tuple[str, str, int] | None: ...
-    def shared_ciphers(self) -> list[tuple[str, str, int]] | None: ...
-    def compression(self) -> str | None: ...
-    def pending(self) -> int: ...
-    def do_handshake(self) -> None: ...
-    def unwrap(self) -> None: ...
-    def version(self) -> str | None: ...
-    def get_channel_binding(self, cb_type: str = "tls-unique") -> bytes | None: ...
-    def verify_client_post_handshake(self) -> None: ...
+    def cipher(self) -> tuple[str, str, int] | None: no_effects()
+    def shared_ciphers(self) -> list[tuple[str, str, int]] | None: no_effects()
+    def compression(self) -> str | None: no_effects()
+    def pending(self) -> int: no_effects()
+    def do_handshake(self) -> None: mutation()
+    def unwrap(self) -> None: mutation()
+    def version(self) -> str | None: no_effects()
+    def get_channel_binding(self, cb_type: str = "tls-unique") -> bytes | None: no_effects()
+    def verify_client_post_handshake(self) -> None: mutation()
     if sys.version_info >= (3, 13):
-        def get_verified_chain(self) -> list[bytes]: ...
-        def get_unverified_chain(self) -> list[bytes]: ...
+        def get_verified_chain(self) -> list[bytes]: no_effects()
+        def get_unverified_chain(self) -> list[bytes]: no_effects()
 
 class SSLErrorNumber(enum.IntEnum):
     SSL_ERROR_EOF = 8
@@ -525,7 +538,7 @@ SSL_ERROR_WANT_WRITE: SSLErrorNumber  # undocumented
 SSL_ERROR_WANT_X509_LOOKUP: SSLErrorNumber  # undocumented
 SSL_ERROR_ZERO_RETURN: SSLErrorNumber  # undocumented
 
-def get_protocol_name(protocol_code: int) -> str: ...
+def get_protocol_name(protocol_code: int) -> str: no_effects()
 
 PEM_FOOTER: str
 PEM_HEADER: str
