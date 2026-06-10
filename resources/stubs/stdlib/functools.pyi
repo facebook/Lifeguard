@@ -115,12 +115,12 @@ if sys.version_info >= (3, 14):
         wrapped: Callable[_PWrapped, _RWrapped],
         assigned: Iterable[str] = ("__module__", "__name__", "__qualname__", "__doc__", "__annotate__", "__type_params__"),
         updated: Iterable[str] = ("__dict__",),
-    ) -> _Wrapped[_PWrapped, _RWrapped, _PWrapper, _RWrapper]: ...
+    ) -> _Wrapped[_PWrapped, _RWrapped, _PWrapper, _RWrapper]: no_effects()
     def wraps(
         wrapped: Callable[_PWrapped, _RWrapped],
         assigned: Iterable[str] = ("__module__", "__name__", "__qualname__", "__doc__", "__annotate__", "__type_params__"),
         updated: Iterable[str] = ("__dict__",),
-    ) -> _Wrapper[_PWrapped, _RWrapped]: ...
+    ) -> _Wrapper[_PWrapped, _RWrapped]: no_effects()
 
 elif sys.version_info >= (3, 12):
     def update_wrapper(
@@ -128,12 +128,12 @@ elif sys.version_info >= (3, 12):
         wrapped: Callable[_PWrapped, _RWrapped],
         assigned: Iterable[str] = ("__module__", "__name__", "__qualname__", "__doc__", "__annotations__", "__type_params__"),
         updated: Iterable[str] = ("__dict__",),
-    ) -> _Wrapped[_PWrapped, _RWrapped, _PWrapper, _RWrapper]: ...
+    ) -> _Wrapped[_PWrapped, _RWrapped, _PWrapper, _RWrapper]: no_effects()
     def wraps(
         wrapped: Callable[_PWrapped, _RWrapped],
         assigned: Iterable[str] = ("__module__", "__name__", "__qualname__", "__doc__", "__annotations__", "__type_params__"),
         updated: Iterable[str] = ("__dict__",),
-    ) -> _Wrapper[_PWrapped, _RWrapped]: ...
+    ) -> _Wrapper[_PWrapped, _RWrapped]: no_effects()
 
 else:
     def update_wrapper(
@@ -141,12 +141,12 @@ else:
         wrapped: Callable[_PWrapped, _RWrapped],
         assigned: Iterable[str] = ("__module__", "__name__", "__qualname__", "__doc__", "__annotations__"),
         updated: Iterable[str] = ("__dict__",),
-    ) -> _Wrapped[_PWrapped, _RWrapped, _PWrapper, _RWrapper]: ...
+    ) -> _Wrapped[_PWrapped, _RWrapped, _PWrapper, _RWrapper]: no_effects()
     def wraps(
         wrapped: Callable[_PWrapped, _RWrapped],
         assigned: Iterable[str] = ("__module__", "__name__", "__qualname__", "__doc__", "__annotations__"),
         updated: Iterable[str] = ("__dict__",),
-    ) -> _Wrapper[_PWrapped, _RWrapped]: ...
+    ) -> _Wrapper[_PWrapped, _RWrapped]: no_effects()
 
 def total_ordering(cls: type[_T]) -> type[_T]: no_effects()
 def cmp_to_key(mycmp: Callable[[_T, _T], int]) -> Callable[[_T], SupportsAllComparisons]: ...

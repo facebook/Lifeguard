@@ -143,7 +143,8 @@ fn build_nested_functions_map(analysis_map: &AnalysisMap) -> AHashMap<ModuleName
     let mut map: AHashMap<ModuleName, Vec<ModuleName>> = AHashMap::new();
     for (_, v) in analysis_map.iter() {
         for (child, parent) in &v.definitions.enclosing_functions {
-            if v.definitions.functions.contains(child) && child != parent {
+            // Keep only immediate children; deeper wrappers run later.
+            if v.definitions.functions.contains(child) && child.parent().as_ref() == Some(parent) {
                 map.entry(*parent).or_default().push(*child);
             }
         }
@@ -1164,6 +1165,7 @@ impl ProjectInfo {
             return Ok(true);
         };
         let mut ret = true;
+        // Only the decorator factory's immediate children run at decoration time.
         for child in children {
             // Use a FunctionCall effect for the child so we don't re-enter the
             // parameterized decorator path (which would cause infinite recursion).

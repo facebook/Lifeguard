@@ -539,4 +539,103 @@ outer(obj)  # E: imported-var-argument
 "#;
         check(code);
     }
+
+    #[test]
+    fn test_parameterized_decorator_pure_wraps_wrapper() {
+        // Pure wrappers using `@functools.wraps` should stay safe.
+        let lib = r#"
+import functools
+
+def trace(name):
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            return func(*args, **kwargs)
+        return wrapper
+    return decorator
+"#;
+        let main = r#"
+from lib import trace
+
+@trace("op")
+def do_work():
+    pass
+"#;
+        check_all(vec![("lib", lib), ("__main__", main)]);
+    }
+
+    #[test]
+    fn test_parameterized_decorator_pure_wraps_from_import() {
+        // Bare `@wraps` should resolve to `functools.wraps` and stay safe.
+        let lib = r#"
+from functools import wraps
+
+def trace(name):
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            return func(*args, **kwargs)
+        return wrapper
+    return decorator
+"#;
+        let main = r#"
+from lib import trace
+
+@trace("op")
+def do_work():
+    pass
+"#;
+        check_all(vec![("lib", lib), ("__main__", main)]);
+    }
+
+    #[test]
+    fn test_parameterized_decorator_returned_wrapper_side_effect_is_safe() {
+        // Side effects in the returned wrapper happen at call time, not import time.
+        let lib = r#"
+from functools import wraps
+
+def validate(name):
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            raise ValueError("only at call time")
+        return wrapper
+    return decorator
+"#;
+        let main = r#"
+from lib import validate
+
+@validate("op")
+def do_work():
+    pass
+"#;
+        check_all(vec![("lib", lib), ("__main__", main)]);
+    }
+
+    #[test]
+    fn test_parameterized_decorator_wraps_plus_mutation_still_unsafe() {
+        // `@functools.wraps` must not hide real decoration-time mutation.
+        let lib = r#"
+import functools
+
+REGISTRY = {}
+
+def register(name):
+    def decorator(func):
+        REGISTRY[name] = func
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            return func(*args, **kwargs)
+        return wrapper
+    return decorator
+"#;
+        let main = r#"
+from lib import register
+
+@register("op")  # E: unsafe-decorator-call
+def do_work():
+    pass
+"#;
+        check_all(vec![("lib", lib), ("__main__", main)]);
+    }
 }
