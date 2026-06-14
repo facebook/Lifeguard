@@ -30,7 +30,7 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2026-02-28
+          toolchain: nightly-2026-04-11
           components: clippy, rustfmt
       - name: Build sdist
         uses: PyO3/maturin-action@v1
