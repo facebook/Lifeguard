@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::path::PathBuf;
 
 use ahash::AHashSet;
 use pyrefly_python::module_name::ModuleName;
@@ -16,6 +17,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use tracing::debug;
 
+use crate::config::AnalysisConfig;
 use crate::errors::ErrorKind;
 use crate::errors::SafetyError;
 use crate::exports::ExportType;
@@ -28,6 +30,9 @@ use crate::module_safety::ModuleSafety;
 use crate::module_safety::SafetyResult;
 use crate::project::SafetyMap;
 use crate::project::SideEffectMap;
+use crate::pyrefly::sys_info::PythonVersion;
+use crate::source_map::SourceMap;
+use crate::source_map::Sources;
 use crate::traits::ModuleNameExt;
 
 /// Cached analysis results for a single Python library.
@@ -98,6 +103,30 @@ pub struct CachedReExport {
     pub imported_attr: String,
 }
 
+/// A module's import edges from the graph, partitioned by resolution status.
+struct GraphEdgeSets {
+    imports: AHashSet<ModuleName>,
+    missing_imports: AHashSet<ModuleName>,
+    ambiguous_imports: AHashSet<ModuleName>,
+}
+
+fn graph_edge_sets(graph: &ImportGraph, name: &ModuleName) -> GraphEdgeSets {
+    let imports = graph.get_imports(name).copied().collect();
+    let missing_imports = graph
+        .get_missing_imports(name)
+        .map(|m| m.iter().copied().collect())
+        .unwrap_or_default();
+    let ambiguous_imports = graph
+        .get_ambiguous_imports(name)
+        .map(|m| m.iter().copied().collect())
+        .unwrap_or_default();
+    GraphEdgeSets {
+        imports,
+        missing_imports,
+        ambiguous_imports,
+    }
+}
+
 impl LibraryCache {
     pub fn empty() -> Self {
         LibraryCache {
@@ -124,18 +153,11 @@ impl LibraryCache {
                 let name = *entry.key();
                 let safety_result = entry.value();
 
-                let imports: AHashSet<ModuleName> =
-                    import_graph.get_imports(&name).cloned().collect();
-
-                let missing_imports: AHashSet<ModuleName> = import_graph
-                    .get_missing_imports(&name)
-                    .map(|m| m.iter().cloned().collect())
-                    .unwrap_or_default();
-
-                let ambiguous_imports: AHashSet<ModuleName> = import_graph
-                    .get_ambiguous_imports(&name)
-                    .map(|m| m.iter().cloned().collect())
-                    .unwrap_or_default();
+                let GraphEdgeSets {
+                    imports,
+                    missing_imports,
+                    ambiguous_imports,
+                } = graph_edge_sets(import_graph, &name);
 
                 let se_imports: AHashSet<ModuleName> = side_effect_imports
                     .get(&name)
@@ -472,6 +494,43 @@ impl LibraryCache {
             map.insert(module.name, module.safety.to_safety_result());
         }
         map
+    }
+
+    /// Inject the bundled stdlib stubs as graph-only nodes so the merged graph
+    /// matches the e2e graph: per-library caches drop stub-only modules, losing
+    /// the typeshed import cycle. Skips names a real library already provides.
+    /// Returns the injected names so the caller can keep them out of the safety map.
+    pub fn inject_bundled_stub_graph(
+        &mut self,
+        python_version: PythonVersion,
+    ) -> AHashSet<ModuleName> {
+        let sources =
+            Sources::new_with_version(SourceMap::default(), PathBuf::new(), python_version);
+        let config = AnalysisConfig::with_python_version(python_version, None);
+        let graph = ImportGraph::make(&sources, &config);
+
+        let existing: AHashSet<ModuleName> = self.modules.iter().map(|m| m.name).collect();
+        let mut added = AHashSet::new();
+
+        for name in graph.graph.node_names() {
+            let name = *name;
+            if existing.contains(&name) {
+                continue;
+            }
+            let GraphEdgeSets {
+                imports,
+                missing_imports,
+                ambiguous_imports,
+            } = graph_edge_sets(&graph, &name);
+            self.modules.push(CachedModule {
+                imports,
+                missing_imports,
+                ambiguous_imports,
+                ..CachedModule::empty(name)
+            });
+            added.insert(name);
+        }
+        added
     }
 
     /// Reconstruct an ImportGraph from cached module import edges.

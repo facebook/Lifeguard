@@ -30,10 +30,13 @@ mod tests {
     use lifeguard::module_safety::FunctionSafetyInfo;
     use lifeguard::module_safety::ModuleSafety;
     use lifeguard::module_safety::SafetyResult;
+    use lifeguard::output::LifeGuardAnalysis;
     use lifeguard::project;
     use lifeguard::project::SafetyMap;
     use lifeguard::project::SideEffectMap;
     use lifeguard::pyrefly::module_name::ModuleName;
+    use lifeguard::runner::Options;
+    use lifeguard::runner::default_python_version;
     use lifeguard::test_lib::TestSources;
 
     fn mn(s: &str) -> ModuleName {
@@ -56,6 +59,21 @@ mod tests {
             &exports,
             &output.side_effect_imports,
         )
+    }
+
+    fn safe_cached_module(name: &str, imports: &[&str], implicit: &[&str]) -> CachedModule {
+        CachedModule {
+            name: mn(name),
+            safety: CachedSafety::Ok(CachedModuleSafety {
+                implicit_imports: implicit.iter().map(|s| mn(s)).collect(),
+                ..Default::default()
+            }),
+            imports: imports.iter().map(|s| mn(s)).collect(),
+            missing_imports: Default::default(),
+            ambiguous_imports: Default::default(),
+            side_effect_imports: Default::default(),
+            function_safety: HashMap::new(),
+        }
     }
 
     fn temp_cache_path(prefix: &str) -> PathBuf {
@@ -899,6 +917,74 @@ mod tests {
         assert!(
             !is_call_verified_safe("dep.OtherClass.method", &resolved, &func_safety_by_module),
             "dep.OtherClass.method should not match when OtherClass is not safe",
+        );
+    }
+
+    /// Injecting the bundled stubs rebuilds the `typing` <-> `typing_extensions`
+    /// cycle, so an implicit `typing` import propagates onto `typing_extensions`.
+    /// Without injection that propagation is lost.
+    #[test]
+    fn inject_bundled_stub_graph_restores_stub_cycle_propagation() {
+        let options = Options {
+            verbose_output_path: None,
+            sorted_output: true,
+            main_module: None,
+            python_version: default_python_version(),
+        };
+
+        let make_cache = || {
+            let mut cache = LibraryCache::empty();
+            cache.modules.push(safe_cached_module(
+                "typing_extensions",
+                &["typing", "types"],
+                &[],
+            ));
+            cache.modules.push(safe_cached_module(
+                "consumer",
+                &["typing_extensions"],
+                &["typing"],
+            ));
+            cache
+        };
+
+        let te_inherits_typing = |analysis: &LifeGuardAnalysis| {
+            analysis
+                .output
+                .lazy_eligible
+                .get(&mn("typing_extensions"))
+                .map(|e| e.value().contains(&mn("typing")))
+                .unwrap_or(false)
+        };
+
+        // With injection: the cycle is rebuilt and `typing` propagates.
+        let mut with = make_cache();
+        let graph_only_stubs = with.inject_bundled_stub_graph(default_python_version());
+        assert!(
+            graph_only_stubs.contains(&mn("typing")) && graph_only_stubs.contains(&mn("types")),
+            "bundled stubs typing/types should be injected as graph-only modules",
+        );
+        assert!(
+            !graph_only_stubs.contains(&mn("typing_extensions")),
+            "an already-present real module must not be overwritten by the stub graph",
+        );
+        let analysis = LifeGuardAnalysis::from_cache(&mut with, &graph_only_stubs, &options);
+        assert!(
+            te_inherits_typing(&analysis),
+            "with stub injection, typing_extensions should inherit `typing` via the rebuilt stub cycle",
+        );
+        assert!(
+            !analysis.output.lazy_eligible.contains_key(&mn("typing")),
+            "graph-only stub `typing` must not be emitted as an output key",
+        );
+
+        // Without injection: `typing` is not a node, so no propagation.
+        let mut empty = graph_only_stubs;
+        empty.clear();
+        let mut without = make_cache();
+        let analysis = LifeGuardAnalysis::from_cache(&mut without, &empty, &options);
+        assert!(
+            !te_inherits_typing(&analysis),
+            "without stub injection, typing_extensions should not inherit `typing`",
         );
     }
 }

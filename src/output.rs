@@ -481,12 +481,20 @@ impl LifeGuardAnalysis {
 
     /// Build a LifeGuardAnalysis from pre-computed library caches.
     /// This is the "reduce" step: no per-file analysis happens here.
-    pub fn from_cache(cache: &mut LibraryCache, options: &Options) -> Self {
+    pub fn from_cache(
+        cache: &mut LibraryCache,
+        graph_only_stubs: &AHashSet<ModuleName>,
+        options: &Options,
+    ) -> Self {
         time("resolve_cross_library_errors", || {
             cache.resolve_cross_library_errors()
         });
 
         let safety_map = cache.to_safety_map();
+        // Graph-only stubs stay in the import graph but are never output keys.
+        for name in graph_only_stubs {
+            safety_map.remove(name);
+        }
         let import_graph = cache.to_import_graph();
         let side_effect_imports = cache.to_side_effect_map();
 

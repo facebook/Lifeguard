@@ -76,6 +76,11 @@ pub fn run(args: AnalyzeBinaryArgs) -> Result<()> {
 
     let python_version = parse_python_version(&args.python_version)?;
 
+    // Per-library caches drop stub-only modules; rebuild them to match e2e.
+    let graph_only_stubs = time("Injecting bundled stub graph", || {
+        merged.inject_bundled_stub_graph(python_version)
+    });
+
     let options = Options {
         verbose_output_path: None,
         sorted_output: args.sorted_output,
@@ -84,7 +89,7 @@ pub fn run(args: AnalyzeBinaryArgs) -> Result<()> {
     };
 
     let analysis = time("Building analysis from cache", || {
-        LifeGuardAnalysis::from_cache(&mut merged, &options)
+        LifeGuardAnalysis::from_cache(&mut merged, &graph_only_stubs, &options)
     });
 
     info!("{}", time("Generating report", || analysis.get_report()));
