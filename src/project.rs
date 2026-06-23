@@ -147,16 +147,30 @@ fn merge_all_classes(analysis_map: &mut AnalysisMap) -> ClassTable {
 }
 
 fn build_nested_functions_map(analysis_map: &AnalysisMap) -> AHashMap<ModuleName, Vec<ModuleName>> {
-    let mut map: AHashMap<ModuleName, Vec<ModuleName>> = AHashMap::new();
-    for (_, v) in analysis_map.iter() {
-        for (child, parent) in &v.definitions.enclosing_functions {
-            // Keep only immediate children; deeper wrappers run later.
-            if v.definitions.functions.contains(child) && child.parent().as_ref() == Some(parent) {
-                map.entry(*parent).or_default().push(*child);
+    // Build per-thread maps in parallel, then merge. The consumer ANDs over all
+    // children, so the merged child order does not affect results.
+    analysis_map
+        .par_iter()
+        .fold(
+            AHashMap::new,
+            |mut map: AHashMap<ModuleName, Vec<ModuleName>>, (_, v)| {
+                for (child, parent) in &v.definitions.enclosing_functions {
+                    // Keep only immediate children; deeper wrappers run later.
+                    if v.definitions.functions.contains(child)
+                        && child.parent().as_ref() == Some(parent)
+                    {
+                        map.entry(*parent).or_default().push(*child);
+                    }
+                }
+                map
+            },
+        )
+        .reduce(AHashMap::new, |mut acc, map| {
+            for (parent, mut children) in map {
+                acc.entry(parent).or_default().append(&mut children);
             }
-        }
-    }
-    map
+            acc
+        })
 }
 
 fn merge_all_functions_and_methods(
@@ -192,10 +206,13 @@ fn merge_all_functions_and_methods(
 }
 
 fn collect_re_exports(exports: &Exports, effect_table: &EffectTable) -> AHashSet<ModuleName> {
-    let mut re_exports: AHashSet<ModuleName> = exports
-        .get_re_exports()
+    // Re-export names are interned via as_module_name(), which is the expensive
+    // part on large projects; do it in parallel, then build the set.
+    let names: Vec<ModuleName> = exports
+        .par_re_exports()
         .map(|(name, _)| name.as_module_name())
         .collect();
+    let mut re_exports: AHashSet<ModuleName> = names.into_iter().collect();
     get_all_safe_re_exports(effect_table, &mut re_exports);
     re_exports
 }

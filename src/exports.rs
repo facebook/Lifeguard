@@ -15,6 +15,7 @@ use ahash::AHashSet;
 use pyrefly_python::module_name::ModuleName;
 use pyrefly_python::symbol_kind::SymbolKind;
 use pyrefly_util::visit::Visit;
+use rayon::prelude::*;
 use ruff_python_ast::Expr;
 use ruff_python_ast::Stmt;
 use ruff_python_ast::name::Name;
@@ -201,6 +202,13 @@ impl Exports {
     /// Get an iterator to all re-exported symbols and their definitions.
     pub fn get_re_exports(&self) -> impl Iterator<Item = (&Attribute, &(Attribute, TextRange))> {
         self.re_exports.iter()
+    }
+
+    /// Parallel iterator over all re-exported symbols and their definitions.
+    pub fn par_re_exports(
+        &self,
+    ) -> impl ParallelIterator<Item = (&Attribute, &(Attribute, TextRange))> {
+        self.re_exports.par_iter()
     }
 
     /// Get a symbol re-export information, what its original name and location is, assuming it is a
