@@ -257,10 +257,20 @@ impl Exports {
 
     /// Remove re-exports that refer to modules in the import graph.
     /// Used to filter unfiltered exports after the import graph is built.
+    /// The predicate interns a ModuleName per re-export (as_module_name), which
+    /// dominates this pass, so it is evaluated in parallel before removal.
     pub fn filter_module_re_exports(&mut self, import_graph: &ImportGraph) {
-        self.re_exports.retain(|_, (imported_attr, _)| {
-            !import_graph.contains(&imported_attr.as_module_name())
-        });
+        let to_remove: Vec<Attribute> = self
+            .re_exports
+            .par_iter()
+            .filter(|(_, (imported_attr, _))| {
+                import_graph.contains(&imported_attr.as_module_name())
+            })
+            .map(|(exported, _)| exported.clone())
+            .collect();
+        for exported in &to_remove {
+            self.re_exports.remove(exported);
+        }
     }
 
     /// Get the `__all__` contents for a module, if it has one.
