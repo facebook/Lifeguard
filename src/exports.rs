@@ -10,8 +10,6 @@
 // calculate exports more completely and rigorously; we can switch to using that later on if we
 // need the full complexity.
 
-use ahash::AHashMap;
-use ahash::AHashSet;
 use pyrefly_python::module_name::ModuleName;
 use pyrefly_python::symbol_kind::SymbolKind;
 use pyrefly_util::visit::Visit;
@@ -24,6 +22,10 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::config::AnalysisConfig;
+use crate::hasher::AHashMap;
+use crate::hasher::AHashSet;
+use crate::hasher::HashMapExt;
+use crate::hasher::HashSetExt;
 use crate::imports::ImportGraph;
 use crate::module_parser::ParsedModule;
 use crate::pyrefly::definitions::Definition;

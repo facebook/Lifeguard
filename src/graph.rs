@@ -5,13 +5,15 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use ahash::AHashMap;
 use petgraph::Direction;
 use petgraph::algo::tarjan_scc;
 use petgraph::graph::DiGraph;
 use petgraph::graph::NodeIndex;
 use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
+
+use crate::hasher::AHashMap;
+use crate::hasher::HashMapExt;
 
 /// Sequence of nodes that form a cycle in the graph.
 pub type Cycle = Vec<NodeIndex>;

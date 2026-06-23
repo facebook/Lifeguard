@@ -5,9 +5,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use ahash::AHashMap;
-use ahash::AHashSet;
-use ahash::RandomState;
 use pyrefly_python::module_name::ModuleName;
 use pyrefly_python::symbol_kind::SymbolKind;
 use pyrefly_util::visit::Visit;
@@ -26,6 +23,10 @@ use crate::class::FieldKind;
 use crate::config::AnalysisConfig;
 use crate::cursor::Cursor;
 use crate::exports::Exports;
+use crate::hasher::AHashMap;
+use crate::hasher::AHashSet;
+use crate::hasher::HashMapExt;
+use crate::hasher::HashSetExt;
 use crate::imports::ImportGraph;
 use crate::imports::ImportlibState;
 use crate::module_parser::ParsedModule;
@@ -258,7 +259,7 @@ pub fn build_definitions_and_classes(
 }
 
 pub fn get_import_module_state_from_def(
-    definitions: &AHashMap<ModuleName, Definitions, RandomState>,
+    definitions: &AHashMap<ModuleName, Definitions>,
     scope: &ModuleName,
 ) -> ImportlibState {
     match definitions.get(scope) {

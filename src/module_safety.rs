@@ -7,12 +7,13 @@
 
 use std::collections::HashMap;
 
-use ahash::AHashSet;
 use pyrefly_python::module_name::ModuleName;
 use serde::Deserialize;
 use serde::Serialize;
 
 use crate::errors::SafetyError;
+use crate::hasher::AHashSet;
+use crate::hasher::HashSetExt;
 
 /// Safety verdict for a single function from call graph analysis.
 ///

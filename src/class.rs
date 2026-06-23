@@ -5,11 +5,12 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use ahash::AHashMap;
 use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
 use ruff_python_ast::name::Name;
 
+use crate::hasher::AHashMap;
+use crate::hasher::HashMapExt;
 use crate::traits::ModuleNameExt;
 
 #[derive(Debug, Clone, PartialEq)]

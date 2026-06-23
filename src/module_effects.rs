@@ -5,13 +5,15 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use ahash::AHashMap;
-use ahash::AHashSet;
 use pyrefly_python::module_name::ModuleName;
 use ruff_text_size::TextRange;
 
 use crate::effects::Effect;
 use crate::effects::EffectTable;
+use crate::hasher::AHashMap;
+use crate::hasher::AHashSet;
+use crate::hasher::HashMapExt;
+use crate::hasher::HashSetExt;
 
 // Map of the scope where modules are imported (ie function or class name) to the imported module names
 pub type ModuleImportsMap = AHashMap<ModuleName, AHashSet<ModuleName>>;

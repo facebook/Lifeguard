@@ -10,8 +10,6 @@ use std::collections::HashSet;
 use std::fs;
 use std::process::Command;
 
-use ahash::AHashMap;
-use ahash::AHashSet;
 use pyrefly_python::module::Module;
 use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
@@ -23,6 +21,9 @@ use crate::effects::Effect;
 use crate::errors::SafetyError;
 use crate::exports::Exports;
 use crate::format::ErrorString;
+use crate::hasher::AHashMap;
+use crate::hasher::AHashSet;
+use crate::hasher::HashSetExt;
 use crate::imports::ImportGraph;
 use crate::module_effects::ModuleEffects;
 use crate::module_parser::ParsedModule;
@@ -403,12 +404,11 @@ pub fn check_implicit_imports(
             })
             .collect();
     assert_eq!(
-        *actual_implicit_imports,
+        actual_implicit_imports,
         expected_implicit_imports_map
             .get(module_name)
             .unwrap_or(&AHashSet::new())
             .clone()
-            .into()
     );
 }
 

@@ -7,7 +7,6 @@
 
 use std::str::FromStr;
 
-use ahash::AHashMap;
 use anyhow::Result;
 use pyrefly_python::module_name::ModuleName;
 use ruff_text_size::TextRange;
@@ -18,6 +17,8 @@ use serde_json;
 use crate::cursor::TryHandler;
 use crate::format::ErrorString;
 use crate::format::bare_string;
+use crate::hasher::AHashMap;
+use crate::hasher::HashMapExt;
 use crate::module_parser::ParsedModule;
 
 // NOTE: This crate uses ModuleName throughout to store fully qualified names of all kinds.

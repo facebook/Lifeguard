@@ -99,9 +99,8 @@ mod tests {
     use std::collections::HashSet;
     use std::sync::LazyLock;
 
-    use ahash::AHashSet;
-
     use super::*;
+    use crate::hasher::AHashSet;
     use crate::stubs::Stubs;
 
     // We no longer use the static list of unsafe builtins; keep it as a cross-check for testing.

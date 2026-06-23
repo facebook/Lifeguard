@@ -125,7 +125,6 @@ name = "stubs"
 path = "stubs.rs"
 
 [dev-dependencies]
-ahash = { version = "0.8.11", features = ["runtime-rng"] }
 anyhow = "1.0.102"
 clap = { version = "4.6.0", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 lifeguard = { path = "../src" }

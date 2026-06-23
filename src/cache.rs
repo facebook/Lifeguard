@@ -9,7 +9,6 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
 
-use ahash::AHashSet;
 use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
 use ruff_text_size::TextRange;
@@ -22,6 +21,9 @@ use crate::errors::ErrorKind;
 use crate::errors::SafetyError;
 use crate::exports::ExportType;
 use crate::exports::Exports;
+use crate::hasher::AHashSet;
+use crate::hasher::HashMapExt;
+use crate::hasher::HashSetExt;
 use crate::imports::ImportGraph;
 use crate::imports::resolve_to_known_module;
 use crate::module_safety::FunctionSafety;

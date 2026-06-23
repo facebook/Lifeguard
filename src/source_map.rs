@@ -11,7 +11,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
-use ahash::AHashSet;
 use anyhow::Result;
 use anyhow::anyhow;
 // Re-exported because ModuleName is part of the public SourceMap type
@@ -22,6 +21,8 @@ use serde::Deserialize;
 use tracing::warn;
 
 use crate::debug::report_memory;
+use crate::hasher::AHashSet;
+use crate::hasher::HashSetExt;
 use crate::module_parser::ParsedModule;
 use crate::module_parser::parse_pyi_with_version;
 use crate::module_parser::read_and_parse_source_with_version;
@@ -93,7 +94,7 @@ struct DbgSourceDb {
 // TODO: We are not including pyi files from the source db for now; we will consider external stubs
 // once we get the internal stubs fully working.
 static PYTHON_EXTENSIONS: LazyLock<AHashSet<&'static OsStr>> =
-    LazyLock::new(|| AHashSet::from([OsStr::new("py")]));
+    LazyLock::new(|| [OsStr::new("py")].into_iter().collect());
 
 /// Check if a path has a python file extension
 pub fn is_python_file(path: &Path) -> bool {

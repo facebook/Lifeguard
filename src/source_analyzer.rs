@@ -5,7 +5,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use ahash::AHashSet;
 use pyrefly_python::module_name::ModuleName;
 use pyrefly_util::visit::Visit;
 use ruff_python_ast::Arguments;
@@ -58,6 +57,8 @@ use crate::effects::EffectKind;
 use crate::exports::Attribute;
 use crate::exports::Exports;
 use crate::format;
+use crate::hasher::AHashSet;
+use crate::hasher::HashSetExt;
 use crate::imports::ImportGraph;
 use crate::imports::get_import_chain_string;
 use crate::manual_override;

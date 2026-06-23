@@ -7,7 +7,6 @@
 
 use std::str::FromStr;
 
-use ahash::AHashSet;
 use pyrefly_python::module_name::ModuleName;
 use ruff_python_ast::Expr;
 use ruff_python_ast::ExprCall;
@@ -24,6 +23,8 @@ use crate::cursor::Cursor;
 use crate::effects::Effect;
 use crate::effects::EffectKind;
 use crate::exports::Exports;
+use crate::hasher::AHashSet;
+use crate::hasher::HashSetExt;
 use crate::imports::ImportGraph;
 use crate::module_effects::ModuleEffects;
 use crate::module_info::ModuleInfo;

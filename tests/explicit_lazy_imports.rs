@@ -7,8 +7,8 @@
 
 #[cfg(test)]
 mod tests {
-    use ahash::AHashSet;
     use lifeguard::config::AnalysisConfig;
+    use lifeguard::hasher::AHashSet;
     use lifeguard::imports::ImportGraph;
     use lifeguard::project;
     use lifeguard::project::CachingMode;

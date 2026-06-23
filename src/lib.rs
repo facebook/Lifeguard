@@ -22,6 +22,7 @@ pub mod exports;
 pub mod find_sources;
 pub mod format;
 pub mod graph;
+pub mod hasher;
 pub mod imports;
 pub mod manual_override;
 pub mod module_effects;

@@ -15,8 +15,9 @@
 
 use std::sync::LazyLock;
 
-use ahash::AHashSet;
 use pyrefly_python::module_name::ModuleName;
+
+use crate::hasher::AHashSet;
 
 /// Functions that are always treated as safe.
 const SAFE_FUNCTIONS_ARRAY: &[&str] = &[

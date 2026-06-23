@@ -7,8 +7,6 @@
 
 use std::io::Write;
 
-use ahash::AHashMap;
-use ahash::AHashSet;
 use dashmap::DashMap;
 use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
@@ -24,6 +22,10 @@ use crate::errors::ErrorKind;
 use crate::errors::ErrorMetadata;
 use crate::errors::SafetyError;
 use crate::exports::Exports;
+use crate::hasher::AHashMap;
+use crate::hasher::AHashSet;
+use crate::hasher::HashMapExt;
+use crate::hasher::HashSetExt;
 use crate::imports::ImportGraph;
 use crate::module_parser::ParsedModule;
 use crate::module_safety::SafetyResult;

@@ -24,6 +24,7 @@ mod tests {
     use lifeguard::errors::ErrorKind;
     use lifeguard::errors::SafetyError;
     use lifeguard::exports::Exports;
+    use lifeguard::hasher::HashMapExt;
     use lifeguard::imports::ImportGraph;
     use lifeguard::imports::resolve_to_known_module;
     use lifeguard::module_safety::FunctionSafety;
@@ -103,7 +104,7 @@ mod tests {
     #[cfg(target_pointer_width = "64")]
     fn test_cached_struct_sizes() {
         assert_eq!(std::mem::size_of::<LibraryCache>(), 120);
-        assert_eq!(std::mem::size_of::<CachedModule>(), 384);
+        assert_eq!(std::mem::size_of::<CachedModule>(), 256);
         assert_eq!(std::mem::size_of::<CachedSafety>(), 72);
         assert_eq!(std::mem::size_of::<CachedModuleSafety>(), 72);
         assert_eq!(std::mem::size_of::<lifeguard::cache::CachedError>(), 32);
