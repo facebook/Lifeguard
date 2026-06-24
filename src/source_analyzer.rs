@@ -633,11 +633,7 @@ impl<'a> SourceAnalyzer<'a> {
         // A call through the class itself (`C.method(obj, ...)`) passes the
         // receiver explicitly, so argument-to-parameter alignment differs from a
         // bound call (`obj.method(...)`).
-        let receiver_is_class = res.definition.is_class()
-            || matches!(
-                self.info.bindings.lookup(&res.scope, &res.name),
-                Some(Value::Class(_))
-            );
+        let receiver_is_class = self.receiver_is_class(res);
         let kind = if receiver_is_class {
             EffectKind::UnboundMethodCall
         } else {
@@ -1504,6 +1500,39 @@ impl<'a> SourceAnalyzer<'a> {
     /// parameter list.
     fn add_param_effect(&self, res: &ResolvedName, eff: Effect, output: &mut ModuleEffects) {
         output.add_effect(res.scope, eff);
+    }
+
+    /// Whether `res` resolves to a class definition, directly or through a local alias chain.
+    /// Used to distinguish bound method calls (`obj.method()`) from unbound calls via the class
+    /// (`C.method(obj, ...)`), including cases like `D = C; D.method(...)`.
+    fn receiver_is_class(&self, res: &ResolvedName) -> bool {
+        if res.definition.is_class() {
+            return true;
+        }
+        // Check direct bindings lookup first for efficiency.
+        if matches!(
+            self.info.bindings.lookup(&res.scope, &res.name),
+            Some(Value::Class(_))
+        ) {
+            return true;
+        }
+        // Follow alias chain to terminal binding and check if it resolves to a class.
+        match self.info.bindings.resolve(&res.scope, &res.name) {
+            Some(Alias::Global(Value::Class(_))) => true,
+            // Mirror the direct check above: a terminal local name may be recorded
+            // as a class in either the definition table or the bindings table.
+            Some(Alias::Local(scope, name)) => {
+                self.info
+                    .definitions
+                    .get(scope, name)
+                    .is_some_and(|d| d.is_class())
+                    || matches!(
+                        self.info.bindings.lookup(scope, name),
+                        Some(Value::Class(_))
+                    )
+            }
+            _ => false,
+        }
     }
 }
 

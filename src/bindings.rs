@@ -24,7 +24,9 @@ use crate::cursor::Cursor;
 use crate::exports::Attribute;
 use crate::exports::Exports;
 use crate::hasher::AHashMap;
+use crate::hasher::AHashSet;
 use crate::hasher::HashMapExt;
+use crate::hasher::HashSetExt;
 use crate::imports::ImportGraph;
 use crate::module_info::DefinitionTable;
 use crate::module_info::ResolvedName;
@@ -93,6 +95,43 @@ impl Alias {
 type Bindings = AHashMap<Name, Value>;
 type Aliases = AHashMap<Name, Alias>;
 
+/// Follow a chain of local aliases (`z = y; y = x`) to its terminal binding.
+/// Track visited nodes to guard against infinite loops, since we can get confused by control flow.
+fn resolve_alias<'a>(
+    aliases: &'a AHashMap<ModuleName, Aliases>,
+    scope: &ModuleName,
+    name: &Name,
+) -> Option<&'a Alias> {
+    let mut current_scope = *scope;
+    let mut current_name = name;
+    let mut visited = AHashSet::with_capacity(8);
+    let mut last_ret: Option<&'a Alias> = None;
+    // Bound call depth at 32 even if we never hit an infinite recursion.
+    for _ in 0..32 {
+        if !visited.insert((current_scope, current_name.clone())) {
+            // Cycle detected — return last valid alias to preserve old behavior.
+            return last_ret;
+        }
+        let ret = match aliases
+            .get(&current_scope)
+            .and_then(|a| a.get(current_name))
+        {
+            Some(r) => r,
+            None => return last_ret,
+        };
+        last_ret = Some(ret);
+        match ret {
+            Alias::Local(s, n) => {
+                current_scope = *s;
+                current_name = n;
+                continue;
+            }
+            _ => return Some(ret),
+        }
+    }
+    last_ret
+}
+
 #[derive(Debug)]
 pub struct BindingsTable {
     bindings: AHashMap<ModuleName, Bindings>,
@@ -117,6 +156,11 @@ impl BindingsTable {
 
     pub fn lookup_alias(&self, scope: &ModuleName, name: &Name) -> Option<&Alias> {
         self.aliases.get(scope)?.get(name)
+    }
+
+    /// Follow a chain of local aliases to its terminal binding.
+    pub fn resolve(&self, scope: &ModuleName, name: &Name) -> Option<&Alias> {
+        resolve_alias(&self.aliases, scope, name)
     }
 
     // Useful for testing
@@ -168,31 +212,9 @@ impl AliasTable {
         self.aliases.get(scope)?.get(name)
     }
 
-    // Follow transitive aliases. Track depth to guard against infinite loops, since we
-    // can get confused by control flow.
-    fn _resolve(&self, scope: &ModuleName, name: &Name, depth: u8) -> Option<&Alias> {
-        // We are likely in an infinite loop if we have followed 5 levels of aliases
-        // and still have an alias.
-        if depth > 5 {
-            return None;
-        }
-        let ret = self.lookup_alias(scope, name);
-        match ret {
-            // If we have an alias to a global, return it directly
-            Some(Alias::Global(_)) => ret,
-            // If we have an alias to a local, it may itself be an alias
-            Some(Alias::Local(s, n)) => match self._resolve(s, n, depth + 1) {
-                // If it is, return its transitively resolved value
-                Some(x) => Some(x),
-                // If not, return the local alias
-                None => ret,
-            },
-            None => None,
-        }
-    }
-
+    /// Follow a chain of local aliases to its terminal binding.
     pub fn resolve(&self, scope: &ModuleName, name: &Name) -> Option<&Alias> {
-        self._resolve(scope, name, 0)
+        resolve_alias(&self.aliases, scope, name)
     }
 }
 

@@ -258,6 +258,56 @@ c.sink(A)  # E: imported-var-argument
         check(code);
     }
 
+    #[test]
+    fn test_unbound_staticmethod_call_imported_arg() {
+        // Staticmethod via class has no implicit receiver, offset 0.
+        let code = r#"
+from foo import A
+
+class C:
+    @staticmethod
+    def sink(x):
+        x["k"] = 1
+
+C.sink(A)  # E: imported-var-argument
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_bound_classmethod_call_imported_arg() {
+        // Classmethod via instance still has implicit cls receiver, offset 1.
+        let code = r#"
+from foo import A
+
+class C:
+    @classmethod
+    def make(cls, x):
+        x["k"] = 1
+
+c = C()
+c.make(A)  # E: imported-var-argument
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_class_alias_unbound_method_call_imported_arg() {
+        // Alias to class should still be recognised as unbound call with explicit receiver.
+        let code = r#"
+from foo import A
+
+class C:
+    def method(self, x):
+        x["k"] = 1
+
+D = C
+o = {}
+D.method(o, A)  # E: imported-var-argument
+"#;
+        check(code);
+    }
+
     // -----------------------------------------------------------------------
     // Combination: method call + attr mutation on different params
     // -----------------------------------------------------------------------
