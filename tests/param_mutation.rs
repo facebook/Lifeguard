@@ -884,7 +884,6 @@ f({})
     // =========================================================================
 
     #[test]
-    #[ignore] // TODO(T237092592): Track transitive param mutation
     fn test_transitive_param_mutation() {
         // f passes its param to g which mutates it.
         let code = r#"
@@ -897,6 +896,128 @@ def f(x):
     g(x)
 
 f(A)  # E: imported-var-argument  # E: unsafe-function-call
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_three_level_transitive_param_forwarding() {
+        // f -> g -> h chain, h mutates, should propagate to f.
+        let code = r#"
+from foo import A
+
+def h(z):
+    z.append(1)
+
+def g(y):
+    h(y)
+
+def f(x):
+    g(x)
+
+f(A)  # E: imported-var-argument  # E: unsafe-function-call
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_diamond_param_forwarding() {
+        // f forwards to both g and i which both forward to h which mutates.
+        // Tests fixpoint merge across diamond shape.
+        let code = r#"
+from foo import A
+
+def h(z):
+    z.append(1)
+
+def g(y):
+    h(y)
+
+def i(y):
+    h(y)
+
+def f(x):
+    g(x)
+    i(x)
+
+f(A)  # E: imported-var-argument  # E: unsafe-function-call
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_cycle_param_forwarding() {
+        // f and g forward to each other in a cycle, g mutates.
+        // Fixpoint should terminate and mark both f and g params as mutated.
+        let code = r#"
+from foo import A
+
+def g(y):
+    y.append(1)
+    f(y)
+
+def f(x):
+    g(x)
+
+f(A)  # E: imported-var-argument  # E: unsafe-function-call
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_nested_function_outer_param_is_not_inner_forwarded_param() {
+        let code = r#"
+from foo import A
+
+def mutate(v):
+    v.append(1)
+
+def outer(x):
+    def inner(**kwargs):
+        mutate(x)
+    inner(**A)
+
+outer([])  # E: unsafe-function-call
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_reassigned_param_not_forwarded() {
+        // Parameter reassigned to new list before forwarding.
+        // Current behavior at D108941987: still flags as imported-var-argument
+        // because alias tracking does not yet clear on reassignment.
+        // D109086207 adds clear_alias to fix this false positive; update test then.
+        let code = r#"
+from foo import A
+
+def g(y):
+    y.append(1)
+
+def f(x):
+    x = []
+    g(x)
+
+f(A)  # E: imported-var-argument  # E: unsafe-function-call
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_star_args_forwarding_not_tracked() {
+        // Known limitation: *args forwarding of a parameter is not tracked today.
+        // This documents current behavior (no error) as technical debt for future
+        // conservative handling. If we later treat *args as unsafe, update test.
+        let code = r#"
+from foo import A
+
+def g(y):
+    y.append(1)
+
+def f(x):
+    g(*[x])
+
+f(A)  # E: unsafe-function-call
 "#;
         check(code);
     }

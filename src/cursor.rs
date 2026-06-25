@@ -301,6 +301,16 @@ impl Cursor {
         }
         None
     }
+
+    /// Get the name of the nearest (innermost) function scope, including the current scope.
+    pub fn current_function_scope(&self) -> Option<ModuleName> {
+        for i in (0..self.scopes.len()).rev() {
+            if self.scopes[i].kind == ScopeKind::Function {
+                return Some(self.qualified_scopes[i]);
+            }
+        }
+        None
+    }
 }
 
 #[cfg(test)]

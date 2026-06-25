@@ -926,6 +926,88 @@ mod tests {
     }
 
     #[test]
+    fn test_transitive_imported_param_mutation_only_fails_imported_callers() {
+        // `mutate_arg` is safe in isolation: mutating a parameter is only a
+        // problem when the actual argument comes from an import. `call_through`
+        // is invoked from two different entry points:
+        // - `call_with_local_box` passes a fresh local object and should remain safe.
+        // - `call_with_imported_state` passes an imported module and should be unsafe.
+        //
+        // The important regression check is that the imported-arg path must not
+        // "poison" `call_through` so that the local-object path also starts failing.
+        let modules = vec![
+            ("imported_state", "value = 1\n"),
+            (
+                "lib",
+                "import imported_state\n\
+                 class Box:\n\
+                 \x20   pass\n\
+                 def mutate_arg(x):\n\
+                 \x20   x.attr = 1\n\
+                 def call_through(arg):\n\
+                 \x20   mutate_arg(arg)\n\
+                 def call_with_local_box():\n\
+                 \x20   local = Box()\n\
+                 \x20   call_through(local)\n\
+                 def call_with_imported_state():\n\
+                 \x20   call_through(imported_state)\n",
+            ),
+            (
+                "local_only_app",
+                "from lib import call_with_local_box\n\
+                 call_with_local_box()\n",
+            ),
+            (
+                "imported_arg_app",
+                "from lib import call_with_imported_state\n\
+                 call_with_imported_state()\n",
+            ),
+        ];
+
+        let result = run_lifeguard_analysis(&modules);
+
+        assert_passing(&result, vec!["imported_state", "lib", "local_only_app"]);
+        assert_failing(&result, vec!["imported_arg_app"]);
+    }
+
+    #[test]
+    fn test_transitive_imported_param_mutation_minimal_repro() {
+        let modules = vec![
+            ("other", "value = 1\n"),
+            (
+                "lib",
+                "import other\n\
+                 class C:\n\
+                 \x20   pass\n\
+                 def sink(x):\n\
+                 \x20   x.attr = 1\n\
+                 def passthrough(y):\n\
+                 \x20   sink(y)\n\
+                 def safe():\n\
+                 \x20   local = C()\n\
+                 \x20   passthrough(local)\n\
+                 def unsafe():\n\
+                 \x20   passthrough(other)\n",
+            ),
+            (
+                "safe_app",
+                "from lib import safe\n\
+                 safe()\n",
+            ),
+            (
+                "unsafe_app",
+                "from lib import unsafe\n\
+                 unsafe()\n",
+            ),
+        ];
+
+        let result = run_lifeguard_analysis(&modules);
+
+        assert_passing(&result, vec!["lib", "other", "safe_app"]);
+        assert_failing(&result, vec!["unsafe_app"]);
+    }
+
+    #[test]
     fn test_run_analysis_covers_all_modules() {
         let code_a = r#"
             import b

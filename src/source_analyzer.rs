@@ -50,6 +50,7 @@ use crate::config::AnalysisConfig;
 use crate::cursor::Block;
 use crate::cursor::Cursor;
 use crate::cursor::TryHandler;
+use crate::effects::ArgSlot;
 use crate::effects::CallData;
 use crate::effects::CallKind;
 use crate::effects::Effect;
@@ -74,6 +75,16 @@ use crate::stubs::Stubs;
 use crate::traits::DefinitionExt;
 use crate::traits::ExprExt;
 use crate::traits::ModuleNameExt;
+
+/// Classification of a single call argument for tracking imported state flow.
+enum ArgClass {
+    /// The argument resolves to an imported variable.
+    Imported,
+    /// The argument forwards one of the enclosing function's parameters (by name).
+    ForwardedParam(ModuleName),
+    /// Neither imported nor a forwarded parameter.
+    Other,
+}
 
 // Main entry point for the analyzer library.
 //
@@ -364,17 +375,22 @@ impl<'a> SourceAnalyzer<'a> {
         self.add_effect(eff, output);
     }
 
-    fn check_call_arg(&self, arg: &Expr, output: &mut ModuleEffects) -> bool {
-        let mut ret = false;
-        if let Some(res) = self.info.resolve(&self.cursor, arg) {
-            if res.is_import() || self.is_import_alias(arg) {
-                let name = ModuleName::from_name(&res.name);
-                let eff = Effect::new(EffectKind::ImportedVarArgument, name, arg.range());
-                self.add_effect(eff, output);
-                ret = true;
-            }
+    /// Classify a single call argument as imported/forwarded/neither
+    fn classify_call_arg(&self, arg: &Expr, output: &mut ModuleEffects) -> ArgClass {
+        let Some(res) = self.info.resolve(&self.cursor, arg) else {
+            return ArgClass::Other;
+        };
+        if res.is_import() || self.is_import_alias(arg) {
+            let name = ModuleName::from_name(&res.name);
+            let eff = Effect::new(EffectKind::ImportedVarArgument, name, arg.range());
+            self.add_effect(eff, output);
+            return ArgClass::Imported;
         }
-        ret
+        // A bare reference to one of the current function's parameters.
+        if res.definition.is_param() && self.cursor.current_function_scope() == Some(res.scope) {
+            return ArgClass::ForwardedParam(ModuleName::from_name(&res.name));
+        }
+        ArgClass::Other
     }
 
     fn check_call_args(&self, args: &Arguments, output: &mut ModuleEffects) -> CallData {
@@ -387,27 +403,45 @@ impl<'a> SourceAnalyzer<'a> {
         let mut unsafe_indices: u64 = 0;
         let mut unsafe_keyword_names = Vec::new();
         let mut has_unsafe_kwargs_expansion = false;
+        let mut forwarded_params: Vec<(ArgSlot, ModuleName)> = Vec::new();
 
         for (i, arg) in args.args.as_ref().iter().enumerate() {
-            if self.check_call_arg(arg, output) {
-                has_unsafe = true;
-                if i < 64 {
-                    unsafe_indices |= 1u64 << i;
+            match self.classify_call_arg(arg, output) {
+                ArgClass::Imported => {
+                    has_unsafe = true;
+                    if i < 64 {
+                        unsafe_indices |= 1u64 << i;
+                    }
                 }
+                ArgClass::ForwardedParam(param) => {
+                    forwarded_params.push((ArgSlot::Positional(i), param));
+                }
+                ArgClass::Other => {}
             }
         }
         for arg in args.keywords.as_ref() {
-            if self.check_call_arg(&arg.value, output) {
-                has_unsafe = true;
-                match &arg.arg {
-                    Some(ident) => {
-                        unsafe_keyword_names.push(ModuleName::from_str(ident.as_str()));
-                    }
-                    None => {
-                        // **kwargs expansion — can't determine specific keywords
-                        has_unsafe_kwargs_expansion = true;
+            match self.classify_call_arg(&arg.value, output) {
+                ArgClass::Imported => {
+                    has_unsafe = true;
+                    match &arg.arg {
+                        Some(ident) => {
+                            unsafe_keyword_names.push(ModuleName::from_str(ident.as_str()));
+                        }
+                        None => {
+                            // **kwargs expansion — can't determine specific keywords
+                            has_unsafe_kwargs_expansion = true;
+                        }
                     }
                 }
+                ArgClass::ForwardedParam(param) => {
+                    // Only named keywords can be matched to the callee's parameter;
+                    // a **kwargs expansion of a parameter can't be tracked precisely.
+                    if let Some(ident) = &arg.arg {
+                        let slot = ArgSlot::Keyword(ModuleName::from_str(ident.as_str()));
+                        forwarded_params.push((slot, param));
+                    }
+                }
+                ArgClass::Other => {}
             }
         }
         CallData::new(
@@ -416,6 +450,7 @@ impl<'a> SourceAnalyzer<'a> {
             unsafe_keyword_names,
             has_unsafe_kwargs_expansion,
         )
+        .with_forwarded_params(forwarded_params)
     }
 
     fn check_unresolved_call(
@@ -534,7 +569,8 @@ impl<'a> SourceAnalyzer<'a> {
         };
 
         output.called_functions.insert(fname);
-        let data = if call_data.has_unsafe_args() {
+        // Keep the call data when it carries imported-arg or parameter forwarding info
+        let data = if call_data.has_unsafe_args() || call_data.has_forwarded_params() {
             EffectData::Call(Box::new(call_data))
         } else {
             EffectData::None
@@ -546,7 +582,7 @@ impl<'a> SourceAnalyzer<'a> {
         }
 
         // Check if this is a method call before checking if it's a function
-        if self.handle_method_call(func, &res, fname, range, data.clone(), output) {
+        if self.handle_method_call(func, &res, fname, range, &data, output) {
             return;
         }
 
@@ -598,7 +634,7 @@ impl<'a> SourceAnalyzer<'a> {
         res: &ResolvedName,
         fname: ModuleName,
         range: TextRange,
-        data: EffectData,
+        data: &EffectData,
         output: &mut ModuleEffects,
     ) -> bool {
         let Expr::Attribute(ExprAttribute { attr, .. }) = func else {
@@ -641,7 +677,7 @@ impl<'a> SourceAnalyzer<'a> {
         };
 
         if !is_safe_builtin_method {
-            let eff = Effect::with_data(kind, fname, range, data);
+            let eff = Effect::with_data(kind, fname, range, data.clone());
             self.add_effect(eff, output);
         }
 

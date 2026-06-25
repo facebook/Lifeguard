@@ -9,6 +9,8 @@ use std::str::FromStr;
 
 use anyhow::Result;
 use pyrefly_python::module_name::ModuleName;
+use rayon::iter::IntoParallelRefIterator;
+use rayon::iter::ParallelIterator;
 use ruff_text_size::TextRange;
 use serde::Deserialize;
 use serde::Serialize;
@@ -158,6 +160,15 @@ impl CallKind {
     }
 }
 
+/// The argument slot a forwarded parameter is passed into at a call site.
+#[derive(Debug, Eq, PartialEq, Hash, Clone)]
+pub enum ArgSlot {
+    /// Positional argument at the given index.
+    Positional(usize),
+    /// Keyword argument with the given name.
+    Keyword(ModuleName),
+}
+
 #[derive(Debug, Eq, PartialEq, Hash, Clone)]
 pub struct CallData {
     has_unsafe_args: bool,
@@ -167,6 +178,12 @@ pub struct CallData {
     /// Set when a **kwargs expansion contains an imported variable,
     /// meaning we can't determine which specific keywords are unsafe.
     has_unsafe_kwargs_expansion: bool,
+    /// Arguments that pass in one of the enclosing function's parameters:
+    /// `(slot the parameter is passed into, the enclosing parameter's name)`.
+    /// Used to track parameter forwarding, e.g.
+    ///   def f(y): g(y)  # => (ArgSlot::Positional(0), "y")
+    /// recording that the arg passed to `g` comes from f's parameter `y`
+    forwarded_params: Vec<(ArgSlot, ModuleName)>,
 }
 
 impl CallData {
@@ -181,7 +198,13 @@ impl CallData {
             unsafe_arg_indices,
             unsafe_keyword_names,
             has_unsafe_kwargs_expansion,
+            forwarded_params: Vec::new(),
         }
+    }
+
+    pub fn with_forwarded_params(mut self, forwarded_params: Vec<(ArgSlot, ModuleName)>) -> Self {
+        self.forwarded_params = forwarded_params;
+        self
     }
 
     pub fn empty() -> Self {
@@ -190,7 +213,16 @@ impl CallData {
             unsafe_arg_indices: 0,
             unsafe_keyword_names: Vec::new(),
             has_unsafe_kwargs_expansion: false,
+            forwarded_params: Vec::new(),
         }
+    }
+
+    pub fn forwarded_params(&self) -> &[(ArgSlot, ModuleName)] {
+        &self.forwarded_params
+    }
+
+    pub fn has_forwarded_params(&self) -> bool {
+        !self.forwarded_params.is_empty()
     }
 
     pub fn has_unsafe_args(&self) -> bool {
@@ -334,6 +366,11 @@ impl EffectTable {
     /// Get an iterator over all effects, grouped and keyed by their scope name.
     pub fn iter(&self) -> impl Iterator<Item = (&ModuleName, &Vec<Effect>)> {
         self.table.iter()
+    }
+
+    /// Parallel iterator over all effects, grouped and keyed by their scope name.
+    pub fn par_iter(&self) -> impl ParallelIterator<Item = (&ModuleName, &Vec<Effect>)> {
+        self.table.par_iter()
     }
 
     /// Get a mutable iterator over all effects, grouped and keyed by their scope name.

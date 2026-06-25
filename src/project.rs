@@ -29,6 +29,7 @@ use crate::class::ClassTable;
 use crate::class::FieldKind;
 use crate::config::AnalysisConfig;
 use crate::csr_graph::CsrGraph;
+use crate::effects::ArgSlot;
 use crate::effects::CallData;
 use crate::effects::Effect;
 use crate::effects::EffectData;
@@ -976,6 +977,115 @@ fn iter_callees<'a>(
     constructors.chain(single)
 }
 
+/// Per function, the set of parameters that are method-mutated either directly or transitively via
+/// parameter forwarding.
+///
+/// TODO(T237092592):
+/// - Cross-library forwarding is not tracked
+/// - Unknown callee (no EffectTable entry) similarly drops the edge, inconsistent with other places
+///   where unknown => unsafe
+/// - `*args` forwarding is not tracked; `**kwargs` sets has_unsafe_kwargs_expansion flag
+///   separately.
+fn compute_mutated_params(
+    effect_table: &EffectTable,
+    functions: &AHashMap<ModuleName, ModuleName>,
+    classes: &ClassTable,
+    analysis_map: &AnalysisMap,
+) -> AHashMap<ModuleName, AHashSet<ModuleName>> {
+    // Compute a fixpoint over the call graph. The "seed" is the base set of functions that directly
+    // mutate their parameters, and an "edge" is a transitive mutation from callee->caller (reversed
+    // from the call graph since mutations flow in the opposite direction to calls).
+
+    // (function, mutated parameter)
+    type SeedMutation = (ModuleName, ModuleName);
+    // ((callee, target parameter), (caller, caller parameter))
+    type Edge = ((ModuleName, ModuleName), SeedMutation);
+
+    // Scan every scope's effects in parallel
+    let (all_seeds, all_edges): (Vec<SeedMutation>, Vec<Edge>) = effect_table
+        .par_iter()
+        .fold(
+            || (Vec::new(), Vec::new()),
+            |(mut seeds, mut edges), (scope, effs)| {
+                for eff in effs {
+                    // Seed: parameters mutated directly in this function.
+                    if eff.kind == EffectKind::ParamMethodCall {
+                        seeds.push((*scope, eff.name));
+                        continue;
+                    }
+                    // Parameter-forwarding edges recorded on call effects.
+                    let EffectData::Call(ref call_data) = eff.data else {
+                        continue;
+                    };
+                    let forwarded = call_data.forwarded_params();
+                    if forwarded.is_empty() {
+                        continue;
+                    }
+                    // A call may bind to several callees (a constructor's
+                    // __init__/__new__); resolve each owner's parameter names once.
+                    for (owner, arg_offset) in iter_callees(eff, classes) {
+                        let owner_param_names = functions
+                            .get(&owner)
+                            .and_then(|module| analysis_map.get(module))
+                            .and_then(|m| m.definitions.param_names.get(&owner));
+                        for (slot, param) in forwarded {
+                            let target = match slot {
+                                ArgSlot::Keyword(name) => Some(*name),
+                                ArgSlot::Positional(idx) => owner_param_names
+                                    .and_then(|names| names.get(idx + arg_offset))
+                                    .map(ModuleName::from_name),
+                            };
+                            if let Some(target) = target {
+                                edges.push(((owner, target), (*scope, *param)));
+                            }
+                        }
+                    }
+                }
+                (seeds, edges)
+            },
+        )
+        .reduce(
+            || (Vec::new(), Vec::new()),
+            |(mut seeds, mut edges), (s, e)| {
+                seeds.extend(s);
+                edges.extend(e);
+                (seeds, edges)
+            },
+        );
+
+    // Merge into `mutated` (seeds the fixpoint) and `dependents`, the reverse
+    // index: (owner `g`, parameter `q`) -> callers whose parameter becomes mutated
+    // once `q` is known mutated.
+    let mut mutated: AHashMap<ModuleName, AHashSet<ModuleName>> =
+        AHashMap::with_capacity(all_seeds.len());
+    let mut dependents: AHashMap<(ModuleName, ModuleName), Vec<SeedMutation>> =
+        AHashMap::with_capacity(all_edges.len());
+    let mut worklist: Vec<SeedMutation> = Vec::new();
+    for (scope, param) in all_seeds {
+        if mutated.entry(scope).or_default().insert(param) {
+            worklist.push((scope, param));
+        }
+    }
+    for (key, dep) in all_edges {
+        dependents.entry(key).or_default().push(dep);
+    }
+
+    // Fixpoint: when (g, q) becomes mutated, each caller forwarding a parameter
+    // into q has that parameter become mutated too.
+    while let Some((g, q)) = worklist.pop() {
+        let Some(deps) = dependents.get(&(g, q)) else {
+            continue;
+        };
+        for &(f, p) in deps {
+            if mutated.entry(f).or_default().insert(p) {
+                worklist.push((f, p));
+            }
+        }
+    }
+
+    mutated
+}
+
 // Immutable global information derived from the project
 struct ProjectInfo {
     analysis_map: AnalysisMap,
@@ -989,6 +1099,11 @@ struct ProjectInfo {
     // Reverse mapping: parent function → nested function scopes.
     // Used by check_call_body to check nested function effects for decorator calls.
     nested_functions: AHashMap<ModuleName, Vec<ModuleName>>,
+    // Per-function set of parameter names that are method-mutated, directly or by
+    // forwarding to another function's mutated parameter (transitive closure).
+    // Used to detect passing imported state to a mutated parameter, even through
+    // intermediate forwarding functions.
+    mutated_params: AHashMap<ModuleName, AHashSet<ModuleName>>,
 }
 
 impl ProjectInfo {
@@ -1002,12 +1117,21 @@ impl ProjectInfo {
         let classes = time("    Merging all classes", || {
             merge_all_classes(&mut analysis_map)
         });
-        let (re_exports, nested_functions) = time("    Getting re-exports + nested fns", || {
-            rayon::join(
-                || collect_re_exports(exports, &effect_table),
-                || build_nested_functions_map(&analysis_map),
-            )
-        });
+        let ((re_exports, nested_functions), mutated_params) = rayon::join(
+            || {
+                time("    Getting re-exports + nested fns", || {
+                    rayon::join(
+                        || collect_re_exports(exports, &effect_table),
+                        || build_nested_functions_map(&analysis_map),
+                    )
+                })
+            },
+            || {
+                time("    Computing mutated params", || {
+                    compute_mutated_params(&effect_table, &functions, &classes, &analysis_map)
+                })
+            },
+        );
         Self {
             analysis_map,
             effect_table,
@@ -1016,6 +1140,7 @@ impl ProjectInfo {
             re_exports,
             methods,
             nested_functions,
+            mutated_params,
         }
     }
 
@@ -1395,13 +1520,9 @@ impl ProjectInfo {
         Ok(ret)
     }
 
-    /// Checks if
-    /// - `eff` is a method call on a parameter (i.e. the function potentially mutates one of
-    ///   its parameters)
-    /// - `call_data` contains an imported variable
-    /// - the called function specifically mutates the passed-in imported variable
-    ///   OR we cannot do precise arg matching and therefore fall back to assuming it's a potential
-    ///   mutation
+    /// Whether `call_data` passes an imported variable to the callee's parameter
+    /// `param_name`: either the imported arg is at that parameter's position or
+    /// keyword, or arg tracking was imprecise so we conservatively assume it is.
     ///
     /// `arg_offset` is the number of implicit leading parameters (the receiver)
     /// to skip, so that explicit positional argument `i` matches parameter
@@ -1409,15 +1530,10 @@ impl ProjectInfo {
     fn mutated_param_receives_imported_arg(
         call_data: &CallData,
         callee: &ModuleName,
-        eff: &Effect,
+        param_name: &str,
         defs: Option<&DefinitionTable>,
         arg_offset: usize,
     ) -> bool {
-        if eff.kind != EffectKind::ParamMethodCall {
-            return false;
-        }
-        let param_name = eff.name.as_str();
-
         // Positional args: does the mutated param's index (minus the receiver
         // offset) match an unsafe arg?
         if let Some(param_idx) = defs.and_then(|d| d.get_param_index(callee, param_name)) {
@@ -1443,8 +1559,8 @@ impl ProjectInfo {
         !call_data.has_any_tracked_args()
     }
 
-    /// Whether `call_data` passes an imported variable into a parameter that
-    /// `callee` mutates, with explicit args starting at `arg_offset`.
+    /// Whether `call_data` passes an imported variable into a (transitively)
+    /// mutated parameter of `callee`, with explicit args starting at `arg_offset`.
     /// (Helper function for `call_mutates_imported_arg()` below.)
     fn callee_mutates_imported_arg(
         &self,
@@ -1452,7 +1568,7 @@ impl ProjectInfo {
         callee: &ModuleName,
         arg_offset: usize,
     ) -> bool {
-        let Some(callee_effs) = self.effect_table.get(callee) else {
+        let Some(mutated) = self.mutated_params.get(callee) else {
             return false;
         };
         let callee_module = self.functions.get(callee).copied().unwrap_or(*callee);
@@ -1460,13 +1576,19 @@ impl ProjectInfo {
             .analysis_map
             .get(&callee_module)
             .map(|m| &m.definitions);
-        callee_effs.iter().any(|eff| {
-            Self::mutated_param_receives_imported_arg(call_data, callee, eff, defs, arg_offset)
+        mutated.iter().any(|param| {
+            Self::mutated_param_receives_imported_arg(
+                call_data,
+                callee,
+                param.as_str(),
+                defs,
+                arg_offset,
+            )
         })
     }
 
     /// Whether `call_effect` passes an imported variable to a parameter the callee
-    /// mutates, i.e. running this call mutates imported state.
+    /// (transitively) mutates, i.e. running this call mutates imported state.
     fn call_mutates_imported_arg(&self, call_effect: &Effect) -> bool {
         let EffectData::Call(ref call_data) = call_effect.data else {
             return false;
