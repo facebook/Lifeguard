@@ -39,12 +39,14 @@ def showwarning(
 ) -> None: ...
 def formatwarning(
     message: Warning | str, category: type[Warning], filename: str, lineno: int, line: str | None = None
-) -> str: ...
+) -> str: no_effects()
+
+# Warning filters mutate interpreter-global state, but are safe for Lifeguard's import-time model.
 def filterwarnings(
     action: _ActionKind, message: str = "", category: type[Warning] = ..., module: str = "", lineno: int = 0, append: bool = False
-) -> None: ...
+) -> None: no_effects()
 def simplefilter(action: _ActionKind, category: type[Warning] = ..., lineno: int = 0, append: bool = False) -> None: no_effects()
-def resetwarnings() -> None: ...
+def resetwarnings() -> None: no_effects()
 
 class _OptionError(Exception): ...
 
@@ -79,7 +81,7 @@ class catch_warnings(Generic[_W_co]):
             category: type[Warning] = ...,
             lineno: int = 0,
             append: bool = False,
-        ) -> None: ...
+        ) -> None: no_effects()
         @overload
         def __init__(
             self: catch_warnings[list[WarningMessage]],
@@ -90,7 +92,7 @@ class catch_warnings(Generic[_W_co]):
             category: type[Warning] = ...,
             lineno: int = 0,
             append: bool = False,
-        ) -> None: ...
+        ) -> None: no_effects()
         @overload
         def __init__(
             self,
@@ -101,26 +103,30 @@ class catch_warnings(Generic[_W_co]):
             category: type[Warning] = ...,
             lineno: int = 0,
             append: bool = False,
-        ) -> None: ...
+        ) -> None: no_effects()
     else:
         @overload
-        def __init__(self: catch_warnings[None], *, record: Literal[False] = False, module: ModuleType | None = None) -> None: ...
+        def __init__(
+            self: catch_warnings[None], *, record: Literal[False] = False, module: ModuleType | None = None
+        ) -> None: no_effects()
         @overload
         def __init__(
             self: catch_warnings[list[WarningMessage]], *, record: Literal[True], module: ModuleType | None = None
-        ) -> None: ...
+        ) -> None: no_effects()
         @overload
-        def __init__(self, *, record: bool, module: ModuleType | None = None) -> None: ...
+        def __init__(self, *, record: bool, module: ModuleType | None = None) -> None: no_effects()
 
-    def __enter__(self) -> _W_co: ...
+    def __enter__(self) -> _W_co: no_effects()
     def __exit__(
         self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None
-    ) -> None: ...
+    ) -> None: no_effects()
 
 if sys.version_info >= (3, 13):
     class deprecated:
         message: LiteralString
         category: type[Warning] | None
         stacklevel: int
-        def __init__(self, message: LiteralString, /, *, category: type[Warning] | None = ..., stacklevel: int = 1) -> None: ...
-        def __call__(self, arg: _T, /) -> _T: ...
+        def __init__(
+            self, message: LiteralString, /, *, category: type[Warning] | None = ..., stacklevel: int = 1
+        ) -> None: no_effects()
+        def __call__(self, arg: _T, /) -> _T: no_effects()
