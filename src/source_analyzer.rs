@@ -401,18 +401,41 @@ impl<'a> SourceAnalyzer<'a> {
         let mut unsafe_indices: u64 = 0;
         let mut unsafe_keyword_names = Vec::new();
         let mut has_unsafe_kwargs_expansion = false;
+        let mut unsafe_args_expansion_min: Option<usize> = None;
         let mut forwarded_params: Vec<(ArgSlot, ModuleName)> = Vec::new();
 
         for (i, arg) in args.args.as_ref().iter().enumerate() {
-            match self.classify_call_arg(arg, output) {
+            // Unwrap starred args *x to classify the inner expression. A starred arg
+            // unpacks into positional slots starting at this position `i`, so its
+            // effect is tracked from index `i` onward rather than at a single slot.
+            let (is_starred, inner_arg) = match arg {
+                Expr::Starred(starred) => (true, &*starred.value),
+                _ => (false, arg),
+            };
+            match self.classify_call_arg(inner_arg, output) {
                 ArgClass::Imported => {
                     has_unsafe = true;
-                    if i < 64 {
+                    if is_starred {
+                        // Unsafe value unpacked via `*args` reaches positional slots
+                        // at or after `i`; args are visited in increasing index, so
+                        // the first star seen is the smallest such index.
+                        unsafe_args_expansion_min.get_or_insert(i);
+                    } else if i < 64 {
                         unsafe_indices |= 1u64 << i;
                     }
                 }
                 ArgClass::ForwardedParam(param) => {
-                    forwarded_params.push((ArgSlot::Positional(i), param));
+                    if !is_starred {
+                        // Record the positional slot the parameter is forwarded into,
+                        // so a mutation in the callee can be attributed back to it.
+                        forwarded_params.push((ArgSlot::Positional(i), param));
+                    } else {
+                        // Star-forwarding a parameter (`g(prefix, *param)`) spreads it
+                        // across the callee's positional slots from index `i` onward.
+                        // Record a StarExpansion so the forwarding is tracked and
+                        // conservatively matched against those parameters.
+                        forwarded_params.push((ArgSlot::StarExpansion(i), param));
+                    }
                 }
                 ArgClass::Other => {}
             }
@@ -448,6 +471,7 @@ impl<'a> SourceAnalyzer<'a> {
             unsafe_keyword_names,
             has_unsafe_kwargs_expansion,
         )
+        .with_args_expansion(unsafe_args_expansion_min)
         .with_forwarded_params(forwarded_params)
     }
 

@@ -984,8 +984,8 @@ fn iter_callees<'a>(
 /// - Cross-library forwarding is not tracked
 /// - Unknown callee (no EffectTable entry) similarly drops the edge, inconsistent with other places
 ///   where unknown => unsafe
-/// - `*args` forwarding is not tracked; `**kwargs` sets has_unsafe_kwargs_expansion flag
-///   separately.
+/// - `**kwargs` forwarding of a parameter is not tracked precisely; only named
+///   keyword arguments are added to edges.
 fn compute_mutated_params(
     effect_table: &EffectTable,
     functions: &AHashMap<ModuleName, ModuleName>,
@@ -1029,14 +1029,36 @@ fn compute_mutated_params(
                             .and_then(|module| analysis_map.get(module))
                             .and_then(|m| m.definitions.param_names.get(&owner));
                         for (slot, param) in forwarded {
-                            let target = match slot {
-                                ArgSlot::Keyword(name) => Some(*name),
-                                ArgSlot::Positional(idx) => owner_param_names
-                                    .and_then(|names| names.get(idx + arg_offset))
-                                    .map(ModuleName::from_name),
-                            };
-                            if let Some(target) = target {
-                                edges.push(((owner, target), (*scope, *param)));
+                            match slot {
+                                ArgSlot::Keyword(name) => {
+                                    edges.push(((owner, *name), (*scope, *param)));
+                                }
+                                ArgSlot::Positional(idx) => {
+                                    if let Some(target) = owner_param_names
+                                        .and_then(|names| names.get(idx + arg_offset))
+                                        .map(ModuleName::from_name)
+                                    {
+                                        edges.push(((owner, target), (*scope, *param)));
+                                    }
+                                }
+                                ArgSlot::StarExpansion(start) => {
+                                    // `*param` unpacks into the callee's positional
+                                    // parameters from the star's position onward, so
+                                    // forward to each parameter at or after that slot
+                                    // (offset by the receiver). Leading positional args
+                                    // before the star fill earlier params, which `*param`
+                                    // cannot reach.
+                                    if let Some(names) = owner_param_names {
+                                        edges.extend(names.iter().skip(start + arg_offset).map(
+                                            |name| {
+                                                (
+                                                    (owner, ModuleName::from_name(name)),
+                                                    (*scope, *param),
+                                                )
+                                            },
+                                        ));
+                                    }
+                                }
                             }
                         }
                     }
@@ -1535,9 +1557,12 @@ impl ProjectInfo {
         arg_offset: usize,
     ) -> bool {
         // Positional args: does the mutated param's index (minus the receiver
-        // offset) match an unsafe arg?
+        // offset) match an unsafe arg? With the *args lower bound recorded in
+        // has_unsafe_arg_index, a resolved index yields an exact answer.
+        let mut positional_unresolved = true;
         if let Some(param_idx) = defs.and_then(|d| d.get_param_index(callee, param_name)) {
             if let Some(arg_idx) = param_idx.checked_sub(arg_offset) {
+                positional_unresolved = false;
                 if call_data.has_unsafe_arg_index(arg_idx) {
                     return true;
                 }
@@ -1549,14 +1574,22 @@ impl ProjectInfo {
             if call_data.has_unsafe_keyword(param_name) {
                 return true;
             }
-            if call_data.has_precise_keyword_tracking() {
+            // Only rule this parameter out when BOTH keyword and positional
+            // tracking are precise; an imprecise *args expansion could still reach
+            // a positional parameter we couldn't pinpoint.
+            if call_data.has_precise_keyword_tracking() && call_data.has_precise_arg_tracking() {
                 return false;
             }
         }
 
-        // No positional/keyword match could be pinpointed; if the call has an
-        // unsafe arg we couldn't track precisely, match conservatively.
-        !call_data.has_any_tracked_args()
+        // No positional/keyword match could be pinpointed. Match conservatively
+        // only when the positional index couldn't be resolved and positional
+        // tracking was imprecise (an unsafe *args expansion at an unknown slot,
+        // mirroring the **kwargs handling above), or there is an unsafe arg we
+        // couldn't track at all. A resolved index is already answered exactly by
+        // has_unsafe_arg_index above, so it must not be re-flagged here.
+        (positional_unresolved && !call_data.has_precise_arg_tracking())
+            || !call_data.has_any_tracked_args()
     }
 
     /// Whether `call_data` passes an imported variable into a (transitively)

@@ -167,6 +167,14 @@ pub enum ArgSlot {
     Positional(usize),
     /// Keyword argument with the given name.
     Keyword(ModuleName),
+    /// A `*args` unpacking (`g(prefix, *param)`): the forwarded parameter is
+    /// spread across the callee's positional parameters starting at the star's
+    /// position (the given index). We can't tell which ones precisely, so it
+    /// conservatively maps to every positional parameter at or after that index.
+    /// This is the parameter-forwarding counterpart of
+    /// [`CallData::unsafe_args_expansion_min`], which models the same `*args`
+    /// construct when the unpacked value is an imported variable.
+    StarExpansion(usize),
 }
 
 #[derive(Debug, Eq, PartialEq, Hash, Clone)]
@@ -178,6 +186,11 @@ pub struct CallData {
     /// Set when a **kwargs expansion contains an imported variable,
     /// meaning we can't determine which specific keywords are unsafe.
     has_unsafe_kwargs_expansion: bool,
+    /// When a `*args` expansion contains an imported variable, the smallest
+    /// positional index its elements can reach (the star's position). Positional
+    /// indices at or above this are treated as unsafe. `None` means there is no
+    /// unsafe `*args` expansion.
+    unsafe_args_expansion_min: Option<usize>,
     /// Arguments that pass in one of the enclosing function's parameters:
     /// `(slot the parameter is passed into, the enclosing parameter's name)`.
     /// Used to track parameter forwarding, e.g.
@@ -198,8 +211,17 @@ impl CallData {
             unsafe_arg_indices,
             unsafe_keyword_names,
             has_unsafe_kwargs_expansion,
+            unsafe_args_expansion_min: None,
             forwarded_params: Vec::new(),
         }
+    }
+
+    /// Builder setter: record that a `*args` expansion containing an imported
+    /// variable reaches positional indices at or above `min` (the star's
+    /// position). `None` leaves positional tracking precise.
+    pub fn with_args_expansion(mut self, min: Option<usize>) -> Self {
+        self.unsafe_args_expansion_min = min;
+        self
     }
 
     pub fn with_forwarded_params(mut self, forwarded_params: Vec<(ArgSlot, ModuleName)>) -> Self {
@@ -213,6 +235,7 @@ impl CallData {
             unsafe_arg_indices: 0,
             unsafe_keyword_names: Vec::new(),
             has_unsafe_kwargs_expansion: false,
+            unsafe_args_expansion_min: None,
             forwarded_params: Vec::new(),
         }
     }
@@ -230,7 +253,8 @@ impl CallData {
     }
 
     pub fn has_unsafe_arg_index(&self, idx: usize) -> bool {
-        idx < 64 && (self.unsafe_arg_indices & (1u64 << idx)) != 0
+        self.unsafe_args_expansion_min.is_some_and(|min| idx >= min)
+            || (idx < 64 && (self.unsafe_arg_indices & (1u64 << idx)) != 0)
     }
 
     pub fn has_unsafe_keywords(&self) -> bool {
@@ -249,10 +273,19 @@ impl CallData {
         !self.has_unsafe_kwargs_expansion
     }
 
+    pub fn has_precise_arg_tracking(&self) -> bool {
+        self.unsafe_args_expansion_min.is_none()
+    }
+
+    pub fn has_unsafe_args_expansion(&self) -> bool {
+        self.unsafe_args_expansion_min.is_some()
+    }
+
     pub fn has_any_tracked_args(&self) -> bool {
         self.unsafe_arg_indices != 0
             || !self.unsafe_keyword_names.is_empty()
             || self.has_unsafe_kwargs_expansion
+            || self.unsafe_args_expansion_min.is_some()
     }
 }
 
@@ -482,6 +515,17 @@ mod tests {
 
         let with_expansion = CallData::new(false, 0, Vec::new(), true);
         assert!(with_expansion.has_any_tracked_args());
+
+        let with_args_expansion =
+            CallData::new(false, 0, Vec::new(), false).with_args_expansion(Some(0));
+        assert!(with_args_expansion.has_any_tracked_args());
+        assert!(with_args_expansion.has_unsafe_args_expansion());
+        assert!(!with_args_expansion.has_precise_arg_tracking());
+        // The expansion's lower bound gates which positional indices are unsafe.
+        assert!(with_args_expansion.has_unsafe_arg_index(0));
+        let from_two = CallData::new(false, 0, Vec::new(), false).with_args_expansion(Some(2));
+        assert!(!from_two.has_unsafe_arg_index(1));
+        assert!(from_two.has_unsafe_arg_index(2));
     }
 
     #[test]

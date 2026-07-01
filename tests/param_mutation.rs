@@ -1165,10 +1165,12 @@ f(A)  # E: imported-var-argument  # E: unsafe-function-call
     }
 
     #[test]
-    fn test_star_args_forwarding_not_tracked() {
-        // Known limitation: *args forwarding of a parameter is not tracked today.
-        // This documents current behavior (no error) as technical debt for future
-        // conservative handling. If we later treat *args as unsafe, update test.
+    fn test_star_args_forwarding_wrapped_in_list_not_tracked() {
+        // The parameter `x` is wrapped in a list literal before unpacking
+        // (`g(*[x])`), so the starred operand is the list, classified as a plain
+        // argument rather than a forwarded parameter — container contents are not
+        // inspected. The forwarding is therefore not tracked; the call is flagged
+        // only because `g` itself is unsafe (the unresolved `y.append` method call).
         let code = r#"
 from foo import A
 
@@ -1179,6 +1181,128 @@ def f(x):
     g(*[x])
 
 f(A)  # E: unsafe-function-call
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_star_args_forwarding_param_tracked() {
+        // `g(*x)` forwards the parameter `x` directly via star-unpacking. The
+        // callee is safe in isolation (subscript mutation only), so flagging
+        // depends entirely on the forwarding being tracked: `*x` is recorded as a
+        // StarExpansion and conservatively matched against `g`'s mutated
+        // positional parameter.
+        let code = r#"
+from foo import A
+
+def g(y):
+    y["k"] = 1
+
+def f(x):
+    g(*x)
+
+f(A)  # E: imported-var-argument
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_star_args_forwarding_after_prefix_no_false_positive() {
+        // `g({}, *x)` fills `a` with `{}`; the star starts at position 1, so `*x`
+        // cannot reach `a`. Mutating only `a` must not flag `x`.
+        let code = r#"
+from foo import A
+
+def g(a, b):
+    a["k"] = 1
+
+def f(x):
+    g({}, *x)
+
+f(A)
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_star_args_forwarding_after_prefix_reaches_param() {
+        // Same call shape, but the mutated param `b` is at position 1, which the
+        // star (starting at position 1) does reach, so `x` is flagged.
+        let code = r#"
+from foo import A
+
+def g(a, b):
+    b["k"] = 1
+
+def f(x):
+    g({}, *x)
+
+f(A)  # E: imported-var-argument
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_star_import_after_prefix_no_false_positive() {
+        // Imported value unpacked after a leading positional arg: `g({}, *A)` at
+        // module scope. `*A` starts at position 1 and cannot reach mutated `a`.
+        let code = r#"
+from foo import A
+
+def g(a, b):
+    a["k"] = 1
+
+g({}, *A)
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_star_import_after_prefix_reaches_param() {
+        // `g({}, *A)` where the mutated param `b` is at position 1, reached by the
+        // star, so the imported value is flagged.
+        let code = r#"
+from foo import A
+
+def g(a, b):
+    b["k"] = 1
+
+g({}, *A)  # E: imported-var-argument
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_star_args_import_in_list_literal_unsafe_callee() {
+        // An imported var inside a list literal passed via `*[A]` is not detected
+        // as an imported-var-argument: we unwrap only one Starred level to the list
+        // and do not recurse into its elements (a known limitation). The
+        // unsafe-function-call here is unrelated to the import — it comes from `f`
+        // itself (`args[0].append(1)` is an unresolved method call) and would fire
+        // for any argument. Future work could recurse into containers for precise
+        // imported-var-argument flagging.
+        let code = r#"
+from foo import A
+
+def f(*args):
+    args[0].append(1)
+
+f(*[A])  # E: unsafe-function-call
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_star_args_import_in_list_literal_safe_callee() {
+        // Same list-literal limitation, with a safe callee: the imported var is not
+        // detected and the body has no side effect, so nothing is flagged.
+        let code = r#"
+from foo import A
+
+def f(*args):
+    pass
+
+f(*[A])
 "#;
         check(code);
     }
