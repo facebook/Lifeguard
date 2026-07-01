@@ -843,7 +843,9 @@ f(A, y=B)  # E: imported-var-argument
 
     #[test]
     fn test_too_many_args() {
-        // A call with more than 64 positional args triggers a too-many-args error.
+        // A call with more than 64 positional args to a function we can't vouch
+        // for triggers a too-many-args error: the args overflow the tracking
+        // bitset and no stub provides the callee's effect.
         let args = (0..65)
             .map(|i| format!("{}", i))
             .collect::<Vec<_>>()
@@ -854,6 +856,27 @@ def f(*args):
     pass
 
 f({})  # E: too-many-args
+"#,
+            args
+        );
+        check(&code);
+    }
+
+    #[test]
+    fn test_too_many_args_stub_callee_is_fine() {
+        // More than 64 args is fine when a stub provides the callee's effect:
+        // the stub's effect governs instead of the conservative fallback. This
+        // mirrors the module-scope `thrift.python.types.fill_specs(*specs)` call
+        // emitted by generated thrift-python service modules.
+        let args = (0..65)
+            .map(|i| format!("{}", i))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let code = format!(
+            r#"
+import lifeguard_test
+
+lifeguard_test.bar({})
 "#,
             args
         );

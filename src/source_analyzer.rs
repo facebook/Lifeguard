@@ -397,11 +397,6 @@ impl<'a> SourceAnalyzer<'a> {
     }
 
     fn check_call_args(&self, args: &Arguments, output: &mut ModuleEffects) -> CallData {
-        if args.args.len() > 64 {
-            let eff = Effect::new(EffectKind::TooManyArgs, ModuleName::empty(), args.range());
-            self.add_effect(eff, output);
-        }
-
         let mut has_unsafe = false;
         let mut unsafe_indices: u64 = 0;
         let mut unsafe_keyword_names = Vec::new();
@@ -454,6 +449,18 @@ impl<'a> SourceAnalyzer<'a> {
             has_unsafe_kwargs_expansion,
         )
         .with_forwarded_params(forwarded_params)
+    }
+
+    /// True when a stub defines the called function, so the stub's declared
+    /// effect should govern the call rather than a conservative fallback.
+    fn call_effect_from_stub(&self, fname: &ModuleName) -> bool {
+        let Some((module, name)) = fname.split_attr() else {
+            return false;
+        };
+        self.info
+            .stubs
+            .get(&module)
+            .is_some_and(|stub| stub.definitions.get(&module, &name).is_some())
     }
 
     fn check_unresolved_call(
@@ -567,7 +574,22 @@ impl<'a> SourceAnalyzer<'a> {
             }
         }
 
-        let Some((res, fname)) = self.resolve_function_name(func, args, output) else {
+        let resolved = self.resolve_function_name(func, args, output);
+
+        // >64 positional args overflow the `unsafe_indices` bitset, so we fall
+        // back to a conservative `TooManyArgs` error — unless a stub provides the
+        // callee's effect, in which case that effect governs instead.
+        if let Some(a) = args
+            && a.args.len() > 64
+            && !resolved
+                .as_ref()
+                .is_some_and(|(_, fname)| self.call_effect_from_stub(fname))
+        {
+            let eff = Effect::new(EffectKind::TooManyArgs, ModuleName::empty(), a.range());
+            self.add_effect(eff, output);
+        }
+
+        let Some((res, fname)) = resolved else {
             return;
         };
 
