@@ -134,6 +134,10 @@ const SAFE_FUNCTIONS_ARRAY: &[&str] = &[
     // and assigns to fn.__doc__ on the decorated function only.
     "transformers.models.auto.configuration_auto.replace_list_option_in_docstrings",
     "artillery.artillery2.api.cython.agent_tracing.devmate.decorators.devmate_trace_action",
+    // Sibling of devmate_trace_action with the identical shape: wrapped by
+    // @when_tracing_enabled (which defers the JK/host_environment read to call
+    // time) and at decoration only builds/returns a functools.wraps closure.
+    "artillery.artillery2.api.cython.agent_tracing.devmate.decorators.devmate_trace_step",
     // Runs an async function synchronously.
     "libfb.py.asyncio.await_utils.await_sync_decorator",
     // Retry decorator factory.

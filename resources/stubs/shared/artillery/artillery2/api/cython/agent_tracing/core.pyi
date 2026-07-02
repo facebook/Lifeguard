@@ -14,3 +14,11 @@
 
 # trace_point logs the trace point at call time; decoration has no effects.
 def trace_point(name, attributes=None): no_effects()
+
+# get_trace_id delegates to _backend.get_trace_id_impl(), a pure read of the
+# ambient trace context that returns the id (or None). No mutation or I/O.
+def get_trace_id(): no_effects()
+
+# trace_function_block reads func.__qualname__ and returns a functools.wraps
+# wrapper; all block-scope tracing is deferred to call time.
+def trace_function_block(func): no_effects()
