@@ -140,6 +140,18 @@ const SAFE_FUNCTIONS_ARRAY: &[&str] = &[
     "fblearner.flow.util.python_utils.call_with_retries",
     //  pure functools.wraps closure
     "devai.src.core.model.experimental.base.reclassify_class_errors",
+    // tenacity retry decorator factory. At decoration time it only constructs a
+    // Retrying/AsyncRetrying controller from the captured args and returns a
+    // functools.wraps wrapper (BaseRetrying.wraps). No global mutation, I/O, or
+    // registration happens until the decorated function is actually called.
+    "tenacity.retry",
+    // Pure logger factory: returns a memoized logging.getLogger(...). Reads
+    // sys.argv/__file__ only; no module-state mutation, I/O, or registration.
+    "datainfra.spark.common.logger.get_logger",
+    // Pure functools.wraps decorator factory: builds sync/async wrapper closures
+    // that log the wrapped function's return value at call time. Nothing runs at
+    // decoration time beyond closure construction.
+    "feed_ranking_infra.vanguard.logtools.log_return_value",
 ];
 
 /// Copy of SAFE_FUNCTIONS_ARRAY as a global set for faster searching.
