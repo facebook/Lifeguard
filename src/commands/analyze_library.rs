@@ -15,7 +15,7 @@ use tracing::warn;
 
 use crate::cache::LibraryCache;
 use crate::debug::report_peak_memory;
-use crate::project::CachingMode;
+use crate::project::ExecutionMode;
 use crate::runner::DEFAULT_PYTHON_VERSION;
 use crate::runner::Options;
 use crate::runner::parse_python_version;
@@ -113,7 +113,7 @@ pub fn run(args: AnalyzeLibraryArgs) -> Result<()> {
     } else {
         let root_dir = detect_root_dir(&src_map)?;
 
-        let result = run_pipeline(src_map, &root_dir, CachingMode::Enabled, &options)?;
+        let result = run_pipeline(src_map, &root_dir, ExecutionMode::Incremental, &options)?;
 
         time("Building cache", || {
             LibraryCache::build(

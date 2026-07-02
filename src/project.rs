@@ -62,9 +62,12 @@ pub type SideEffectMap = AHashMap<ModuleName, AHashSet<ModuleName>>;
 pub type ParseErrors = DashMap<ModuleName, String>;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum CachingMode {
-    Enabled,
-    Disabled,
+pub enum ExecutionMode {
+    /// Runs a map/reduce pipeline with per-library results cached in the map phase,
+    /// so that we can perform an incremental analysis when something changes.
+    Incremental,
+    /// Single-pass whole-program analysis, does not cache anything.
+    WholeProgram,
 }
 type ScopeImportsMap = AHashMap<ModuleName, AHashMap<ModuleName, AHashSet<ModuleName>>>;
 
@@ -263,8 +266,8 @@ impl GlobalAnalysisState {
 
     /// Decompose FQN-keyed function safety verdicts into per-module local-name
     /// maps and embed them in the corresponding ModuleSafety entries.
-    fn into_safety_map(self, caching: CachingMode) -> SafetyMap {
-        if caching == CachingMode::Enabled {
+    fn into_safety_map(self, mode: ExecutionMode) -> SafetyMap {
+        if mode == ExecutionMode::Incremental {
             self.function_safety.par_iter().for_each(|entry| {
                 let fqn = entry.key();
                 for (parent, dot_pos) in fqn.iter_parents() {
@@ -384,7 +387,7 @@ pub fn run_analysis(
     exports: &Exports,
     import_graph: &ImportGraph,
     config: &AnalysisConfig,
-    caching: CachingMode,
+    mode: ExecutionMode,
 ) -> AnalysisOutput {
     let (analysis_map, parse_errors) = analyze_all(sources, exports, import_graph, config);
     let side_effect_imports = time("  Computing side-effect imports", || {
@@ -394,7 +397,7 @@ pub fn run_analysis(
         ProjectInfo::new(analysis_map, exports)
     });
     let safety_map = time("  Collecting errors", || {
-        info.collect_errors_from_project(caching)
+        info.collect_errors_from_project(mode)
     });
     time("  Filtering out stubs", || {
         filter_out_stubs(&safety_map, sources)
@@ -1178,14 +1181,14 @@ impl ProjectInfo {
         }
     }
 
-    pub fn collect_errors_from_project(&self, caching: CachingMode) -> SafetyMap {
+    pub fn collect_errors_from_project(&self, mode: ExecutionMode) -> SafetyMap {
         let state = GlobalAnalysisState::new();
         state.init_safety_map(&self.analysis_map);
 
         // Determinism fix: compute all function/constructor safety verdicts up
         // front, BEFORE the module-scope error pass, so that pass only ever reads
         // a complete, order-independent verdict cache.
-        if caching == CachingMode::Enabled {
+        if mode == ExecutionMode::Incremental {
             time("    Marking recursive functions", || {
                 self.mark_recursive_functions_unsafe(&state)
             });
@@ -1220,7 +1223,7 @@ impl ProjectInfo {
             }
         });
 
-        state.into_safety_map(caching)
+        state.into_safety_map(mode)
     }
 
     /// Deterministically mark every function/class that participates in a call cycle as `Unsafe`,

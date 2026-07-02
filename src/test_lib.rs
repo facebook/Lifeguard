@@ -277,7 +277,7 @@ fn check_output_with_config(
                 &exports,
                 &import_graph,
                 &config,
-                project::CachingMode::Disabled,
+                project::ExecutionMode::WholeProgram,
             )
             .safety_map
         }

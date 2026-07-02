@@ -107,7 +107,7 @@ mod tests {
             &exports,
             &import_graph,
             &config,
-            project::CachingMode::Disabled,
+            project::ExecutionMode::WholeProgram,
         );
         let mut analysis =
             LifeGuardAnalysis::new(output.safety_map, import_graph, &exports, &test_options());
@@ -815,7 +815,7 @@ mod tests {
             &exports,
             &import_graph,
             &config,
-            project::CachingMode::Disabled,
+            project::ExecutionMode::WholeProgram,
         );
         let mut analysis = LifeGuardAnalysis::new(
             output.safety_map,
@@ -1030,7 +1030,7 @@ mod tests {
             &exports,
             &import_graph,
             &config,
-            project::CachingMode::Disabled,
+            project::ExecutionMode::WholeProgram,
         );
         for module_name in ["a", "b", "c"] {
             let name = ModuleName::from_str(module_name);
@@ -1120,7 +1120,7 @@ mod tests {
             &exports,
             &import_graph,
             &config,
-            project::CachingMode::Disabled,
+            project::ExecutionMode::WholeProgram,
         );
 
         for entry in output.parse_errors.iter() {

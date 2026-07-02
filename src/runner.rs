@@ -20,7 +20,7 @@ use crate::module_safety;
 use crate::output::LifeGuardAnalysis;
 use crate::output::write_verbose;
 use crate::project;
-use crate::project::CachingMode;
+use crate::project::ExecutionMode;
 use crate::pyrefly::sys_info::PythonVersion;
 use crate::source_map::SourceMap;
 use crate::source_map::Sources;
@@ -96,7 +96,7 @@ pub struct PipelineResult {
 pub fn run_pipeline(
     src_map: SourceMap,
     root_dir: &std::path::Path,
-    caching: CachingMode,
+    mode: ExecutionMode,
     options: &Options,
 ) -> Result<PipelineResult> {
     let config = AnalysisConfig::with_python_version(options.python_version, options.main_module);
@@ -111,7 +111,7 @@ pub fn run_pipeline(
     report_memory("After creating import graph and exports");
 
     let output = time("Analyzing AST", || {
-        project::run_analysis(&sources, &exports, &import_graph, &config, caching)
+        project::run_analysis(&sources, &exports, &import_graph, &config, mode)
     });
     report_memory("After analyzing AST");
 
@@ -141,7 +141,7 @@ pub fn process_source_map(
     root_dir: &std::path::Path,
     options: &Options,
 ) -> Result<LifeGuardAnalysis> {
-    let result = run_pipeline(src_map, root_dir, CachingMode::Disabled, options)?;
+    let result = run_pipeline(src_map, root_dir, ExecutionMode::WholeProgram, options)?;
     let PipelineResult {
         sources,
         safety_map,

@@ -11,7 +11,7 @@ mod tests {
     use lifeguard::hasher::AHashSet;
     use lifeguard::imports::ImportGraph;
     use lifeguard::project;
-    use lifeguard::project::CachingMode;
+    use lifeguard::project::ExecutionMode;
     use lifeguard::pyrefly::module_name::ModuleName;
     use lifeguard::pyrefly::sys_info::PythonVersion;
     use lifeguard::test_lib::TestSources;
@@ -29,7 +29,7 @@ mod tests {
             &exports,
             &import_graph,
             &config,
-            CachingMode::Disabled,
+            ExecutionMode::WholeProgram,
         );
 
         output

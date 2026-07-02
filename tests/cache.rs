@@ -52,7 +52,7 @@ mod tests {
             &exports,
             &import_graph,
             &config,
-            project::CachingMode::Enabled,
+            project::ExecutionMode::Incremental,
         );
         LibraryCache::build(
             &output.safety_map,

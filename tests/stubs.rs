@@ -133,7 +133,7 @@ Set.register(MyContainer)
             &exports,
             &import_graph,
             &config,
-            project::CachingMode::Disabled,
+            project::ExecutionMode::WholeProgram,
         );
         assert!(
             result.safety_map.get(&ModuleName::from_str("b")).is_some(),
