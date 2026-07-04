@@ -125,7 +125,7 @@ name = "stubs"
 path = "stubs.rs"
 
 [dev-dependencies]
-anyhow = "1.0.102"
+anyhow = "1.0.103"
 clap = { version = "4.6.0", features = ["derive", "env", "string", "unicode", "wrap_help"] }
 lifeguard = { path = "../src" }
 ruff_text_size = { git = "https://github.com/astral-sh/ruff/", rev = "db5aa0a5f1b92cb91d910bf0866a967554dd94f5" }
