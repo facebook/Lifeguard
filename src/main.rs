@@ -11,6 +11,7 @@ use clap::Subcommand;
 use lifeguard::commands::analyze::AnalyzeArgs;
 use lifeguard::commands::analyze_binary::AnalyzeBinaryArgs;
 use lifeguard::commands::analyze_library::AnalyzeLibraryArgs;
+use lifeguard::commands::compare_paths::ComparePathsArgs;
 use lifeguard::commands::gen_source_db::GenSourceDbArgs;
 use lifeguard::commands::run_tree::RunTreeArgs;
 use lifeguard::commands::show_effects::ShowEffectsArgs;
@@ -39,6 +40,8 @@ enum Commands {
     ShowEffects(ShowEffectsArgs),
     /// Generate a source DB JSON file from a directory tree
     GenSourceDb(GenSourceDbArgs),
+    /// Compare single-pass and incremental outputs for the same source DB (CI check)
+    ComparePaths(ComparePathsArgs),
 }
 
 fn main() -> Result<()> {
@@ -53,6 +56,7 @@ fn main() -> Result<()> {
         Some(Commands::RunTree(args)) => lifeguard::commands::run_tree::run(args),
         Some(Commands::ShowEffects(args)) => lifeguard::commands::show_effects::run(args),
         Some(Commands::GenSourceDb(args)) => lifeguard::commands::gen_source_db::run(args),
+        Some(Commands::ComparePaths(args)) => lifeguard::commands::compare_paths::run(args),
         None => lifeguard::commands::analyze::run(args.analyze),
     }
 }
