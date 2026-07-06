@@ -71,6 +71,20 @@ impl Graph {
         }
     }
 
+    /// Add an edge if it does not already exist and is not a self-edge.
+    /// Returns `true` if the edge was added, `false` otherwise.
+    /// The `from` node is expected to exist in the graph already.
+    /// When the `to` module is not present, no edge is created and `false` is returned.
+    pub(crate) fn try_add_edge(&mut self, from: &ModuleName, to: &ModuleName) -> bool {
+        if from == to {
+            return false;
+        }
+        if self.has_edge(from, to) {
+            return false;
+        }
+        self.add_edge(from, to)
+    }
+
     /// Get a parallel iterator over all nodes in the graph.
     pub fn nodes_par_iter(&self) -> impl ParallelIterator<Item = (&ModuleName, &NodeIndex)> {
         self.nodes.par_iter()
@@ -113,8 +127,7 @@ impl Graph {
     }
 
     /// Check if an edge exists in the graph.
-    #[cfg(test)]
-    pub(crate) fn has_edge(&self, from: &ModuleName, to: &ModuleName) -> bool {
+    fn has_edge(&self, from: &ModuleName, to: &ModuleName) -> bool {
         let Some(&p) = self.nodes.get(from) else {
             return false;
         };

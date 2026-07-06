@@ -262,6 +262,26 @@ impl ImportGraph {
             .get(from)
             .is_some_and(|mods| mods.contains(module))
     }
+
+    /// Re-resolve missing imports to their nearest known module (the nearest
+    /// ancestor package present in the graph). A resolved import becomes a real edge to
+    /// that ancestor; unresolvable ones stay missing.
+    pub fn resolve_missing_to_known(&mut self) {
+        let known: AHashSet<ModuleName> = self.graph.node_names().copied().collect();
+        let missing = std::mem::take(&mut self.missing);
+        for (from, targets) in missing {
+            for target in targets {
+                match resolve_to_known_module(&target, &known) {
+                    Some(resolved) => {
+                        self.graph.try_add_edge(&from, &resolved);
+                    }
+                    None => {
+                        self.missing.entry(from).or_default().insert(target);
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[doc(hidden)]

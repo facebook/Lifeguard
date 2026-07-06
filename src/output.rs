@@ -472,10 +472,14 @@ fn propagate_implicit_imports_along_paths(
 impl LifeGuardAnalysis {
     pub fn new(
         safety_map: SafetyMap,
-        import_graph: ImportGraph,
+        mut import_graph: ImportGraph,
         exports: &Exports,
         options: &Options,
     ) -> Self {
+        // Resolve missing imports to their nearest known module, otherwise name-imports and
+        // submodules of known packages are treated as missing and conservatively forced eager.
+        // (the incremental path does this via `resolve_cross_library_errors`).
+        import_graph.resolve_missing_to_known();
         let re_export_map_builder =
             |failing: &SmallSet<ModuleName>| build_re_export_map(exports, failing);
         Self::build(safety_map, import_graph, options, re_export_map_builder)

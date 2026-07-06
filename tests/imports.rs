@@ -334,4 +334,69 @@ else:
             "import of parse-failed submodule should be in the missing set"
         );
     }
+
+    #[test]
+    fn test_resolve_missing_adds_edge_to_known_ancestor() {
+        let mut g = ImportGraph::new();
+        let a = ModuleName::from_str("a");
+        let c = ModuleName::from_str("c");
+        g.graph.add_node(&a);
+        g.graph.add_node(&c);
+        // `a` imports `c.d.e`, which is not a node; `c` is its nearest known ancestor.
+        g.add_missing(&a, ModuleName::from_str("c.d.e"));
+        g.resolve_missing_to_known();
+        assert_deps(&g, "a", vec!["c"]);
+        assert!(
+            !g.has_missing_import(&a, &ModuleName::from_str("c.d.e")),
+            "resolved import should no longer be missing"
+        );
+    }
+
+    #[test]
+    fn test_resolve_missing_unresolvable_stays_missing() {
+        let mut g = ImportGraph::new();
+        let a = ModuleName::from_str("a");
+        g.graph.add_node(&a);
+        // No ancestor of `zzz.qqq` is a node, so it cannot be resolved.
+        g.add_missing(&a, ModuleName::from_str("zzz.qqq"));
+        g.resolve_missing_to_known();
+        assert_deps(&g, "a", vec![]);
+        assert!(
+            g.has_missing_import(&a, &ModuleName::from_str("zzz.qqq")),
+            "unresolvable import should remain in the missing set"
+        );
+    }
+
+    #[test]
+    fn test_resolve_missing_does_not_create_self_loop() {
+        let mut g = ImportGraph::new();
+        let xy = ModuleName::from_str("x.y");
+        g.graph.add_node(&xy);
+        // A name-import like `from x.y import Foo`: `x.y.Foo` resolves to `x.y`, the
+        // importing module itself. This must not add a self-loop edge.
+        g.add_missing(&xy, ModuleName::from_str("x.y.Foo"));
+        g.resolve_missing_to_known();
+        assert_deps(&g, "x.y", vec![]);
+        assert!(
+            !g.has_missing_import(&xy, &ModuleName::from_str("x.y.Foo")),
+            "self-resolving import should no longer be missing"
+        );
+    }
+
+    #[test]
+    fn test_resolve_missing_does_not_duplicate_existing_edge() {
+        let mut g = ImportGraph::new();
+        let a = ModuleName::from_str("a");
+        let b = ModuleName::from_str("b");
+        g.graph.add_node(&a);
+        g.graph.add_node(&b);
+        // `a` already imports `b` directly.
+        g.graph.add_edge(&a, &b);
+        // A missing `b.sub` resolves to `b`, which is already a neighbor; resolving it
+        // must not create a parallel edge.
+        g.add_missing(&a, ModuleName::from_str("b.sub"));
+        g.resolve_missing_to_known();
+        // `get_imports` yields one entry per edge, so a parallel edge would show `b` twice.
+        assert_deps(&g, "a", vec!["b"]);
+    }
 }
