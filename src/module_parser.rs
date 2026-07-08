@@ -166,14 +166,15 @@ pub fn read_and_parse_source_with_version(
     ))
 }
 
-/// Given the text contents of a file, compute a sorted array of byte positions where all the
-/// line numbers are.
+/// Sorted byte offsets of every `\n` in `source`. Scans raw bytes, not `chars()`, so offsets match
+/// ruff's byte-based AST positions — `\n` (0x0A) never occurs inside a multi-byte UTF-8 sequence.
 fn compute_newline_positions(source: &str) -> Vec<u32> {
     source
-        .chars()
+        .as_bytes()
+        .iter()
         .enumerate()
-        .filter_map(|(index, ch)| (ch == '\n').then_some(index as u32))
-        .collect::<Vec<_>>()
+        .filter_map(|(index, &byte)| (byte == b'\n').then_some(index as u32))
+        .collect()
 }
 
 #[cfg(test)]
@@ -231,6 +232,25 @@ mod tests {
             m.byte_to_line_number(100),
             3,
             "past EOF returns last line number"
+        );
+    }
+
+    #[test]
+    fn non_ascii_newlines_are_byte_offsets() {
+        // "é" is 2 bytes (0xC3 0xA9) in UTF-8, so byte layout of "é\nx" is:
+        //   é = bytes 0..2, '\n' = byte 2, 'x' = byte 3
+        // Newline positions must be byte offsets (matching ruff), not char indices.
+        let m = make_parsed("é\nx");
+        assert_eq!(
+            m.newline_positions,
+            vec![2],
+            "newline stored as byte offset (2), not char index (1)"
+        );
+        assert_eq!(m.byte_to_line_number(0), 1, "byte 0 (inside é) is line 1");
+        assert_eq!(
+            m.byte_to_line_number(3),
+            2,
+            "byte 3 (x, after newline) is line 2"
         );
     }
 
