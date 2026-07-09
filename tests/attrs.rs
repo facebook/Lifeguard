@@ -204,4 +204,22 @@ foo.bar # E: unknown-object
 "#;
         check(code);
     }
+
+    #[test]
+    fn test_comprehension_targets_resolve_for_attr_access() {
+        let code = r#"
+class Message:
+    value = "message"
+
+messages = [Message()]
+
+list_values = [message.value for message in messages]
+set_values = {message.value for message in messages}
+dict_values = {message.value: message for message in messages}
+generator_values = (message.value for message in messages)
+message.UH_OH = 5
+message.UH_OH # E: unknown-object
+"#;
+        check(code);
+    }
 }

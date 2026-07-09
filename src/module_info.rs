@@ -14,6 +14,8 @@ use ruff_python_ast::StmtAssign;
 use ruff_python_ast::StmtClassDef;
 use ruff_python_ast::StmtFunctionDef;
 use ruff_python_ast::name::Name;
+use ruff_text_size::Ranged;
+use ruff_text_size::TextRange;
 
 use crate::bindings::BindingsTable;
 use crate::class::Class;
@@ -74,6 +76,23 @@ impl DefinitionTable {
         defs.definitions.get(name)
     }
 
+    fn get_at_range(
+        &self,
+        scope: &ModuleName,
+        name: &Name,
+        lookup_range: TextRange,
+    ) -> Option<&Definition> {
+        let defs = self.definitions.get(scope)?;
+        defs.definitions.get(name).or_else(|| {
+            defs.comp_targets.get(name)?.iter().find_map(|target| {
+                target
+                    .comp_range
+                    .contains_range(lookup_range)
+                    .then_some(&target.definition)
+            })
+        })
+    }
+
     pub fn get_param_index(&self, func_scope: &ModuleName, param_name: &str) -> Option<usize> {
         let names = self.param_names.get(func_scope)?;
         names.iter().position(|n| n.as_str() == param_name)
@@ -81,7 +100,7 @@ impl DefinitionTable {
 
     pub fn resolve(&self, cursor: &Cursor, value: &Expr) -> Option<ResolvedName<'_>> {
         let name = value.base_name()?;
-        let mut res = self.resolve_name(cursor, name)?;
+        let mut res = self.resolve_name(cursor, name, value.range())?;
         res.expr_full_name = value.full_name();
         Some(res)
     }
@@ -99,12 +118,18 @@ impl DefinitionTable {
     // Look up a name following Python's LEGB (Local-Enclosing-Global-Builtin) rule.
     // Class scopes are skipped when looking up from an enclosed function scope.
     // Builtins are handled separately in ModuleInfo::resolve_builtins.
-    fn resolve_name(&self, cursor: &Cursor, name: Name) -> Option<ResolvedName<'_>> {
+    // `lookup_range` bounds comprehension-target visibility to the comprehension body.
+    fn resolve_name(
+        &self,
+        cursor: &Cursor,
+        name: Name,
+        lookup_range: TextRange,
+    ) -> Option<ResolvedName<'_>> {
         for scope in cursor.legb_scope_names_iter() {
-            if let Some(def) = self.get(&scope, &name) {
+            if let Some(definition) = self.get_at_range(&scope, &name, lookup_range) {
                 return Some(ResolvedName {
                     name,
-                    definition: def,
+                    definition,
                     scope,
                     scope_definitions: &self.definitions[&scope],
                     expr_full_name: None,
@@ -591,7 +616,8 @@ class C:
                     cursor.enter_function_scope_name(Name::new(scope_name));
                 }
             }
-            info.definitions.resolve_name(&cursor, Name::new(name))
+            info.definitions
+                .resolve_name(&cursor, Name::new(name), TextRange::default())
         };
         let is_reachable = |scopes: &[&str], name: &str| -> bool {
             info.is_reachable(&resolve(scopes, name).unwrap())

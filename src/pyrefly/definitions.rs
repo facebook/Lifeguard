@@ -18,7 +18,11 @@ use ruff_python_ast::ExceptHandler;
 use ruff_python_ast::Expr;
 use ruff_python_ast::ExprAttribute;
 use ruff_python_ast::ExprCall;
+use ruff_python_ast::ExprDictComp;
+use ruff_python_ast::ExprGenerator;
+use ruff_python_ast::ExprListComp;
 use ruff_python_ast::ExprName;
+use ruff_python_ast::ExprSetComp;
 use ruff_python_ast::Identifier;
 use ruff_python_ast::Operator;
 use ruff_python_ast::Pattern;
@@ -27,6 +31,7 @@ use ruff_python_ast::StmtClassDef;
 use ruff_python_ast::StmtExpr;
 use ruff_python_ast::StmtFunctionDef;
 use ruff_python_ast::name::Name;
+use ruff_text_size::Ranged;
 use ruff_text_size::TextRange;
 use starlark_map::small_map::Entry;
 use starlark_map::small_map::SmallMap;
@@ -127,6 +132,10 @@ pub struct Definitions {
     /// All the names defined in this scope, including mutable captures
     /// (`global` and `nonlocal` declarations)
     pub definitions: SmallMap<Name, Definition>,
+    /// Comprehension generator targets (e.g. `x` in `[... for x in xs]`), kept
+    /// out of `definitions` so they don't leak into the enclosing scope but stay
+    /// resolvable within the comprehension's range.
+    pub comp_targets: SmallMap<Name, Vec<CompTarget>>,
     /// All the modules that are imported with `from x import *`.
     pub import_all: SmallMap<ModuleName, TextRange>,
     /// The `__all__` variable contents.
@@ -144,6 +153,12 @@ pub struct Definitions {
     // LIFEGUARD: We do not use special exports
     // /// Special exports defined in this module
     // pub special_exports: SmallMap<Name, SpecialExport>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CompTarget {
+    pub definition: Definition,
+    pub comp_range: TextRange,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -416,6 +431,25 @@ impl<'a> DefinitionsBuilder<'a> {
         };
         Ast::expr_lvalue(x, &mut add_name);
         self.named_in_expr(x);
+    }
+
+    fn comp_target_lvalue(&mut self, target: &Expr, comp_range: TextRange) {
+        Ast::expr_lvalue(target, &mut |x: &ExprName| {
+            let definition = Definition {
+                range: x.range,
+                style: DefinitionStyle::Unannotated(SymbolKind::Variable),
+                needs_anywhere: false,
+                docstring_range: None,
+            };
+            self.inner
+                .comp_targets
+                .entry(x.id.clone())
+                .or_default()
+                .push(CompTarget {
+                    definition,
+                    comp_range,
+                });
+        });
     }
 
     fn pattern(&mut self, x: &Pattern) {
@@ -759,12 +793,17 @@ impl<'a> DefinitionsBuilder<'a> {
             Expr::Named(expr_named) => {
                 self.expr_lvalue(&expr_named.target);
             }
-            Expr::Lambda(..)
-            | Expr::SetComp(..)
-            | Expr::DictComp(..)
-            | Expr::ListComp(..)
-            | Expr::Generator(..) => {
-                // These expressions define a scope, so walrus operators only define a name
+            Expr::ListComp(ExprListComp { generators, .. })
+            | Expr::SetComp(ExprSetComp { generators, .. })
+            | Expr::DictComp(ExprDictComp { generators, .. })
+            | Expr::Generator(ExprGenerator { generators, .. }) => {
+                let comp_range = x.range();
+                for generator in generators {
+                    self.comp_target_lvalue(&generator.target, comp_range);
+                }
+            }
+            Expr::Lambda(..) => {
+                // Lambdas define a scope, so walrus operators only define a name
                 // within that scope, not in the surrounding statement's scope.
             }
             _ => x.recurse(&mut |x| self.named_in_expr(x)),
