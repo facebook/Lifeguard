@@ -266,7 +266,11 @@ impl GlobalAnalysisState {
 
     /// Decompose FQN-keyed function safety verdicts into per-module local-name
     /// maps and embed them in the corresponding ModuleSafety entries.
-    fn into_safety_map(self, mode: ExecutionMode) -> SafetyMap {
+    fn into_safety_map(
+        self,
+        mode: ExecutionMode,
+        mutated_params: &AHashMap<ModuleName, AHashMap<String, Option<usize>>>,
+    ) -> SafetyMap {
         if mode == ExecutionMode::Incremental {
             self.function_safety.par_iter().for_each(|entry| {
                 let fqn = entry.key();
@@ -274,9 +278,13 @@ impl GlobalAnalysisState {
                     if let Some(mut safety_entry) = self.safety_map.get_mut(&parent) {
                         if let SafetyResult::Ok(module_safety) = safety_entry.value_mut() {
                             let local_name = &fqn.as_str()[dot_pos + 1..];
+                            let mut info = entry.value().clone();
+                            if let Some(mutated) = mutated_params.get(fqn) {
+                                info.mutated_params = mutated.clone();
+                            }
                             module_safety
                                 .function_safety
-                                .insert(local_name.to_string(), entry.value().clone());
+                                .insert(local_name.to_string(), info);
                         }
                         break;
                     }
@@ -1223,7 +1231,38 @@ impl ProjectInfo {
             }
         });
 
-        state.into_safety_map(mode)
+        let mutated_params = if mode == ExecutionMode::Incremental {
+            self.resolve_cached_mutated_params()
+        } else {
+            AHashMap::new()
+        };
+        state.into_safety_map(mode, &mutated_params)
+    }
+
+    /// Resolve each mutated parameter to its positional index using the callee's
+    /// definition table.
+    /// Keyed by function FQN to match `GlobalAnalysisState::function_safety`.
+    fn resolve_cached_mutated_params(
+        &self,
+    ) -> AHashMap<ModuleName, AHashMap<String, Option<usize>>> {
+        self.mutated_params
+            .iter()
+            .map(|(func, params)| {
+                let callee_module = self.functions.get(func).copied().unwrap_or(*func);
+                let defs = self
+                    .analysis_map
+                    .get(&callee_module)
+                    .map(|m| &m.definitions);
+                let resolved = params
+                    .iter()
+                    .map(|param| {
+                        let idx = defs.and_then(|d| d.get_param_index(func, param.as_str()));
+                        (param.as_str().to_string(), idx)
+                    })
+                    .collect();
+                (*func, resolved)
+            })
+            .collect()
     }
 
     /// Deterministically mark every function/class that participates in a call cycle as `Unsafe`,

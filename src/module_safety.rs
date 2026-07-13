@@ -12,7 +12,9 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::errors::SafetyError;
+use crate::hasher::AHashMap;
 use crate::hasher::AHashSet;
+use crate::hasher::HashMapExt;
 use crate::hasher::HashSetExt;
 
 /// Safety verdict for a single function from call graph analysis.
@@ -48,6 +50,9 @@ pub struct FunctionSafetyInfo {
     /// The missing cross-library callees that caused an `UnsafeMissingDep`
     /// verdict. Promotion to `Safe` requires every callee to resolve safe.
     pub missing_dep_callees: AHashSet<ModuleName>,
+    /// Parameters this function (transitively) mutates, mapped to their
+    /// positional index in the signature or `None` for keyword-only matching.
+    pub mutated_params: AHashMap<String, Option<usize>>,
 }
 
 impl FunctionSafetyInfo {
@@ -55,6 +60,7 @@ impl FunctionSafetyInfo {
         Self {
             verdict,
             missing_dep_callees: AHashSet::new(),
+            mutated_params: AHashMap::new(),
         }
     }
 
@@ -62,12 +68,14 @@ impl FunctionSafetyInfo {
         Self {
             verdict: FunctionSafety::UnsafeMissingDep,
             missing_dep_callees: [callee].into_iter().collect(),
+            mutated_params: AHashMap::new(),
         }
     }
 
     pub fn merge(&mut self, other: Self) {
         self.verdict = self.verdict.max(other.verdict);
         self.missing_dep_callees.extend(other.missing_dep_callees);
+        self.mutated_params.extend(other.mutated_params);
     }
 }
 

@@ -644,6 +644,94 @@ mod tests {
     }
 
     #[test]
+    fn test_cache_records_mutated_params() {
+        // The per-function mutated-parameter summary is carried in (and survives
+        // serialization of) the cache, so cross-library callers can resolve it at
+        // reduce time. `sink` mutates its first parameter `x`, so its cached entry
+        // must record `x` at positional index 0.
+        let cache = round_trip(&build_cache(&TestSources::new(&[(
+            "m",
+            "def sink(x):\n\
+             \x20   x.attr = 1\n",
+        )])));
+
+        let m = cache.modules.iter().find(|x| x.name == mn("m")).unwrap();
+        let sink = m
+            .function_safety
+            .get("sink")
+            .expect("sink should have a function_safety entry");
+        assert_eq!(
+            sink.mutated_params.get("x"),
+            Some(&Some(0)),
+            "sink mutates parameter x at positional index 0; got {:?}",
+            sink.mutated_params,
+        );
+    }
+
+    #[test]
+    #[ignore = "known cross-library param-mutation gap (false-safe)"]
+    fn test_cross_library_param_mutation_is_unsafe() {
+        // Cross-library counterpart of test_param_mutation_through_function_is_unsafe.
+        // `sink` lives in a dependency library; `other`/`m`/`app` live in the
+        // consuming library. `m.f` passes the imported module `other` to the
+        // cross-library `sink`, which mutates it, so importing `app` runs that
+        // mutation at module scope -> `app` must be unsafe.
+        //
+        // Single-pass analysis catches this; the incremental (map-reduce) path
+        // currently does NOT. `sink`'s mutated-parameter summary is not carried
+        // in the library cache, so at reduce time the call into `sink` looks
+        // benign, and resolve_cross_library_errors can only relax verdicts, never
+        // add the missed failure. The result is a false-safe: `app` is wrongly
+        // judged eligible for lazy import. Verified end-to-end via the analyzer
+        // CLI (analyze vs analyze-library + analyze-binary).
+        let dep_cache = build_cache(&TestSources::new(&[(
+            "sinklib",
+            "def sink(x):\n\
+             \x20   x.attr = 1\n",
+        )]));
+
+        let mut own_cache = build_cache(&TestSources::new(&[
+            ("other", "value = 1\n"),
+            (
+                "m",
+                "import other\n\
+                 from sinklib import sink\n\
+                 def f():\n\
+                 \x20   sink(other.value)\n",
+            ),
+            (
+                "app",
+                "from m import f\n\
+                 f()\n",
+            ),
+        ]));
+
+        own_cache.merge_dep_caches(vec![dep_cache]);
+        own_cache.resolve_cross_library_errors();
+
+        let m = own_cache
+            .modules
+            .iter()
+            .find(|x| x.name == mn("m"))
+            .unwrap();
+        assert_eq!(
+            m.function_safety.get("f").map(|i| i.verdict),
+            Some(FunctionSafety::Unsafe),
+            "f passes an imported var to a cross-library mutating parameter",
+        );
+
+        let app = own_cache
+            .modules
+            .iter()
+            .find(|x| x.name == mn("app"))
+            .unwrap();
+        assert!(
+            !app.is_safe(),
+            "app calls f at import time, so importing app runs the cross-library mutation",
+        );
+    }
+
+    #[test]
     fn test_resolve_to_known_module_exact_and_parent() {
         let known = [mn("foo"), mn("bar.baz")].into_iter().collect();
 
