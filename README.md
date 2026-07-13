@@ -1,6 +1,13 @@
 # Lifeguard for Lazy Imports
 A fast static analysis tool to aid adoption of [Lazy Imports](https://peps.python.org/pep-0810/) in Python.
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/lifeguard_logo_text_dark.png">
+    <img alt="Lifeguard" src="docs/lifeguard_logo_text.png" width="420">
+  </picture>
+</p>
+
 ## What are Lazy Imports?
 
 In Python, every `import` statement executes immediately when a module is loaded. This overhead is incurred regardless of whether that import is actually used. [PEP 810](https://peps.python.org/pep-0810/) introduces *explicit Lazy Imports* to Python, which defer the actual loading of a module until the imported name is first accessed. Lazy Imports can significantly reduce memory usage, startup times, and import overhead, especially in large codebases with deep dependency trees.
