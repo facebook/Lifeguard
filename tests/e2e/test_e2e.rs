@@ -455,6 +455,113 @@ mod tests {
         }
     }
 
+    /// Write a flat (source-db-no-deps) DB JSON mapping each relative module
+    /// path to its absolute file path, and return the DB path as a string.
+    /// This matches the flat format parsed by `source_map::parse_source_map`
+    /// (`{"relative/path.py": "/abs/path.py", ...}`), the same shape emitted
+    /// by the `[source-db-no-deps]` subtarget used elsewhere in this file.
+    fn write_flat_db(dir: &Path, name: &str, entries: &[(&str, &Path)]) -> String {
+        let map: serde_json::Map<String, serde_json::Value> = entries
+            .iter()
+            .map(|(rel, abs)| {
+                (
+                    (*rel).to_string(),
+                    serde_json::Value::String(
+                        abs.to_str()
+                            .expect("path should be valid UTF-8")
+                            .to_string(),
+                    ),
+                )
+            })
+            .collect();
+        let path = dir.join(name);
+        std::fs::write(&path, serde_json::Value::Object(map).to_string())
+            .expect("failed to write flat source db");
+        path.to_str()
+            .expect("path should be valid UTF-8")
+            .to_string()
+    }
+
+    /// End-to-end parity for the cross-library parameter-mutation case: a module
+    /// that passes an imported object to a mutating function in another library
+    /// must get the same verdict from the incremental path (analyze-library x2 +
+    /// analyze-binary) as from single-pass `analyze`. Guards the cross-library
+    /// path through the real CLI, source-DB parsing, and cache serialization.
+    #[test]
+    fn test_cross_library_param_mutation_parity() {
+        if !check_buck_availability() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+
+        let setup = dir.join("setup.py");
+        let config = dir.join("config.py");
+        let main = dir.join("main.py");
+        std::fs::write(&setup, "def configure(x):\n    x.enabled = True\n").unwrap();
+        std::fs::write(&config, "settings = 1\n").unwrap();
+        std::fs::write(
+            &main,
+            "from setup import configure\n\
+             from config import settings\n\
+             configure(settings)\n",
+        )
+        .unwrap();
+
+        // `setup` is one library; `config`/`main` are the consuming library.
+        let db_setup = write_flat_db(dir, "db_setup.json", &[("setup.py", &setup)]);
+        let db_rest = write_flat_db(
+            dir,
+            "db_rest.json",
+            &[("config.py", &config), ("main.py", &main)],
+        );
+        let db_all = write_flat_db(
+            dir,
+            "db_all.json",
+            &[
+                ("setup.py", &setup),
+                ("config.py", &config),
+                ("main.py", &main),
+            ],
+        );
+
+        // Incremental path: per-library caches reduced together.
+        let cache_setup = dir.join("cache_setup.bin");
+        run_analyze_library(&db_setup, &cache_setup);
+        let cache_rest = dir.join("cache_rest.bin");
+        run_analyze_library(&db_rest, &cache_rest);
+        let incr_path = dir.join("incremental.json");
+        let incremental = run_analyze_binary(&incr_path, &[&cache_setup, &cache_rest]);
+
+        // Single-pass baseline over the whole program.
+        let base_path = dir.join("baseline.json");
+        let (baseline_ok, baseline) = run_analyze_baseline(&db_all, &base_path);
+
+        // ASAN builds exit non-zero from the baseline's LeakSanitizer; only
+        // compare when it produced a clean result.
+        if baseline_ok {
+            assert_eq!(
+                incremental["LAZY_ELIGIBLE"], baseline["LAZY_ELIGIBLE"],
+                "LAZY_ELIGIBLE mismatch (cross-library mutation parity)"
+            );
+            assert_eq!(
+                incremental["LOAD_IMPORTS_EAGERLY"], baseline["LOAD_IMPORTS_EAGERLY"],
+                "LOAD_IMPORTS_EAGERLY mismatch (cross-library mutation parity)"
+            );
+            // Sanity: the fixture is non-trivial — `main` is unsafe in both paths
+            // because it mutates the imported `settings` at import time.
+            let eligible = baseline["LAZY_ELIGIBLE"]
+                .as_object()
+                .expect("LAZY_ELIGIBLE should be an object");
+            let main_is_eligible = eligible.keys().any(|k| k == "main" || k.ends_with(".main"));
+            assert!(
+                !main_is_eligible,
+                "main must be unsafe (mutates imported settings); eligible: {:?}",
+                eligible.keys().collect::<Vec<_>>(),
+            );
+        }
+    }
+
     #[test]
     fn test_binary_without_analyzer_has_no_analysis_output() {
         if !check_buck_availability() {
