@@ -822,9 +822,12 @@ fn candidate_mutates(
 ) -> bool {
     let callee_mutates = |callee: &ModuleName, arg_offset: usize| {
         lookup_callee_info(callee, module_names, func_safety_by_module).is_some_and(|info| {
-            info.mutated_params
-                .iter()
-                .any(|(name, idx)| candidate.imported_args.hits_param(name, *idx, arg_offset))
+            candidate.imported_args.hits_any_param(
+                info.mutated_params
+                    .iter()
+                    .map(|param| (param.name.as_str(), param.index)),
+                arg_offset,
+            )
         })
     };
     if callee_mutates(&candidate.callee, candidate.arg_offset) {

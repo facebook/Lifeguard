@@ -48,6 +48,7 @@ use crate::module_parser::ParsedModule;
 pub use crate::module_safety::FunctionSafety;
 use crate::module_safety::FunctionSafetyInfo;
 use crate::module_safety::ModuleSafety;
+use crate::module_safety::MutatedParam;
 use crate::module_safety::MutationCandidate;
 use crate::module_safety::MutationCandidateSite;
 use crate::module_safety::SafetyResult;
@@ -1355,10 +1356,7 @@ impl ProjectInfo {
 
     /// Resolve a function's mutated parameters to positional indices using the
     /// callee's definition table.
-    fn resolve_cached_mutated_params_for(
-        &self,
-        func: &ModuleName,
-    ) -> Option<AHashMap<String, Option<usize>>> {
+    fn resolve_cached_mutated_params_for(&self, func: &ModuleName) -> Option<Vec<MutatedParam>> {
         let params = self.mutated_params.get(func)?;
         let callee_module = self.functions.get(func).copied().unwrap_or(*func);
         let defs = self
@@ -1366,10 +1364,13 @@ impl ProjectInfo {
             .get(&callee_module)
             .map(|m| &m.definitions);
 
-        let mut resolved = AHashMap::with_capacity(params.len());
+        let mut resolved = Vec::with_capacity(params.len());
         for param in params {
-            let idx = defs.and_then(|d| d.get_param_index(func, param.as_str()));
-            resolved.insert(param.as_str().to_string(), idx);
+            let index = defs.and_then(|d| d.get_param_index(func, param.as_str()));
+            resolved.push(MutatedParam {
+                name: *param,
+                index,
+            });
         }
         Some(resolved)
     }

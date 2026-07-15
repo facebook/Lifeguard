@@ -748,12 +748,12 @@ mod tests {
             .function_safety
             .get("sink")
             .expect("sink should have a function_safety entry");
-        assert_eq!(
-            sink.mutated_params.get("x"),
-            Some(&Some(0)),
-            "sink mutates parameter x at positional index 0; got {:?}",
-            sink.mutated_params,
-        );
+        let param = sink
+            .mutated_params
+            .iter()
+            .find(|param| param.name == mn("x"))
+            .unwrap_or_else(|| panic!("sink should record mutated parameter x: {sink:?}"));
+        assert_eq!(param.index, Some(0), "x should be positional index 0");
     }
 
     #[test]

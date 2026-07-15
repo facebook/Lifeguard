@@ -13,9 +13,7 @@ use serde::Serialize;
 
 use crate::effects::ImportedArgs;
 use crate::errors::SafetyError;
-use crate::hasher::AHashMap;
 use crate::hasher::AHashSet;
-use crate::hasher::HashMapExt;
 use crate::hasher::HashSetExt;
 
 /// Safety verdict for a single function from call graph analysis.
@@ -46,14 +44,20 @@ pub enum FunctionSafety {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MutatedParam {
+    pub name: ModuleName,
+    pub index: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionSafetyInfo {
     pub verdict: FunctionSafety,
     /// The missing cross-library callees that caused an `UnsafeMissingDep`
     /// verdict. Promotion to `Safe` requires every callee to resolve safe.
     pub missing_dep_callees: AHashSet<ModuleName>,
-    /// Parameters this function (transitively) mutates, mapped to their
-    /// positional index in the signature or `None` for keyword-only matching.
-    pub mutated_params: AHashMap<String, Option<usize>>,
+    /// Parameters this function (transitively) mutates, with their positional
+    /// index in the signature or `None` for keyword-only matching.
+    pub mutated_params: Vec<MutatedParam>,
 }
 
 impl FunctionSafetyInfo {
@@ -61,7 +65,7 @@ impl FunctionSafetyInfo {
         Self {
             verdict,
             missing_dep_callees: AHashSet::new(),
-            mutated_params: AHashMap::new(),
+            mutated_params: Vec::new(),
         }
     }
 
@@ -69,14 +73,26 @@ impl FunctionSafetyInfo {
         Self {
             verdict: FunctionSafety::UnsafeMissingDep,
             missing_dep_callees: [callee].into_iter().collect(),
-            mutated_params: AHashMap::new(),
+            mutated_params: Vec::new(),
         }
     }
 
     pub fn merge(&mut self, other: Self) {
         self.verdict = self.verdict.max(other.verdict);
         self.missing_dep_callees.extend(other.missing_dep_callees);
-        self.mutated_params.extend(other.mutated_params);
+        self.extend_mutated_params(other.mutated_params);
+    }
+
+    fn extend_mutated_params(&mut self, params: impl IntoIterator<Item = MutatedParam>) {
+        for param in params {
+            if !self
+                .mutated_params
+                .iter()
+                .any(|existing| existing.name == param.name)
+            {
+                self.mutated_params.push(param);
+            }
+        }
     }
 }
 
@@ -310,5 +326,41 @@ mod tests {
         safety.add_force_import_override(make_error(ErrorKind::ExecCall));
         safety.add_force_import_override(make_error(ErrorKind::SysModulesAccess));
         assert_eq!(safety.force_imports_eager_overrides.len(), 3);
+    }
+
+    #[test]
+    fn function_safety_merge_dedupes_mutated_params() {
+        let mut info = FunctionSafetyInfo::new(FunctionSafety::Safe);
+        info.mutated_params.push(MutatedParam {
+            name: ModuleName::from_str("arg"),
+            index: Some(0),
+        });
+
+        let mut other = FunctionSafetyInfo::new(FunctionSafety::UnsafeIfImported);
+        other.mutated_params.push(MutatedParam {
+            name: ModuleName::from_str("arg"),
+            index: Some(0),
+        });
+        other.mutated_params.push(MutatedParam {
+            name: ModuleName::from_str("other"),
+            index: Some(1),
+        });
+
+        info.merge(other);
+
+        assert_eq!(info.verdict, FunctionSafety::UnsafeIfImported);
+        assert_eq!(
+            info.mutated_params,
+            vec![
+                MutatedParam {
+                    name: ModuleName::from_str("arg"),
+                    index: Some(0),
+                },
+                MutatedParam {
+                    name: ModuleName::from_str("other"),
+                    index: Some(1),
+                },
+            ]
+        );
     }
 }
