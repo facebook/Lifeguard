@@ -89,6 +89,34 @@ struct ImplicitImportContext<'a> {
     import_graph: &'a ImportGraph,
 }
 
+/// Per-scope context for mutation-candidate detection
+#[derive(Clone, Copy)]
+struct MutationCandidateScope<'a> {
+    /// The enclosing module.
+    module: ModuleName,
+    /// Scope-local caller name (`None` at module scope)
+    caller_function: Option<ModuleName>,
+    /// Module's unresolved-import sets
+    missing: Option<&'a AHashSet<ModuleName>>,
+    ambiguous: Option<&'a AHashSet<ModuleName>>,
+}
+
+/// Whether `callee` (or one of its parents) is an unresolved import of the
+/// enclosing module.
+fn callee_is_unresolved(
+    callee: &ModuleName,
+    missing: Option<&AHashSet<ModuleName>>,
+    ambiguous: Option<&AHashSet<ModuleName>>,
+) -> bool {
+    let is_unresolved = |name: &ModuleName| {
+        missing.is_some_and(|m| m.contains(name)) || ambiguous.is_some_and(|a| a.contains(name))
+    };
+    is_unresolved(callee)
+        || callee
+            .iter_parents()
+            .any(|(parent, _)| is_unresolved(&parent))
+}
+
 // Merge effects from all modules into a single effect table.
 //
 // Class bodies within functions are eager: they execute when the enclosing function runs.
@@ -1278,13 +1306,7 @@ impl ProjectInfo {
             .effect_table
             .par_iter()
             .fold(Vec::new, |mut acc, (scope, effs)| {
-                let Some((module, local)) =
-                    resolve_enclosing_module(scope, |p| self.analysis_map.contains_key(p))
-                else {
-                    return acc;
-                };
-                let caller_function = local.map(ModuleName::from_str);
-
+                let mut caller_scope = None;
                 for eff in effs {
                     let EffectData::Call(ref call_data) = eff.data else {
                         continue;
@@ -1299,10 +1321,26 @@ impl ProjectInfo {
                         {
                             continue;
                         }
+                        // Resolve and cache the scope's module, caller name, and the module's
+                        // unresolved-import sets.
+                        let Some(MutationCandidateScope {
+                            module,
+                            caller_function,
+                            missing,
+                            ambiguous,
+                        }) = *caller_scope.get_or_insert_with(|| {
+                            self.mutation_candidate_scope(scope, import_graph)
+                        })
+                        else {
+                            // `None` means the module is unknown or has no unresolved imports,
+                            // so no callee here can resolve cross-library.
+
+                            continue;
+                        };
                         // Only defer callees that could actually resolve to another
                         // library: those imported here but unresolved locally. Skips
                         // builtins and unimported names, which are never confirmed at reduce.
-                        if !Self::callee_may_resolve_cross_library(import_graph, &module, &callee) {
+                        if !callee_is_unresolved(&callee, missing, ambiguous) {
                             continue;
                         }
                         let site = match &caller_function {
@@ -1334,24 +1372,36 @@ impl ProjectInfo {
         result
     }
 
-    /// Whether `callee` could resolve to a function in another library at reduce time.
-    fn callee_may_resolve_cross_library(
-        import_graph: &ImportGraph,
-        module: &ModuleName,
-        callee: &ModuleName,
-    ) -> bool {
-        let missing = import_graph.get_missing_imports(module);
-        let ambiguous = import_graph.get_ambiguous_imports(module);
-        if missing.is_none() && ambiguous.is_none() {
-            return false;
-        }
-        let in_unresolved = |name: &ModuleName| {
-            missing.is_some_and(|m| m.contains(name)) || ambiguous.is_some_and(|a| a.contains(name))
-        };
-        in_unresolved(callee)
-            || callee
+    /// Resolve the enclosing module and scope-local caller name for `scope`, together with the
+    /// module's unresolved-import sets (fetched once per scope).
+    /// Returns `None` when the module can't be located, or when it has no unresolved imports.
+    fn mutation_candidate_scope<'a>(
+        &self,
+        scope: &ModuleName,
+        import_graph: &'a ImportGraph,
+    ) -> Option<MutationCandidateScope<'a>> {
+        let (module, caller_function) = if self.analysis_map.contains_key(scope) {
+            (*scope, None)
+        } else {
+            let (m, dot_pos) = scope
                 .iter_parents()
-                .any(|(parent, _)| in_unresolved(&parent))
+                .find(|(p, _)| self.analysis_map.contains_key(p))?;
+            (
+                m,
+                Some(ModuleName::from_str(&scope.as_str()[dot_pos + 1..])),
+            )
+        };
+        let missing = import_graph.get_missing_imports(&module);
+        let ambiguous = import_graph.get_ambiguous_imports(&module);
+        if missing.is_none() && ambiguous.is_none() {
+            return None;
+        }
+        Some(MutationCandidateScope {
+            module,
+            caller_function,
+            missing,
+            ambiguous,
+        })
     }
 
     /// Resolve a function's mutated parameters to positional indices using the
