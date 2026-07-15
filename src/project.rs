@@ -423,7 +423,7 @@ pub fn run_analysis(
         ProjectInfo::new(analysis_map, exports)
     });
     let safety_map = time("  Collecting errors", || {
-        info.collect_errors_from_project(mode)
+        info.collect_errors_from_project(mode, import_graph)
     });
     time("  Filtering out stubs", || {
         filter_out_stubs(&safety_map, sources)
@@ -1207,7 +1207,11 @@ impl ProjectInfo {
         }
     }
 
-    pub fn collect_errors_from_project(&self, mode: ExecutionMode) -> SafetyMap {
+    pub fn collect_errors_from_project(
+        &self,
+        mode: ExecutionMode,
+        import_graph: &ImportGraph,
+    ) -> SafetyMap {
         let state = GlobalAnalysisState::new();
         state.init_safety_map(&self.analysis_map);
 
@@ -1257,7 +1261,7 @@ impl ProjectInfo {
         let safety_map = state.into_safety_map(mode, &mutated_params);
 
         if mode == ExecutionMode::Incremental {
-            for (module, candidates) in self.collect_mutation_candidates() {
+            for (module, candidates) in self.collect_mutation_candidates(import_graph) {
                 if let Some(mut entry) = safety_map.get_mut(&module) {
                     if let SafetyResult::Ok(ms) = entry.value_mut() {
                         ms.mutation_candidates = candidates;
@@ -1271,8 +1275,13 @@ impl ProjectInfo {
     /// Collect calls that pass an imported object to a callee unresolved in this library (a
     /// cross-library candidate), grouped by the caller's module.
     /// Callees resolvable in this library are skipped; the map step already handled them via
-    /// `call_mutates_imported_arg`.
-    fn collect_mutation_candidates(&self) -> AHashMap<ModuleName, Vec<MutationCandidate>> {
+    /// `call_mutates_imported_arg`. Callees that are not imported from another library (builtins,
+    /// stdlib used without import, locals) are also skipped: they can never resolve to a cached
+    /// library function at reduce time.
+    fn collect_mutation_candidates(
+        &self,
+        import_graph: &ImportGraph,
+    ) -> AHashMap<ModuleName, Vec<MutationCandidate>> {
         let flat: Vec<(ModuleName, MutationCandidate)> = self
             .effect_table
             .par_iter()
@@ -1296,6 +1305,12 @@ impl ProjectInfo {
                         if self.functions.contains_key(&callee)
                             || self.mutated_params.contains_key(&callee)
                         {
+                            continue;
+                        }
+                        // Only defer callees that could actually resolve to another
+                        // library: those imported here but unresolved locally. Skips
+                        // builtins and unimported names, which are never confirmed at reduce.
+                        if !Self::callee_may_resolve_cross_library(import_graph, &module, &callee) {
                             continue;
                         }
                         let site = match &caller_function {
@@ -1325,6 +1340,26 @@ impl ProjectInfo {
             result.entry(module).or_default().push(candidate);
         }
         result
+    }
+
+    /// Whether `callee` could resolve to a function in another library at reduce time.
+    fn callee_may_resolve_cross_library(
+        import_graph: &ImportGraph,
+        module: &ModuleName,
+        callee: &ModuleName,
+    ) -> bool {
+        let missing = import_graph.get_missing_imports(module);
+        let ambiguous = import_graph.get_ambiguous_imports(module);
+        if missing.is_none() && ambiguous.is_none() {
+            return false;
+        }
+        let in_unresolved = |name: &ModuleName| {
+            missing.is_some_and(|m| m.contains(name)) || ambiguous.is_some_and(|a| a.contains(name))
+        };
+        in_unresolved(callee)
+            || callee
+                .iter_parents()
+                .any(|(parent, _)| in_unresolved(&parent))
     }
 
     /// Resolve each mutated parameter to its positional index using the callee's
