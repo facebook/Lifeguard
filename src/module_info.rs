@@ -32,6 +32,7 @@ use crate::hasher::HashSetExt;
 use crate::imports::ImportGraph;
 use crate::imports::ImportlibState;
 use crate::module_parser::ParsedModule;
+use crate::module_safety::ParamPosition;
 use crate::pyrefly::definitions::Definition;
 use crate::pyrefly::definitions::DefinitionStyle;
 use crate::pyrefly::definitions::Definitions;
@@ -93,9 +94,18 @@ impl DefinitionTable {
         })
     }
 
-    pub fn get_param_index(&self, func_scope: &ModuleName, param_name: &str) -> Option<usize> {
-        let names = self.param_names.get(func_scope)?;
-        names.iter().position(|n| n.as_str() == param_name)
+    /// Classify how `param_name` of `func_scope` matches call arguments:
+    /// `Unresolved` when the function's signature is unknown (so a positional
+    /// parameter is never silently treated as keyword-only), `Positional(idx)`
+    /// when it has a positional slot, and `KeywordOnly` otherwise.
+    pub fn classify_param(&self, func_scope: &ModuleName, param_name: &str) -> ParamPosition {
+        match self.param_names.get(func_scope) {
+            None => ParamPosition::Unresolved,
+            Some(names) => match names.iter().position(|n| n.as_str() == param_name) {
+                Some(idx) => ParamPosition::Positional(idx),
+                None => ParamPosition::KeywordOnly,
+            },
+        }
     }
 
     pub fn resolve(&self, cursor: &Cursor, value: &Expr) -> Option<ResolvedName<'_>> {

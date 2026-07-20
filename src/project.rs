@@ -54,6 +54,7 @@ use crate::module_safety::ModuleSafety;
 use crate::module_safety::MutatedParam;
 use crate::module_safety::MutationCandidate;
 use crate::module_safety::MutationCandidateSite;
+use crate::module_safety::ParamPosition;
 use crate::module_safety::SafetyResult;
 use crate::source_map::AstResult;
 use crate::source_map::ModuleProvider;
@@ -1509,10 +1510,17 @@ impl ProjectInfo {
 
         let mut resolved = Vec::with_capacity(params.len());
         for param in params {
-            let index = defs.and_then(|d| d.get_param_index(func, param.as_str()));
+            // Distinguish an unresolvable signature (no `defs`) from a resolved
+            // keyword-only parameter, so the reduce never treats an unresolved
+            // positional parameter as keyword-only (which would miss a positional
+            // match and be a false-safe).
+            let position = match defs {
+                Some(d) => d.classify_param(func, param.as_str()),
+                None => ParamPosition::Unresolved,
+            };
             resolved.push(MutatedParam {
                 name: *param,
-                index,
+                position,
             });
         }
         Some(resolved)
@@ -1876,7 +1884,11 @@ impl ProjectInfo {
         call_data.imported_args().hits_any_param(
             mutated.iter().map(|param| {
                 let name = param.as_str();
-                (name, defs.and_then(|d| d.get_param_index(callee, name)))
+                let position = match defs {
+                    Some(d) => d.classify_param(callee, name),
+                    None => ParamPosition::Unresolved,
+                };
+                (name, position)
             }),
             arg_offset,
         )

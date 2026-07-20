@@ -33,6 +33,7 @@ mod tests {
     use lifeguard::module_safety::ModuleSafety;
     use lifeguard::module_safety::MutationCandidate;
     use lifeguard::module_safety::MutationCandidateSite;
+    use lifeguard::module_safety::ParamPosition;
     use lifeguard::module_safety::SafetyResult;
     use lifeguard::output::LifeGuardAnalysis;
     use lifeguard::project;
@@ -753,7 +754,11 @@ mod tests {
             .iter()
             .find(|param| param.name == mn("x"))
             .unwrap_or_else(|| panic!("sink should record mutated parameter x: {sink:?}"));
-        assert_eq!(param.index, Some(0), "x should be positional index 0");
+        assert_eq!(
+            param.position,
+            ParamPosition::Positional(0),
+            "x should be positional index 0"
+        );
     }
 
     #[test]
@@ -1374,6 +1379,42 @@ mod tests {
         assert!(
             top.is_safe(),
             "top should be safe: f() only reaches the now-resolved safe g()",
+        );
+    }
+
+    #[test]
+    fn test_missing_dep_promotion_preserves_unsafe_if_imported_floor() {
+        // `f` both mutates a module global (an `UnsafeIfImported` floor) and calls
+        // the cross-library `g`, so its verdict is `UnsafeMissingDep`, masking the
+        // floor. When `g` resolves `Safe` at reduce, `f` must promote to its
+        // `min_safety_level` (`UnsafeIfImported`), not `Safe` — so `top`, a
+        // cross-module caller, stays unsafe.
+        let dep_cache = build_cache(&TestSources::new(&[("dep", "def g():\n    return 1\n")]));
+
+        let mut own_cache = build_cache(&TestSources::new(&[
+            (
+                "mid",
+                "from dep import g\n\
+                 counter = 0\n\
+                 def f():\n\
+                 \x20   global counter\n\
+                 \x20   counter += 1\n\
+                 \x20   g()\n",
+            ),
+            ("top", "from mid import f\nf()\n"),
+        ]));
+
+        own_cache.merge_dep_caches(vec![dep_cache]);
+        own_cache.resolve_cross_library_errors();
+
+        let top = own_cache
+            .modules
+            .iter()
+            .find(|m| m.name == mn("top"))
+            .unwrap();
+        assert!(
+            !top.is_safe(),
+            "g resolves safe but f's UnsafeIfImported floor survives, so top must stay unsafe",
         );
     }
 

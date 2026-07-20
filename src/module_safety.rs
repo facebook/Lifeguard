@@ -76,10 +76,26 @@ impl std::ops::BitOr for FunctionSafety {
     }
 }
 
+/// How a (transitively) mutated parameter is matched against a call's arguments.
+///
+/// `Unresolved` must stay distinct from `KeywordOnly`: a keyword-only parameter
+/// genuinely has no positional slot and can be ruled out when the call is tracked
+/// precisely, whereas an unresolved parameter might still be positional and must
+/// be matched conservatively.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ParamPosition {
+    /// Resolved to this positional index in the callee's signature.
+    Positional(usize),
+    /// Resolved as having no positional slot (keyword-only); match by name.
+    KeywordOnly,
+    /// The callee's signature could not be resolved; match conservatively.
+    Unresolved,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MutatedParam {
     pub name: ModuleName,
-    pub index: Option<usize>,
+    pub position: ParamPosition,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,8 +108,8 @@ pub struct FunctionSafetyInfo {
     /// The missing cross-library callees that caused an `UnsafeMissingDep`
     /// concern. Promotion drops that concern only once every callee resolves safe.
     pub missing_dep_callees: AHashSet<ModuleName>,
-    /// Parameters this function (transitively) mutates, with their positional
-    /// index in the signature or `None` for keyword-only matching.
+    /// Parameters this function (transitively) mutates, each with how it matches
+    /// call arguments (see `ParamPosition`).
     pub mutated_params: Vec<MutatedParam>,
 }
 
@@ -377,17 +393,17 @@ mod tests {
         let mut info = FunctionSafetyInfo::new(FunctionSafety::Safe);
         info.mutated_params.push(MutatedParam {
             name: ModuleName::from_str("arg"),
-            index: Some(0),
+            position: ParamPosition::Positional(0),
         });
 
         let mut other = FunctionSafetyInfo::new(FunctionSafety::UnsafeIfImported);
         other.mutated_params.push(MutatedParam {
             name: ModuleName::from_str("arg"),
-            index: Some(0),
+            position: ParamPosition::Positional(0),
         });
         other.mutated_params.push(MutatedParam {
             name: ModuleName::from_str("other"),
-            index: Some(1),
+            position: ParamPosition::Positional(1),
         });
 
         info.merge(other);
@@ -398,11 +414,11 @@ mod tests {
             vec![
                 MutatedParam {
                     name: ModuleName::from_str("arg"),
-                    index: Some(0),
+                    position: ParamPosition::Positional(0),
                 },
                 MutatedParam {
                     name: ModuleName::from_str("other"),
-                    index: Some(1),
+                    position: ParamPosition::Positional(1),
                 },
             ]
         );

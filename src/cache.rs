@@ -739,7 +739,7 @@ fn candidate_mutates(
             candidate.imported_args.hits_any_param(
                 info.mutated_params
                     .iter()
-                    .map(|param| (param.name.as_str(), param.index)),
+                    .map(|param| (param.name.as_str(), param.position)),
                 arg_offset,
             )
         })

@@ -22,6 +22,7 @@ use crate::format::bare_string;
 use crate::hasher::AHashMap;
 use crate::hasher::HashMapExt;
 use crate::module_parser::ParsedModule;
+use crate::module_safety::ParamPosition;
 
 // NOTE: This crate uses ModuleName throughout to store fully qualified names of all kinds.
 
@@ -234,18 +235,25 @@ impl ImportedArgs {
             || self.unsafe_args_expansion_min.is_some()
     }
 
-    /// Whether an imported argument reaches the callee parameter `param_name`
-    /// (at positional index `param_idx`, when known), given the receiver `arg_offset`.
-    pub fn hits_param(
-        &self,
-        param_name: &str,
-        param_idx: Option<usize>,
-        arg_offset: usize,
-    ) -> bool {
+    /// Whether an imported argument reaches the callee parameter `param_name`,
+    /// given its `position` and the receiver `arg_offset`. An `Unresolved`
+    /// position (unknown signature) conservatively matches whenever any imported
+    /// argument is tracked; a `Positional(idx)` matches when `idx - arg_offset`
+    /// lands on an imported positional argument; and any parameter is also matched
+    /// by name against imported keyword arguments.
+    pub fn hits_param(&self, param_name: &str, position: ParamPosition, arg_offset: usize) -> bool {
+        // Unresolved signature: the parameter can be neither pinpointed nor ruled
+        // out, so any imported argument could reach it.
+        if position == ParamPosition::Unresolved {
+            return self.has_any_tracked_args();
+        }
         // Positional: the parameter's index (minus the receiver offset) lands on
         // an imported argument. With the *args lower bound in has_unsafe_arg_index,
         // a resolved index yields an exact answer.
-        let resolved_idx = param_idx.and_then(|idx| idx.checked_sub(arg_offset));
+        let resolved_idx = match position {
+            ParamPosition::Positional(idx) => idx.checked_sub(arg_offset),
+            _ => None,
+        };
         if let Some(arg_idx) = resolved_idx {
             if self.has_unsafe_arg_index(arg_idx) {
                 return true;
@@ -256,6 +264,7 @@ impl ImportedArgs {
         if self.has_unsafe_keyword(param_name) {
             return true;
         }
+        // The position is known (a positional slot, or none for keyword-only).
         // Rule the parameter out only when BOTH keyword and positional tracking
         // are precise; an imprecise *args expansion could still reach a positional
         // slot we couldn't pinpoint.
@@ -275,16 +284,16 @@ impl ImportedArgs {
     }
 
     /// Whether an imported argument reaches any of the given callee parameters,
-    /// each a `(name, positional index when known)` pair, given the receiver
+    /// each a `(name, how it matches call arguments)` pair, given the receiver
     /// `arg_offset`.
     pub fn hits_any_param<'a>(
         &self,
-        params: impl IntoIterator<Item = (&'a str, Option<usize>)>,
+        params: impl IntoIterator<Item = (&'a str, ParamPosition)>,
         arg_offset: usize,
     ) -> bool {
         params
             .into_iter()
-            .any(|(name, param_idx)| self.hits_param(name, param_idx, arg_offset))
+            .any(|(name, position)| self.hits_param(name, position, arg_offset))
     }
 }
 
@@ -596,6 +605,28 @@ mod tests {
         let from_two = from_two.imported_args();
         assert!(!from_two.has_unsafe_arg_index(1));
         assert!(from_two.has_unsafe_arg_index(2));
+    }
+
+    #[test]
+    fn test_hits_param_unresolved_is_conservative() {
+        // A precisely-tracked call passing an imported variable positionally at
+        // index 0 (no *args/**kwargs expansion).
+        let args = ImportedArgs {
+            unsafe_arg_indices: 0b1,
+            unsafe_keyword_names: Vec::new(),
+            has_unsafe_kwargs_expansion: false,
+            unsafe_args_expansion_min: None,
+        };
+        // Positional slot 0 receives the imported arg; slot 1 does not.
+        assert!(args.hits_param("p", ParamPosition::Positional(0), 0));
+        assert!(!args.hits_param("p", ParamPosition::Positional(1), 0));
+        // A resolved keyword-only parameter has no positional slot and its name is
+        // not passed, so precise tracking rules it out.
+        assert!(!args.hits_param("p", ParamPosition::KeywordOnly, 0));
+        // An unresolved parameter must NOT be ruled out: it might be the positional
+        // slot that receives the imported arg, so it matches conservatively. This
+        // is the case that, collapsed into keyword-only, was a false-safe.
+        assert!(args.hits_param("p", ParamPosition::Unresolved, 0));
     }
 
     #[test]
