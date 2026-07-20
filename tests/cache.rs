@@ -1126,7 +1126,12 @@ mod tests {
     }
 
     #[test]
-    fn test_propagate_re_export_replaces_conservative_verdict() {
+    fn test_propagate_re_export_unions_source_concerns() {
+        // Safety concerns are orthogonal bits, so a re-exported symbol inherits the
+        // union of its own and its source's concerns; neither masks the other. The
+        // UnsafeMissingDep bit is discharged separately by the promotion fixpoint
+        // once its callees resolve, not by re-export propagation choosing the "safer"
+        // verdict.
         let mut cache = LibraryCache::empty();
 
         cache.modules.push(CachedModule {
@@ -1138,7 +1143,7 @@ mod tests {
             side_effect_imports: Default::default(),
             function_safety: HashMap::from([(
                 "foo".to_string(),
-                FunctionSafetyInfo::new(FunctionSafety::Safe),
+                FunctionSafetyInfo::new(FunctionSafety::UnsafeIfImported),
             )]),
             mutation_candidates: Vec::new(),
         });
@@ -1167,10 +1172,18 @@ mod tests {
         cache.propagate_re_export_safety();
 
         let b = cache.modules.iter().find(|m| m.name == mn("b")).unwrap();
-        assert_eq!(
-            b.function_safety.get("foo").map(|info| info.verdict),
-            Some(FunctionSafety::Safe),
-            "propagation should replace UnsafeMissingDep with Safe from source module",
+        let verdict = b
+            .function_safety
+            .get("foo")
+            .map(|info| info.verdict)
+            .expect("re-export propagation should populate b.foo");
+        assert!(
+            verdict.has(FunctionSafety::UnsafeMissingDep),
+            "b.foo keeps its own UnsafeMissingDep concern",
+        );
+        assert!(
+            verdict.has(FunctionSafety::UnsafeIfImported),
+            "b.foo also inherits the source's UnsafeIfImported concern",
         );
     }
 

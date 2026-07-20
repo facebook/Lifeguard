@@ -388,7 +388,7 @@ impl GlobalAnalysisState {
         self.function_safety
             .entry(*func)
             .and_modify(|info| {
-                info.verdict = info.verdict.max(FunctionSafety::UnsafeMissingDep);
+                info.verdict.insert(FunctionSafety::UnsafeMissingDep);
                 info.missing_dep_callees.insert(*callee);
             })
             .or_insert_with(|| FunctionSafetyInfo::unsafe_missing_dep(*callee));
@@ -397,14 +397,14 @@ impl GlobalAnalysisState {
     fn is_unsafe(&self, func: &ModuleName) -> bool {
         self.function_safety
             .get(func)
-            .is_some_and(|info| info.verdict == FunctionSafety::Unsafe)
+            .is_some_and(|info| info.verdict.has(FunctionSafety::Unsafe))
     }
 
     fn mark_unsafe_if_imported(&self, func: &ModuleName) {
         self.function_safety
             .entry(*func)
             .and_modify(|info| {
-                info.verdict = info.verdict.max(FunctionSafety::UnsafeIfImported);
+                info.verdict.insert(FunctionSafety::UnsafeIfImported);
             })
             .or_insert_with(|| FunctionSafetyInfo::new(FunctionSafety::UnsafeIfImported));
     }
@@ -1731,10 +1731,10 @@ impl ProjectInfo {
         // cause a false-safe because reduce re-checks final verdicts — the recorded
         // callee, if finally unsafe, blocks promotion (`is_call_verified_safe`) and
         // blocks resolution (`callee_resolves_unsafe`).
-        let callee_recoverable = state
-            .function_safety
-            .get(&callee.func)
-            .is_some_and(|info| info.verdict == FunctionSafety::UnsafeMissingDep);
+        let callee_recoverable = state.function_safety.get(&callee.func).is_some_and(|info| {
+            info.verdict.has(FunctionSafety::UnsafeMissingDep)
+                && !info.verdict.has(FunctionSafety::Unsafe)
+        });
         if callee_recoverable {
             if !state.is_unsafe(func) {
                 state.mark_unsafe_missing_dep(func, &callee.func);
@@ -1926,10 +1926,13 @@ impl ProjectInfo {
         }
 
         if let Some(verdict) = state.function_safety.get(&func).map(|info| info.verdict) {
-            let ret = match verdict {
-                FunctionSafety::Safe => true,
-                FunctionSafety::Unsafe | FunctionSafety::UnsafeMissingDep => false,
-                FunctionSafety::UnsafeIfImported => !is_cross_module_call,
+            let ret = if verdict.has(FunctionSafety::Unsafe | FunctionSafety::UnsafeMissingDep) {
+                false
+            } else if verdict.has(FunctionSafety::UnsafeIfImported) {
+                !is_cross_module_call
+            } else {
+                // No concerns: safe.
+                true
             };
             return Ok(ret);
         }
@@ -1994,7 +1997,7 @@ impl ProjectInfo {
                         } else if state
                             .function_safety
                             .get(&child_call.func)
-                            .is_some_and(|i| i.verdict == FunctionSafety::UnsafeIfImported)
+                            .is_some_and(|i| i.verdict.has(FunctionSafety::UnsafeIfImported))
                             && self.functions.get(&child_call.func) == Some(call_module)
                         {
                             // propagate `UnsafeIfImported` to the caller
@@ -2016,19 +2019,17 @@ impl ProjectInfo {
                             ret = false;
                         }
                         EffectKind::GlobalVarAssign | EffectKind::GlobalVarMutation => {
-                            // This function is attempting to mutate a global variable, and so is only safe
-                            // if being called from its own module.
-                            // NOTE: unsafe-if-imported should not overwrite unsafe, so we check the
-                            // cached state first.
-                            let is_already_unsafe =
-                                state.function_safety.get(&func).is_some_and(|info| {
-                                    info.verdict >= FunctionSafety::UnsafeMissingDep
+                            // This function is attempting to mutate a global variable, and so is only
+                            // safe if being called from its own module.
+                            let no_missing_dep_or_unsafe =
+                                state.function_safety.get(&func).is_none_or(|info| {
+                                    !info.verdict.has(
+                                        FunctionSafety::UnsafeMissingDep | FunctionSafety::Unsafe,
+                                    )
                                 });
-                            if !is_already_unsafe {
-                                state.mark_unsafe_if_imported(&func);
-                                if is_cross_module_call {
-                                    ret = false;
-                                }
+                            state.mark_unsafe_if_imported(&func);
+                            if no_missing_dep_or_unsafe && is_cross_module_call {
+                                ret = false;
                             }
                         }
                         _ => (),

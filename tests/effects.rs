@@ -102,12 +102,6 @@ def f():
     }
 
     #[test]
-    // Known false-safe, fix pending in a dedicated diff: a function with a
-    // global-mutation effect (warranting `UnsafeIfImported`) that ALSO has a
-    // transitive missing dep gets verdict `UnsafeMissingDep`, masking the
-    // `UnsafeIfImported`; the discharge/reduce then promotes it straight to
-    // `Safe`.
-    #[ignore]
     fn test_global_var_method_mutation_custom_class() {
         let a = r#"
 class Registry:

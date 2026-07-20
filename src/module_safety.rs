@@ -16,31 +16,64 @@ use crate::errors::SafetyError;
 use crate::hasher::AHashSet;
 use crate::hasher::HashSetExt;
 
-/// Safety verdict for a single function from call graph analysis.
-///
-/// Variants are ordered by conservatism:
-/// `Safe` < `UnsafeIfImported` < `UnsafeMissingDep` < `Unsafe`.
+/// The set of safety concerns for a single function, as a bitset. Concerns are
+/// independent bits combined with `|`, so several can be present at once — e.g. an
+/// `UnsafeIfImported` global mutation together with an `UnsafeMissingDep`
+/// unresolved callee — without one masking another. `Safe` is the empty set, and
+/// the final verdict is read from which bits are set.
 #[derive(
     Debug,
     Clone,
     Copy,
+    Default,
     PartialEq,
     Eq,
-    PartialOrd,
-    Ord,
+    Hash,
     Serialize,
     Deserialize
 )]
-pub enum FunctionSafety {
-    /// Always safe to call.
-    Safe,
-    /// Safe within its own module, unsafe when called cross-module.
-    UnsafeIfImported,
-    /// Unsafe only because a transitive call target could not be resolved
-    /// (missing dep). May be upgraded to Safe after cross-library resolution.
-    UnsafeMissingDep,
-    /// Always unsafe to call (intrinsic side effects).
-    Unsafe,
+pub struct FunctionSafety(u8);
+
+#[allow(non_upper_case_globals)]
+impl FunctionSafety {
+    /// No safety concerns.
+    pub const Safe: FunctionSafety = FunctionSafety(0);
+    /// Safe within its own module, unsafe when called cross-module (e.g. it
+    /// mutates a module global).
+    pub const UnsafeIfImported: FunctionSafety = FunctionSafety(1);
+    /// A transitive callee could not be resolved (a missing cross-library dep);
+    /// this concern may clear after cross-library resolution.
+    pub const UnsafeMissingDep: FunctionSafety = FunctionSafety(2);
+    /// Intrinsically unsafe to call (side effects).
+    pub const Unsafe: FunctionSafety = FunctionSafety(4);
+
+    /// Whether any of the concerns in `other` are present. For a single-flag
+    /// `other` this is a plain membership test.
+    pub fn has(self, other: FunctionSafety) -> bool {
+        self.0 & other.0 != 0
+    }
+
+    /// Add the concerns in `other`.
+    pub fn insert(&mut self, other: FunctionSafety) {
+        self.0 |= other.0;
+    }
+
+    /// Remove the concerns in `other`.
+    pub fn remove(&mut self, other: FunctionSafety) {
+        self.0 &= !other.0;
+    }
+
+    /// A copy with the concerns in `other` removed.
+    pub fn without(self, other: FunctionSafety) -> FunctionSafety {
+        FunctionSafety(self.0 & !other.0)
+    }
+}
+
+impl std::ops::BitOr for FunctionSafety {
+    type Output = FunctionSafety;
+    fn bitor(self, rhs: FunctionSafety) -> FunctionSafety {
+        FunctionSafety(self.0 | rhs.0)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,9 +84,13 @@ pub struct MutatedParam {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionSafetyInfo {
+    /// The function's safety concerns. Because concerns are independent bits, an
+    /// intrinsic reason (e.g. an `UnsafeIfImported` global mutation) sits alongside
+    /// an `UnsafeMissingDep` concern rather than being masked by it: clearing the
+    /// `UnsafeMissingDep` bit at reduce time leaves the intrinsic bits standing.
     pub verdict: FunctionSafety,
     /// The missing cross-library callees that caused an `UnsafeMissingDep`
-    /// verdict. Promotion to `Safe` requires every callee to resolve safe.
+    /// concern. Promotion drops that concern only once every callee resolves safe.
     pub missing_dep_callees: AHashSet<ModuleName>,
     /// Parameters this function (transitively) mutates, with their positional
     /// index in the signature or `None` for keyword-only matching.
@@ -77,10 +114,17 @@ impl FunctionSafetyInfo {
         }
     }
 
-    pub fn merge(&mut self, other: Self) {
-        self.verdict = self.verdict.max(other.verdict);
+    /// Fold `other`'s concerns into `self`, returning whether `self` changed.
+    pub fn merge(&mut self, other: Self) -> bool {
+        let before_verdict = self.verdict;
+        let before_callees = self.missing_dep_callees.len();
+        let before_params = self.mutated_params.len();
+        self.verdict.insert(other.verdict);
         self.missing_dep_callees.extend(other.missing_dep_callees);
         self.extend_mutated_params(other.mutated_params);
+        self.verdict != before_verdict
+            || self.missing_dep_callees.len() != before_callees
+            || self.mutated_params.len() != before_params
     }
 
     fn extend_mutated_params(&mut self, params: impl IntoIterator<Item = MutatedParam>) {

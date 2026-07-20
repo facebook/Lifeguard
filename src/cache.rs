@@ -453,13 +453,13 @@ impl LibraryCache {
                                 e.insert(safety);
                                 changed = true;
                             }
-                            std::collections::hash_map::Entry::Occupied(mut e)
-                                if safety.verdict < e.get().verdict =>
-                            {
-                                e.insert(safety);
-                                changed = true;
+                            std::collections::hash_map::Entry::Occupied(mut e) => {
+                                // Concerns are orthogonal, so a re-exported symbol inherits the
+                                // union of its source's concerns rather than the "safer" of the two.
+                                if e.get_mut().merge(safety) {
+                                    changed = true;
+                                }
                             }
-                            _ => {}
                         }
                     }
                 }
@@ -677,7 +677,13 @@ pub(crate) fn apply_mutation_candidates<'a>(
                     if let Some(info) =
                         get_function_safety_mut(func_safety_by_module, &module_name, name.as_str())
                     {
-                        info.verdict = FunctionSafety::Unsafe;
+                        info.verdict.insert(FunctionSafety::Unsafe);
+                        // The callee is now resolved (it mutates the imported arg), so discharge
+                        // its missing-dep concern; the `Unsafe` bit it just set stands.
+                        info.missing_dep_callees.remove(&candidate.callee);
+                        if info.missing_dep_callees.is_empty() {
+                            info.verdict.remove(FunctionSafety::UnsafeMissingDep);
+                        }
                     }
                 }
                 (MutationCandidateSite::Function { name }, false) => {
@@ -697,11 +703,16 @@ pub(crate) fn apply_mutation_candidates<'a>(
                         get_function_safety_mut(func_safety_by_module, &module_name, name.as_str())
                     {
                         info.missing_dep_callees.remove(&candidate.callee);
-                        if info.verdict == FunctionSafety::UnsafeMissingDep
+                        if info.verdict.has(FunctionSafety::UnsafeMissingDep)
                             && info.missing_dep_callees.is_empty()
                         {
-                            info.verdict = FunctionSafety::Safe;
-                            resolved_to_safe = true;
+                            info.verdict.remove(FunctionSafety::UnsafeMissingDep);
+                            // Only clearing all the way to `Safe` verifies callers' errors; any
+                            // remaining concern (e.g. `UnsafeIfImported`) leaves cross-module
+                            // calls unsafe.
+                            if info.verdict == FunctionSafety::Safe {
+                                resolved_to_safe = true;
+                            }
                         }
                     }
                 }
@@ -767,71 +778,154 @@ pub(crate) fn promote_fixpoint(
 ) -> (Vec<(ModuleName, String)>, AHashSet<String>) {
     // Index of globally safe function names. Only include functions from modules in `module_names`,
     // to match `is_call_verified_safe`'s unqualified fallback.
-    let mut globally_safe_funcs: AHashSet<String> = func_safety_by_module
+    let mut globally_safe_funcs: AHashSet<String> = AHashSet::new();
+    // The `UnsafeIfImported` index lets a caller resolve an `UnsafeIfImported` callee as
+    // non-blocking.
+    let mut globally_if_imported_funcs: AHashSet<String> = AHashSet::new();
+    for (_, fs) in func_safety_by_module
         .iter()
         .filter(|(module, _)| module_names.contains(module))
-        .flat_map(|(_, fs)| fs.iter())
-        .filter(|(_, info)| info.verdict == FunctionSafety::Safe)
-        .map(|(name, _)| name.clone())
-        .collect();
+    {
+        for (name, info) in fs {
+            match info.verdict {
+                FunctionSafety::Safe => {
+                    globally_safe_funcs.insert(name.clone());
+                }
+                FunctionSafety::UnsafeIfImported => {
+                    globally_if_imported_funcs.insert(name.clone());
+                }
+                _ => {}
+            }
+        }
+    }
 
     let mut all_promoted: Vec<(ModuleName, String)> = Vec::new();
     loop {
-        let to_promote: Vec<(ModuleName, String)> = {
+        let to_promote: Vec<(ModuleName, String, FunctionSafety)> = {
             // Reborrow as shared for parallel access.
             let func_safety_by_module = &*func_safety_by_module;
             let globally_safe_funcs = &globally_safe_funcs;
+            let globally_if_imported_funcs = &globally_if_imported_funcs;
             func_safety_by_module
                 .par_iter()
                 .flat_map_iter(|(module, fs)| {
-                    fs.iter()
-                        .filter(move |(_, info)| {
-                            can_promote_missing_dep_function(
-                                info,
-                                module_names,
-                                func_safety_by_module,
-                                globally_safe_funcs,
-                            )
-                        })
-                        .map(move |(func_name, _)| (*module, func_name.clone()))
+                    fs.iter().filter_map(move |(func_name, info)| {
+                        can_promote_missing_dep_function(
+                            info,
+                            module_names,
+                            func_safety_by_module,
+                            globally_safe_funcs,
+                            globally_if_imported_funcs,
+                        )
+                        .map(|target| (*module, func_name.clone(), target))
+                    })
                 })
                 .collect()
         };
         if to_promote.is_empty() {
             break;
         }
-        for (module_name, func_name) in &to_promote {
+        for (module_name, func_name, target) in &to_promote {
             if let Some(info) =
                 get_function_safety_mut(func_safety_by_module, module_name, func_name)
             {
-                info.verdict = FunctionSafety::Safe;
-                globally_safe_funcs.insert(func_name.clone());
+                info.verdict = *target;
+                // Seed the index matching the resolved verdict so the promotion
+                // can unblock callers on the next round.
+                if *target == FunctionSafety::Safe {
+                    globally_safe_funcs.insert(func_name.clone());
+                } else if *target == FunctionSafety::UnsafeIfImported {
+                    // Not globally safe; must not seed the safe index.
+                    globally_if_imported_funcs.insert(func_name.clone());
+                }
             }
         }
-        all_promoted.extend(to_promote);
+        all_promoted.extend(to_promote.into_iter().map(|(m, name, _)| (m, name)));
     }
     (all_promoted, globally_safe_funcs)
 }
 
+/// The verdict a resolved `UnsafeMissingDep` function resolves to, or `None`
+/// if it cannot yet be promoted.
 pub(crate) fn can_promote_missing_dep_function(
     info: &FunctionSafetyInfo,
     module_names: &AHashSet<ModuleName>,
     func_safety_by_module: &HashMap<ModuleName, HashMap<String, FunctionSafetyInfo>>,
     globally_safe_funcs: &AHashSet<String>,
-) -> bool {
-    info.verdict == FunctionSafety::UnsafeMissingDep
-        // Promote only with positive evidence: a non-empty callee set,
-        // all now verified safe. No record (e.g. a re-export-propagated
-        // verdict) stays conservatively unsafe.
-        && !info.missing_dep_callees.is_empty()
-        && info.missing_dep_callees.iter().all(|callee| {
-            is_call_verified_safe_indexed(
-                callee.as_str(),
-                module_names,
-                func_safety_by_module,
-                globally_safe_funcs,
-            )
-        })
+    globally_if_imported_funcs: &AHashSet<String>,
+) -> Option<FunctionSafety> {
+    // Promote only with positive evidence: a non-empty callee set, all now
+    // resolved non-blocking. Requires the missing-dep concern and no hard `Unsafe`
+    // bit. No record (e.g. a re-export-propagated verdict) stays conservatively unsafe.
+    if !info.verdict.has(FunctionSafety::UnsafeMissingDep)
+        || info.verdict.has(FunctionSafety::Unsafe)
+        || info.missing_dep_callees.is_empty()
+    {
+        return None;
+    }
+    // Dropping the missing-dep concern leaves the intrinsic concerns (e.g. an
+    // `UnsafeIfImported` floor) standing as the target.
+    let mut target = info.verdict.without(FunctionSafety::UnsafeMissingDep);
+    for callee in &info.missing_dep_callees {
+        // A non-blocking callee resolves to `Safe` or `UnsafeIfImported`; fold that
+        // concern into the target (`Safe` is a no-op). Anything else blocks promotion.
+        let callee_verdict = resolve_callee_promotion_verdict(
+            callee.as_str(),
+            module_names,
+            func_safety_by_module,
+            globally_safe_funcs,
+            globally_if_imported_funcs,
+        )?;
+        target.insert(callee_verdict);
+    }
+    Some(target)
+}
+
+/// Resolve a promotion callee to `Safe` or `UnsafeIfImported` (both non-blocking),
+/// or `None` when it does not resolve or resolves to a blocking verdict. Mirrors
+/// `is_call_verified_safe_indexed`'s resolution, but distinguishes `UnsafeIfImported`.
+fn resolve_callee_promotion_verdict(
+    func_name: &str,
+    resolved_modules: &AHashSet<ModuleName>,
+    func_safety_by_module: &HashMap<ModuleName, HashMap<String, FunctionSafetyInfo>>,
+    globally_safe_funcs: &AHashSet<String>,
+    globally_if_imported_funcs: &AHashSet<String>,
+) -> Option<FunctionSafety> {
+    let fqn = ModuleName::from_str(func_name);
+    for (parent, dot_pos) in fqn.iter_parents() {
+        if resolved_modules.contains(&parent) {
+            let local_name = &func_name[dot_pos + 1..];
+            return func_safety_by_module
+                .get(&parent)
+                .and_then(|fs| lookup_verdict_in_safety_map(local_name, fs));
+        }
+    }
+
+    if globally_safe_funcs.contains(func_name) {
+        Some(FunctionSafety::Safe)
+    } else if globally_if_imported_funcs.contains(func_name) {
+        Some(FunctionSafety::UnsafeIfImported)
+    } else {
+        None
+    }
+}
+
+/// Like `lookup_in_safety_map` but returns the resolved verdict when it is
+/// non-blocking (`Safe` or `UnsafeIfImported`), else `None`. Uses the same
+/// class-prefix proxy: `Class.method` resolves via `Class`.
+fn lookup_verdict_in_safety_map(
+    local_name: &str,
+    fs: &HashMap<String, FunctionSafetyInfo>,
+) -> Option<FunctionSafety> {
+    let non_blocking = |key: &str| match fs.get(key).map(|info| info.verdict) {
+        Some(v @ (FunctionSafety::Safe | FunctionSafety::UnsafeIfImported)) => Some(v),
+        _ => None,
+    };
+    non_blocking(local_name).or_else(|| {
+        local_name
+            .split_once('.')
+            .and_then(|(prefix, _)| non_blocking(prefix))
+    })
 }
 
 /// Like `is_call_verified_safe` but uses a pre-built index for the unqualified
@@ -899,7 +993,9 @@ impl CachedModule {
         for (name, info) in other.function_safety {
             self.function_safety
                 .entry(name)
-                .and_modify(|existing| existing.merge(info.clone()))
+                .and_modify(|existing| {
+                    existing.merge(info.clone());
+                })
                 .or_insert(info);
         }
         // Keep mutation candidates from every duplicate
