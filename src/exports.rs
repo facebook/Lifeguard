@@ -63,14 +63,16 @@ impl Attribute {
     }
 
     /// Split a fully-qualified ModuleName into module (parent) and attr (last component).
+    /// A name with no `.` (e.g. `"foo"`) has an empty module and the whole name as attr.
     pub fn from_module_name(name: &ModuleName) -> Self {
-        let module = name.parent().unwrap_or_else(ModuleName::empty);
-        let components = name.components();
-        let attr = components
-            .last()
-            .map(Name::new)
-            .unwrap_or_else(|| Name::new(""));
-        Self { module, attr }
+        let (module, attr) = match name.as_str().rsplit_once('.') {
+            Some((module, attr)) => (ModuleName::from_str(module), attr),
+            None => (ModuleName::empty(), name.as_str()),
+        };
+        Self {
+            module,
+            attr: Name::new(attr),
+        }
     }
 
     /// Reconstruct the fully-qualified ModuleName (module.attr).
