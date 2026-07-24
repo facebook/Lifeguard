@@ -5,6 +5,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::sync::LazyLock;
+
 use pyrefly_python::module_name::ModuleName;
 use pyrefly_util::visit::Visit;
 use ruff_python_ast::Expr;
@@ -607,24 +609,23 @@ impl<'a, 'b> BindingsTableBuilder<'a, 'b> {
     }
 
     fn get_expr_type(&self, expr: &Expr) -> Option<ModuleName> {
-        let m = |s| Some(ModuleName::from_str(s));
         match expr {
-            Expr::BooleanLiteral(_) => m("builtins.bool"),
-            Expr::BytesLiteral(_) => m("builtins.bytes"),
-            Expr::EllipsisLiteral(_) => m("builtins.ellipsis"),
-            Expr::NoneLiteral(_) => m("builtins.NoneType"),
-            Expr::NumberLiteral(n) => m(get_numeric_type(n)),
-            Expr::StringLiteral(_) => m("builtins.str"),
+            Expr::BooleanLiteral(_) => Some(BUILTIN_TYPES.boolean),
+            Expr::BytesLiteral(_) => Some(BUILTIN_TYPES.bytes),
+            Expr::EllipsisLiteral(_) => Some(BUILTIN_TYPES.ellipsis),
+            Expr::NoneLiteral(_) => Some(BUILTIN_TYPES.none_type),
+            Expr::NumberLiteral(n) => Some(get_numeric_type(n)),
+            Expr::StringLiteral(_) => Some(BUILTIN_TYPES.string),
             Expr::Call(call) => self.get_call_type(call),
-            Expr::Dict(_) => m("builtins.dict"),
-            Expr::Set(_) => m("builtins.set"),
-            Expr::ListComp(_) => m("builtins.list"),
-            Expr::SetComp(_) => m("builtins.set"),
-            Expr::DictComp(_) => m("builtins.dict"),
-            Expr::FString(_) => m("builtins.str"),
-            Expr::TString(_) => m("builtins.str"),
-            Expr::List(_) => m("builtins.list"),
-            Expr::Tuple(_) => m("builtins.tuple"),
+            Expr::Dict(_) => Some(BUILTIN_TYPES.dict),
+            Expr::Set(_) => Some(BUILTIN_TYPES.set),
+            Expr::ListComp(_) => Some(BUILTIN_TYPES.list),
+            Expr::SetComp(_) => Some(BUILTIN_TYPES.set),
+            Expr::DictComp(_) => Some(BUILTIN_TYPES.dict),
+            Expr::FString(_) => Some(BUILTIN_TYPES.string),
+            Expr::TString(_) => Some(BUILTIN_TYPES.string),
+            Expr::List(_) => Some(BUILTIN_TYPES.list),
+            Expr::Tuple(_) => Some(BUILTIN_TYPES.tuple),
             _ => None,
         }
     }
@@ -787,11 +788,44 @@ impl<'a, 'b> BindingsTableBuilder<'a, 'b> {
     }
 }
 
-fn get_numeric_type(n: &ExprNumberLiteral) -> &str {
+/// Interned names of the builtin types produced by literal expressions,
+/// cached once so literal-expression typing does not re-intern the same
+/// constant strings on every AST node.
+struct BuiltinTypes {
+    boolean: ModuleName,
+    bytes: ModuleName,
+    ellipsis: ModuleName,
+    none_type: ModuleName,
+    string: ModuleName,
+    dict: ModuleName,
+    set: ModuleName,
+    list: ModuleName,
+    tuple: ModuleName,
+    int: ModuleName,
+    float: ModuleName,
+    complex: ModuleName,
+}
+
+static BUILTIN_TYPES: LazyLock<BuiltinTypes> = LazyLock::new(|| BuiltinTypes {
+    boolean: ModuleName::from_str("builtins.bool"),
+    bytes: ModuleName::from_str("builtins.bytes"),
+    ellipsis: ModuleName::from_str("builtins.ellipsis"),
+    none_type: ModuleName::from_str("builtins.NoneType"),
+    string: ModuleName::from_str("builtins.str"),
+    dict: ModuleName::from_str("builtins.dict"),
+    set: ModuleName::from_str("builtins.set"),
+    list: ModuleName::from_str("builtins.list"),
+    tuple: ModuleName::from_str("builtins.tuple"),
+    int: ModuleName::from_str("builtins.int"),
+    float: ModuleName::from_str("builtins.float"),
+    complex: ModuleName::from_str("builtins.complex"),
+});
+
+fn get_numeric_type(n: &ExprNumberLiteral) -> ModuleName {
     match n.value {
-        Number::Int(_) => "builtins.int",
-        Number::Float(_) => "builtins.float",
-        Number::Complex { .. } => "builtins.complex",
+        Number::Int(_) => BUILTIN_TYPES.int,
+        Number::Float(_) => BUILTIN_TYPES.float,
+        Number::Complex { .. } => BUILTIN_TYPES.complex,
     }
 }
 
