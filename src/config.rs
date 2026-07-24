@@ -88,17 +88,18 @@ impl AnalysisConfig {
                 if done {
                     return None;
                 }
-                if let Some(t) = test {
-                    if let Some(main) = main_module {
-                        if is_name_main_guard(t) {
-                            if main == current_module {
-                                done = true;
-                                return Some((None, body));
-                            } else {
-                                return None;
-                            }
-                        }
-                    }
+                // A `__main__` guard: keep its body (unguarded) only in the module
+                // that runs as __main__; prune it everywhere else.
+                if let Some(t) = test
+                    && let Some(main) = main_module
+                    && is_name_main_guard(t)
+                {
+                    return if main == current_module {
+                        done = true;
+                        Some((None, body))
+                    } else {
+                        None
+                    };
                 }
                 Some((test, body))
             })
