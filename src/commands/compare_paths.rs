@@ -593,6 +593,7 @@ mod tests {
                         errors: vec![CachedError {
                             kind: ErrorKind::UnsafeFunctionCall,
                             metadata: "pkg.dependency.safe_func()".to_owned(),
+                            parameterized_decorator: false,
                         }],
                         force_imports_eager_overrides: Vec::new(),
                         implicit_imports: Vec::new(),

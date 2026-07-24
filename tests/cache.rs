@@ -12,6 +12,7 @@ mod tests {
     use std::time::SystemTime;
     use std::time::UNIX_EPOCH;
 
+    use lifeguard::cache::CachedError;
     use lifeguard::cache::CachedExports;
     use lifeguard::cache::CachedModule;
     use lifeguard::cache::CachedModuleSafety;
@@ -46,6 +47,39 @@ mod tests {
 
     fn mn(s: &str) -> ModuleName {
         ModuleName::from_str(s)
+    }
+
+    /// A `(name, Safe)` `function_safety` entry.
+    fn safe(name: &str) -> (String, FunctionSafetyInfo) {
+        (
+            name.to_owned(),
+            FunctionSafetyInfo::new(FunctionSafety::Safe),
+        )
+    }
+
+    /// A `(name, UnsafeIfImported)` `function_safety` entry.
+    fn unsafe_if_imported(name: &str) -> (String, FunctionSafetyInfo) {
+        (
+            name.to_owned(),
+            FunctionSafetyInfo::new(FunctionSafety::UnsafeIfImported),
+        )
+    }
+
+    /// A `(name, UnsafeMissingDep)` `function_safety` entry blocked on `callee`.
+    fn unsafe_missing_dep(name: &str, callee: &str) -> (String, FunctionSafetyInfo) {
+        (
+            name.to_owned(),
+            FunctionSafetyInfo::unsafe_missing_dep(mn(callee)),
+        )
+    }
+
+    fn empty_exports() -> CachedExports {
+        CachedExports {
+            definitions: Vec::new(),
+            re_exports: Vec::new(),
+            all: Vec::new(),
+            return_types: Vec::new(),
+        }
     }
 
     fn build_cache(sources: &TestSources) -> LibraryCache {
@@ -1146,10 +1180,7 @@ mod tests {
             missing_imports: Default::default(),
             ambiguous_imports: Default::default(),
             side_effect_imports: Default::default(),
-            function_safety: HashMap::from([(
-                "foo".to_string(),
-                FunctionSafetyInfo::new(FunctionSafety::UnsafeIfImported),
-            )]),
+            function_safety: HashMap::from([unsafe_if_imported("foo")]),
             mutation_candidates: Vec::new(),
         });
 
@@ -1511,6 +1542,166 @@ mod tests {
         assert!(
             !te_inherits_typing(&analysis),
             "without stub injection, typing_extensions should not inherit `typing`",
+        );
+    }
+
+    #[test]
+    fn test_reduce_keeps_unsafe_decorator_error_after_unrelated_promotion() {
+        let mut cache = LibraryCache {
+            modules: vec![
+                CachedModule {
+                    name: mn("app"),
+                    safety: CachedSafety::Ok(CachedModuleSafety {
+                        errors: vec![CachedError {
+                            kind: ErrorKind::UnsafeDecoratorCall,
+                            metadata: "app.deco".to_owned(),
+                            parameterized_decorator: true,
+                        }],
+                        ..Default::default()
+                    }),
+                    imports: Default::default(),
+                    missing_imports: Default::default(),
+                    ambiguous_imports: Default::default(),
+                    side_effect_imports: Default::default(),
+                    function_safety: HashMap::from([
+                        safe("deco"),
+                        unsafe_if_imported("deco.builder"),
+                        unsafe_missing_dep("wrapper", "dep.safe"),
+                    ]),
+                    mutation_candidates: Vec::new(),
+                },
+                CachedModule {
+                    name: mn("dep"),
+                    safety: CachedSafety::Ok(CachedModuleSafety::default()),
+                    imports: Default::default(),
+                    missing_imports: Default::default(),
+                    ambiguous_imports: Default::default(),
+                    side_effect_imports: Default::default(),
+                    function_safety: HashMap::from([safe("safe")]),
+                    mutation_candidates: Vec::new(),
+                },
+            ],
+            exports: empty_exports(),
+        };
+
+        cache.resolve_cross_library_errors();
+
+        let app = cache
+            .modules
+            .iter()
+            .find(|x| x.name == mn("app"))
+            .expect("app module should be present");
+        let CachedSafety::Ok(safety) = &app.safety else {
+            panic!("app should have cached module safety");
+        };
+        assert!(
+            safety
+                .errors
+                .iter()
+                .any(|e| e.kind == ErrorKind::UnsafeDecoratorCall && e.metadata == "app.deco"),
+            "decorator errors need the call-site nested-function check, so a safe function verdict must not clear them",
+        );
+        assert_eq!(
+            app.function_safety.get("wrapper").map(|i| i.verdict),
+            Some(FunctionSafety::Safe),
+            "the unrelated promotion should still run and trigger global error clearing",
+        );
+    }
+
+    #[test]
+    fn test_reduce_clears_bare_decorator_error_without_nested_function_check() {
+        let mut cache = LibraryCache {
+            modules: vec![CachedModule {
+                name: mn("app"),
+                safety: CachedSafety::Ok(CachedModuleSafety {
+                    errors: vec![CachedError {
+                        kind: ErrorKind::UnsafeDecoratorCall,
+                        metadata: "app.deco".to_owned(),
+                        parameterized_decorator: false,
+                    }],
+                    ..Default::default()
+                }),
+                imports: Default::default(),
+                missing_imports: Default::default(),
+                ambiguous_imports: Default::default(),
+                side_effect_imports: Default::default(),
+                function_safety: HashMap::from([
+                    safe("deco"),
+                    unsafe_if_imported("deco.unused_helper"),
+                ]),
+                mutation_candidates: Vec::new(),
+            }],
+            exports: empty_exports(),
+        };
+
+        cache.resolve_cross_library_errors();
+
+        let app = cache
+            .modules
+            .iter()
+            .find(|x| x.name == mn("app"))
+            .expect("app module should be present");
+        let CachedSafety::Ok(safety) = &app.safety else {
+            panic!("app should have cached module safety");
+        };
+        assert!(
+            safety.errors.is_empty(),
+            "bare decorators execute the decorator function itself, not every nested helper",
+        );
+    }
+
+    #[test]
+    fn test_reduce_clears_decorator_error_when_nested_functions_are_safe() {
+        let mut cache = LibraryCache {
+            modules: vec![
+                CachedModule {
+                    name: mn("app"),
+                    safety: CachedSafety::Ok(CachedModuleSafety {
+                        errors: vec![CachedError {
+                            kind: ErrorKind::UnsafeDecoratorCall,
+                            metadata: "app.deco".to_owned(),
+                            parameterized_decorator: true,
+                        }],
+                        ..Default::default()
+                    }),
+                    imports: Default::default(),
+                    missing_imports: Default::default(),
+                    ambiguous_imports: Default::default(),
+                    side_effect_imports: Default::default(),
+                    function_safety: HashMap::from([
+                        safe("deco"),
+                        safe("deco.builder"),
+                        unsafe_missing_dep("wrapper", "dep.safe"),
+                    ]),
+                    mutation_candidates: Vec::new(),
+                },
+                CachedModule {
+                    name: mn("dep"),
+                    safety: CachedSafety::Ok(CachedModuleSafety::default()),
+                    imports: Default::default(),
+                    missing_imports: Default::default(),
+                    ambiguous_imports: Default::default(),
+                    side_effect_imports: Default::default(),
+                    function_safety: HashMap::from([safe("safe")]),
+                    mutation_candidates: Vec::new(),
+                },
+            ],
+            exports: empty_exports(),
+        };
+
+        cache.resolve_cross_library_errors();
+
+        let app = cache
+            .modules
+            .iter()
+            .find(|x| x.name == mn("app"))
+            .expect("app module should be present");
+        let CachedSafety::Ok(safety) = &app.safety else {
+            panic!("app should have cached module safety");
+        };
+        assert!(
+            safety.errors.is_empty(),
+            "a decorator error verified safe together with its immediate nested functions should clear",
         );
     }
 }

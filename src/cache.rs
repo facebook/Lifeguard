@@ -86,10 +86,11 @@ pub struct CachedModuleSafety {
 }
 
 /// A serializable safety error (without source location).
-#[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CachedError {
     pub kind: ErrorKind,
     pub metadata: String,
+    pub parameterized_decorator: bool,
 }
 
 /// Cached export information for a library.
@@ -285,37 +286,42 @@ impl LibraryCache {
         clear_errors: bool,
     ) {
         let (promoted, globally_safe_funcs) = promote_fixpoint(module_names, func_safety_by_module);
-        // Clear errors only with positive evidence: a promotion, or a function resolved to `Safe`
-        // by mutation-candidate resolution (the promotion fixpoint does not count this, but it can
-        // still leave a stale error on a module-scope caller of the resolved function).
         if !promoted.is_empty() || clear_errors {
-            self.clear_verified_errors(module_names, func_safety_by_module, &globally_safe_funcs);
+            // With positive evidence (a promotion or a mutation candidate now
+            // `Safe`), clear every verified-safe error kind.
+            let resolver = SafetyResolver::with_safe_index(
+                module_names,
+                func_safety_by_module,
+                &globally_safe_funcs,
+            );
+            self.clear_errors_where(&resolver, |_| true);
+        } else {
+            // Without promotion evidence, clear only `UnsafeDecoratorCall`: its
+            // safety follows from static verdicts alone. Decorator checks ignore
+            // the globally-safe index, so an empty one suffices.
+            let empty = AHashSet::new();
+            let resolver =
+                SafetyResolver::with_safe_index(module_names, func_safety_by_module, &empty);
+            self.clear_errors_where(&resolver, |kind| kind == ErrorKind::UnsafeDecoratorCall);
         }
         debug!("{} functions promoted", promoted.len());
     }
 
-    /// Drop errors that the current per-function verdicts now verify as safe,
-    /// using the global safe-function index for O(1) unqualified lookups.
-    /// Returns whether any error was removed.
-    fn clear_verified_errors(
+    /// Drop every error whose kind `should_clear` selects and that `resolver`
+    /// verifies as safe, in parallel. Returns whether any error was removed.
+    fn clear_errors_where(
         &mut self,
-        module_names: &AHashSet<ModuleName>,
-        func_safety_by_module: &HashMap<ModuleName, HashMap<String, FunctionSafetyInfo>>,
-        globally_safe_funcs: &AHashSet<String>,
+        resolver: &SafetyResolver,
+        should_clear: impl Fn(ErrorKind) -> bool + Sync,
     ) -> bool {
-        let resolver = SafetyResolver::with_safe_index(
-            module_names,
-            func_safety_by_module,
-            globally_safe_funcs,
-        );
         self.modules
             .par_iter_mut()
             .map(|module| {
                 let CachedSafety::Ok(ref mut safety) = module.safety else {
                     return false;
                 };
-                retain_unverified_errors(safety, |func_name| {
-                    resolver.is_call_verified_safe(func_name)
+                retain_unverified_errors(safety, |error| {
+                    should_clear(error.kind) && resolver.is_error_verified_safe(error)
                 })
             })
             .reduce(|| false, |any_cleared, cleared| any_cleared || cleared)
@@ -368,9 +374,7 @@ impl LibraryCache {
 
             if let CachedSafety::Ok(ref mut safety) = module.safety {
                 let resolver = SafetyResolver::new(&resolved_modules, &func_safety_by_module);
-                retain_unverified_errors(safety, |func_name| {
-                    resolver.is_call_verified_safe(func_name)
-                });
+                retain_unverified_errors(safety, |error| resolver.is_error_verified_safe(error));
             }
         });
 
@@ -416,6 +420,7 @@ impl LibraryCache {
                     .extend(errors.iter().map(|metadata| CachedError {
                         kind: ErrorKind::ImportedVarArgument,
                         metadata: metadata.clone(),
+                        parameterized_decorator: false,
                     }));
             }
         }
@@ -550,19 +555,12 @@ impl LibraryCache {
 /// the rest. Returns whether any error was removed.
 fn retain_unverified_errors(
     safety: &mut CachedModuleSafety,
-    mut is_verified_safe: impl FnMut(&str) -> bool,
+    mut is_verified_safe: impl FnMut(&CachedError) -> bool,
 ) -> bool {
     let before = safety.errors.len();
-    safety.errors.retain(|e| {
-        if !e.kind.could_be_caused_by_missing_import() {
-            return true;
-        }
-        // `e.metadata` is the callee name recorded on the effect (see
-        // `SafetyError::new_from_effect`), which may render the call with a
-        // trailing `()`. `function_safety` is keyed by the bare function name,
-        // so strip the `()` before looking the verdict up.
-        !is_verified_safe(e.metadata.trim_end_matches("()"))
-    });
+    safety
+        .errors
+        .retain(|e| !e.kind.could_be_caused_by_missing_import() || !is_verified_safe(e));
     safety.errors.len() < before
 }
 
@@ -671,6 +669,37 @@ impl<'a> SafetyResolver<'a> {
         self.unqualified_safe(func_name)
     }
 
+    /// Whether a parameterized-decorator call is safe: the factory AND every
+    /// immediate nested function must be `Safe`, since the factory runs its
+    /// returned wrapper at decoration time. Never consults `globally_safe`
+    /// (own-verdict only).
+    fn is_decorator_call_verified_safe(&self, func_name: &str) -> bool {
+        if let Some((module, local)) = self.split_at_module(func_name) {
+            return self
+                .by_module
+                .get(&module)
+                .is_some_and(|fs| lookup_decorator_in_safety_map(local, fs));
+        }
+        self.modules
+            .iter()
+            .filter_map(|m| self.by_module.get(m))
+            .any(|fs| lookup_decorator_in_safety_map(func_name, fs))
+    }
+
+    /// Dispatch a cached error to the right verified-safe check by kind. The
+    /// callee `metadata` may render with a trailing `()`; strip it once here.
+    fn is_error_verified_safe(&self, error: &CachedError) -> bool {
+        let func_name = error.metadata.trim_end_matches("()");
+        match error.kind {
+            ErrorKind::UnsafeDecoratorCall | ErrorKind::UnknownDecoratorCall
+                if error.parameterized_decorator =>
+            {
+                self.is_decorator_call_verified_safe(func_name)
+            }
+            _ => self.is_call_verified_safe(func_name),
+        }
+    }
+
     /// The verdict a resolved `UnsafeMissingDep` function resolves to, or `None`
     /// if it cannot yet be promoted.
     fn can_promote(&self, info: &FunctionSafetyInfo) -> Option<FunctionSafety> {
@@ -724,6 +753,25 @@ pub fn is_call_verified_safe(
     func_safety_by_module: &HashMap<ModuleName, HashMap<String, FunctionSafetyInfo>>,
 ) -> bool {
     SafetyResolver::new(resolved_modules, func_safety_by_module).is_call_verified_safe(func_name)
+}
+
+/// Whether a decorator is safe: safe itself AND every immediate (one level deep)
+/// nested function is safe. For `deco`, `deco.builder` is checked; `deco.b.inner`
+/// and `deco_helper` are not.
+fn lookup_decorator_in_safety_map(
+    local_name: &str,
+    fs: &HashMap<String, FunctionSafetyInfo>,
+) -> bool {
+    if !lookup_in_safety_map(local_name, fs) {
+        return false;
+    }
+    fs.iter().all(|(name, info)| {
+        let is_immediate_child = name
+            .strip_prefix(local_name)
+            .and_then(|rest| rest.strip_prefix('.'))
+            .is_some_and(|child| !child.contains('.'));
+        !is_immediate_child || info.verdict == FunctionSafety::Safe
+    })
 }
 
 /// Look up the cached safety info of a mutation candidate's callee, resolving its FQN
@@ -1123,11 +1171,14 @@ impl CachedError {
         CachedError {
             kind: error.kind,
             metadata: error.metadata.as_str().to_string(),
+            parameterized_decorator: error.parameterized_decorator,
         }
     }
 
     fn to_safety_error(&self) -> SafetyError {
-        SafetyError::new(self.kind, self.metadata.clone(), TextRange::default())
+        let mut error = SafetyError::new(self.kind, self.metadata.clone(), TextRange::default());
+        error.parameterized_decorator = self.parameterized_decorator;
+        error
     }
 }
 
@@ -1211,6 +1262,7 @@ mod tests {
                         errors: vec![CachedError {
                             kind: ErrorKind::UnknownFunctionCall,
                             metadata: "helper()".to_owned(),
+                            parameterized_decorator: false,
                         }],
                         force_imports_eager_overrides: Vec::new(),
                         implicit_imports: Vec::new(),
@@ -1228,6 +1280,7 @@ mod tests {
                         errors: vec![CachedError {
                             kind: ErrorKind::UnknownFunctionCall,
                             metadata: "helper()".to_owned(),
+                            parameterized_decorator: false,
                         }],
                         force_imports_eager_overrides: Vec::new(),
                         implicit_imports: Vec::new(),
@@ -1267,17 +1320,16 @@ mod tests {
         ]);
         let globally_safe_funcs: AHashSet<String> = ["helper".to_owned()].into_iter().collect();
 
+        let resolver = SafetyResolver::with_safe_index(
+            &module_names,
+            &func_safety_by_module,
+            &globally_safe_funcs,
+        );
         let cleared = ThreadPoolBuilder::new()
             .num_threads(1)
             .build()
             .expect("should build test thread pool")
-            .install(|| {
-                cache.clear_verified_errors(
-                    &module_names,
-                    &func_safety_by_module,
-                    &globally_safe_funcs,
-                )
-            });
+            .install(|| cache.clear_errors_where(&resolver, |_| true));
 
         assert!(
             cleared,

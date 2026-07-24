@@ -20,6 +20,7 @@ use static_interner::Intern;
 use static_interner::Interner;
 
 use crate::effects::Effect;
+use crate::effects::EffectData;
 use crate::effects::EffectKind;
 use crate::format::ErrorString;
 use crate::format::bare_string;
@@ -172,6 +173,9 @@ pub struct SafetyError {
     pub kind: ErrorKind,
     pub metadata: ErrorMetadata,
     pub range: TextRange,
+    /// True when this error is from a parameterized decorator (`@deco(...)`),
+    /// whose returned wrapper also runs at decoration time.
+    pub parameterized_decorator: bool,
 }
 
 impl SafetyError {
@@ -180,6 +184,7 @@ impl SafetyError {
             kind,
             metadata: metadata.parse().unwrap(),
             range,
+            parameterized_decorator: false,
         }
     }
 
@@ -188,6 +193,7 @@ impl SafetyError {
             kind,
             metadata: eff.name.as_str().parse().unwrap(),
             range: eff.range,
+            parameterized_decorator: is_parameterized_decorator_effect(eff),
         }
     }
 
@@ -224,6 +230,16 @@ impl SafetyError {
         };
         Ok(Self::new_from_effect(kind, eff))
     }
+}
+
+/// Whether `eff` is a decorator applied as a call (`@deco(...)`) rather than a
+/// bare `@deco`. Only the call form runs a returned wrapper at decoration time,
+/// so its nested functions must also be verified safe.
+fn is_parameterized_decorator_effect(eff: &Effect) -> bool {
+    matches!(
+        eff.kind,
+        EffectKind::DecoratorCall | EffectKind::ImportedDecoratorCall
+    ) && matches!(eff.data, EffectData::Call(_))
 }
 
 impl Ord for SafetyError {
