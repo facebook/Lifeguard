@@ -26,9 +26,7 @@ use crate::cursor::Cursor;
 use crate::exports::Attribute;
 use crate::exports::Exports;
 use crate::hasher::AHashMap;
-use crate::hasher::AHashSet;
 use crate::hasher::HashMapExt;
-use crate::hasher::HashSetExt;
 use crate::imports::ImportGraph;
 use crate::module_info::DefinitionTable;
 use crate::module_info::ResolvedName;
@@ -113,17 +111,25 @@ fn resolve_alias<'a>(
     scope: &ModuleName,
     name: &Name,
 ) -> Option<&'a Alias> {
+    // Bounds the alias-chain walk and sizes the visited buffer below.
+    const MAX_HOPS: usize = 32;
+
     let mut current_scope = *scope;
     let mut current_name = name;
-    let mut visited = AHashSet::with_capacity(8);
     let mut last_ret: Option<&'a Alias> = None;
+    // Visited (scope, name) pairs for cycle detection. Chains are almost always
+    // length 1-2 and MAX_HOPS caps the count, so a stack array + linear scan
+    // avoids allocating a hashset on every call.
+    let mut visited: [(ModuleName, &str); MAX_HOPS] = [(current_scope, ""); MAX_HOPS];
 
-    // Bound call depth, as well as detecting recursive cycles via `visited`.
-    for _ in 0..32 {
-        if !visited.insert((current_scope, current_name.clone())) {
+    for hop in 0..MAX_HOPS {
+        let key = (current_scope, current_name.as_str());
+        if visited[..hop].contains(&key) {
             // Cycle detected — return last valid alias to preserve old behavior.
             return last_ret;
         }
+        visited[hop] = key;
+
         let ret = match get_nested(aliases, &current_scope, current_name) {
             Some(r) => r,
             None => return last_ret,
