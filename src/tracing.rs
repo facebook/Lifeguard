@@ -50,6 +50,15 @@ impl ProcessTimer {
         let cpu_now = get_process_cpu_time()?;
         cpu_now.checked_sub(cpu_start)
     }
+
+    /// Print the standard end-of-run trailer: peak memory and total wall/CPU time.
+    pub fn report_finish(&self) {
+        crate::debug::report_peak_memory();
+        println!("Full time executing: {:.2?}", self.elapsed_wall());
+        if let Some(cpu) = self.elapsed_cpu() {
+            println!("Full time executing (CPU): {:.2?}", cpu);
+        }
+    }
 }
 
 #[cfg(unix)]

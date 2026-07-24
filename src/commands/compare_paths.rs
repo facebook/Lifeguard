@@ -130,19 +130,6 @@ fn sorted(names: impl IntoIterator<Item = ModuleName>) -> Vec<ModuleName> {
     v
 }
 
-fn print_examples(label: &str, names: &[ModuleName], limit: usize) {
-    if names.is_empty() {
-        return;
-    }
-    println!("  {} ({}):", label, names.len());
-    for name in names.iter().take(limit) {
-        println!("    {}", name.as_str());
-    }
-    if names.len() > limit {
-        println!("    ... and {} more", names.len() - limit);
-    }
-}
-
 fn print_module_names(indent: &str, label: &str, names: &[ModuleName], limit: usize) {
     if names.is_empty() {
         return;
@@ -449,27 +436,32 @@ pub fn run(args: ComparePathsArgs) -> Result<()> {
         inc_eager.len()
     );
     println!("--- divergences ---");
-    print_examples(
+    print_module_names(
+        "  ",
         "eligible only in single-pass",
         &sp_only_eligible,
         args.examples,
     );
-    print_examples(
+    print_module_names(
+        "  ",
         "eligible only in incremental",
         &inc_only_eligible,
         args.examples,
     );
-    print_examples(
+    print_module_names(
+        "  ",
         "eligible in both, differing failing-dep sets",
         &differing_deps,
         args.examples,
     );
-    print_examples(
+    print_module_names(
+        "  ",
         "load-imports-eagerly only in single-pass",
         &eager_sp_only,
         args.examples,
     );
-    print_examples(
+    print_module_names(
+        "  ",
         "load-imports-eagerly only in incremental",
         &eager_inc_only,
         args.examples,

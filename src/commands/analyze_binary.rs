@@ -5,7 +5,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use std::io::BufWriter;
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -16,7 +15,7 @@ use rayon::prelude::*;
 use tracing::info;
 
 use crate::cache::LibraryCache;
-use crate::debug::report_peak_memory;
+use crate::commands::write_json_pretty;
 use crate::output::LifeGuardAnalysis;
 use crate::runner::DEFAULT_PYTHON_VERSION;
 use crate::runner::Options;
@@ -94,15 +93,9 @@ pub fn run(args: AnalyzeBinaryArgs) -> Result<()> {
 
     info!("{}", time("Generating report", || analysis.get_report()));
 
-    let output_file = std::fs::File::create(&args.output_path)?;
-    let writer = BufWriter::new(output_file);
-    serde_json::to_writer_pretty(writer, &analysis.output)?;
+    write_json_pretty(&args.output_path, &analysis.output)?;
 
     info!("Output written to {}", args.output_path.display());
-    report_peak_memory();
-    info!("Full time executing: {:.2?}", timer.elapsed_wall());
-    if let Some(cpu) = timer.elapsed_cpu() {
-        info!("Full time executing (CPU): {:.2?}", cpu);
-    }
+    timer.report_finish();
     Ok(())
 }

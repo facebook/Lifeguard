@@ -6,14 +6,13 @@
  */
 
 use std::collections::BTreeMap;
-use std::io::BufWriter;
-use std::io::Write;
 use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::Parser;
 use serde::Serialize;
 
+use crate::commands::write_json_pretty;
 use crate::find_sources::build_source_db;
 use crate::runner::DEFAULT_PYTHON_VERSION;
 use crate::runner::parse_python_version;
@@ -54,10 +53,7 @@ pub fn run(args: GenSourceDbArgs) -> Result<()> {
     );
 
     let source_db = SourceDb { build_map };
-    let output_file = std::fs::File::create(&args.output_path)?;
-    let mut writer = BufWriter::new(output_file);
-    serde_json::to_writer_pretty(&mut writer, &source_db)?;
-    writer.flush()?;
+    write_json_pretty(&args.output_path, &source_db)?;
 
     eprintln!(
         "Wrote {} entries ({} from imports) to {}",

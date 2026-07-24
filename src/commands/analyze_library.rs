@@ -14,7 +14,6 @@ use tracing::info;
 use tracing::warn;
 
 use crate::cache::LibraryCache;
-use crate::debug::report_peak_memory;
 use crate::project::ExecutionMode;
 use crate::runner::DEFAULT_PYTHON_VERSION;
 use crate::runner::Options;
@@ -136,10 +135,6 @@ pub fn run(args: AnalyzeLibraryArgs) -> Result<()> {
         module_count - safe_count
     );
 
-    report_peak_memory();
-    println!("Full time executing: {:.2?}", timer.elapsed_wall());
-    if let Some(cpu) = timer.elapsed_cpu() {
-        println!("Full time executing (CPU): {:.2?}", cpu);
-    }
+    timer.report_finish();
     Ok(())
 }

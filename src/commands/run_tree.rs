@@ -5,7 +5,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use std::io::BufWriter;
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -13,6 +12,7 @@ use clap::ArgAction;
 use clap::Parser;
 use pyrefly_python::module_name::ModuleName;
 
+use crate::commands::write_json_pretty;
 use crate::find_sources::build_source_db;
 use crate::find_sources::make_source_map;
 use crate::runner::DEFAULT_PYTHON_VERSION;
@@ -93,15 +93,9 @@ pub fn run(args: RunTreeArgs) -> Result<()> {
         lifeguard_output.print_diagnostics();
     }
 
-    // Write the lifeguard_output to the specified output file
-    let output_file = std::fs::File::create(&args.output_path)?;
-    let writer = BufWriter::new(output_file);
-    serde_json::to_writer_pretty(writer, &lifeguard_output.output)?;
+    write_json_pretty(&args.output_path, &lifeguard_output.output)?;
 
     println!("Output written to {}", args.output_path.display());
-    println!("Full time executing: {:.2?}", timer.elapsed_wall());
-    if let Some(cpu) = timer.elapsed_cpu() {
-        println!("Full time executing (CPU): {:.2?}", cpu);
-    }
+    timer.report_finish();
     Ok(())
 }
