@@ -111,19 +111,16 @@ impl DefinitionsExt for Definitions {
 
 pub struct ParentIter<'a> {
     s: &'a str,
-    dot_positions: Vec<usize>,
-    index: usize,
+    // End of the prefix still to be searched; walks dots from right to left.
+    end: usize,
 }
 
 impl Iterator for ParentIter<'_> {
     type Item = (ModuleName, usize);
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.index >= self.dot_positions.len() {
-            return None;
-        }
-        let pos = self.dot_positions[self.dot_positions.len() - 1 - self.index];
-        self.index += 1;
+        let pos = self.s[..self.end].rfind('.')?;
+        self.end = pos;
         Some((ModuleName::from_str(&self.s[..pos]), pos))
     }
 }
@@ -170,12 +167,7 @@ impl ModuleNameExt for ModuleName {
 
     fn iter_parents(&self) -> ParentIter<'_> {
         let s = self.as_str();
-        let dot_positions: Vec<usize> = s.match_indices('.').map(|(i, _)| i).collect();
-        ParentIter {
-            s,
-            dot_positions,
-            index: 0,
-        }
+        ParentIter { s, end: s.len() }
     }
 }
 
