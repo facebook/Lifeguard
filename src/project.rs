@@ -253,11 +253,11 @@ fn collect_re_exports(exports: &Exports, effect_table: &EffectTable) -> AHashSet
         .map(|(name, _)| name.as_module_name())
         .collect();
     let mut re_exports: AHashSet<ModuleName> = names.into_iter().collect();
-    get_all_safe_re_exports(effect_table, &mut re_exports);
+    remove_unsafe_re_exports(effect_table, &mut re_exports);
     re_exports
 }
 
-fn get_all_safe_re_exports(effect_table: &EffectTable, re_exports: &mut AHashSet<ModuleName>) {
+fn remove_unsafe_re_exports(effect_table: &EffectTable, re_exports: &mut AHashSet<ModuleName>) {
     let unsafe_re_exports = effect_table
         .values()
         .flatten()

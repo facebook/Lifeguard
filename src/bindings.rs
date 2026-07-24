@@ -286,25 +286,21 @@ impl<'a, 'b> AliasTableBuilder<'a, 'b> {
         self.aliases.entry(scope).or_default()
     }
 
-    fn extract_aliases(&mut self, body: &[Stmt]) {
-        self.stmts(body);
-    }
-
     fn module(&mut self, body: &[Stmt]) {
         self.cursor.enter_module_scope(&self.module_name);
-        self.extract_aliases(body);
+        self.stmts(body);
         self.cursor.exit_scope();
     }
 
     fn class_def(&mut self, cls: &StmtClassDef) {
         self.cursor.enter_class_scope(cls);
-        self.extract_aliases(&cls.body);
+        self.stmts(&cls.body);
         self.cursor.exit_scope();
     }
 
     fn function_def(&mut self, func: &StmtFunctionDef) {
         self.cursor.enter_function_scope(func);
-        self.extract_aliases(&func.body);
+        self.stmts(&func.body);
         self.cursor.exit_scope();
     }
 
@@ -633,25 +629,21 @@ impl<'a, 'b> BindingsTableBuilder<'a, 'b> {
         }
     }
 
-    fn extract_bindings(&mut self, body: &[Stmt]) {
-        self.stmts(body);
-    }
-
     fn module(&mut self, body: &[Stmt]) {
         self.cursor.enter_module_scope(&self.module_name);
-        self.extract_bindings(body);
+        self.stmts(body);
         self.cursor.exit_scope();
     }
 
     fn class_def(&mut self, cls: &StmtClassDef) {
         self.cursor.enter_class_scope(cls);
-        self.extract_bindings(&cls.body);
+        self.stmts(&cls.body);
         self.cursor.exit_scope();
     }
 
     fn function_def(&mut self, func: &StmtFunctionDef) {
         self.cursor.enter_function_scope(func);
-        self.extract_bindings(&func.body);
+        self.stmts(&func.body);
         self.cursor.exit_scope();
     }
 

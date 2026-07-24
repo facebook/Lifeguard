@@ -27,6 +27,12 @@ pub struct ProcessTimer {
     cpu_start: Option<Duration>,
 }
 
+impl Default for ProcessTimer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ProcessTimer {
     pub fn new() -> Self {
         Self {

@@ -14,7 +14,6 @@ use rayon::iter::ParallelIterator;
 use ruff_text_size::TextRange;
 use serde::Deserialize;
 use serde::Serialize;
-use serde_json;
 
 use crate::cursor::TryHandler;
 use crate::format::ErrorString;

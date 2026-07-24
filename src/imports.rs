@@ -33,7 +33,6 @@ use crate::tracing::time;
 use crate::traits::ModuleNameExt;
 
 #[derive(Debug, Copy, Clone)]
-
 pub struct ImportlibState {
     pub has_importlib: bool,
     pub has_import_module: bool,
@@ -366,9 +365,8 @@ impl<'a> ModuleImportCollector<'a> {
     }
 
     fn expr(&mut self, e: &Expr) {
-        match e {
-            Expr::Call(call) => self.expr_call(call),
-            _ => {}
+        if let Expr::Call(call) = e {
+            self.expr_call(call);
         }
     }
 
