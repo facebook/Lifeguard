@@ -82,16 +82,17 @@ impl DefinitionTable {
         scope: &ModuleName,
         name: &Name,
         lookup_range: TextRange,
-    ) -> Option<&Definition> {
+    ) -> Option<(&Definitions, &Definition)> {
         let defs = self.definitions.get(scope)?;
-        defs.definitions.get(name).or_else(|| {
+        let definition = defs.definitions.get(name).or_else(|| {
             defs.comp_targets.get(name)?.iter().find_map(|target| {
                 target
                     .comp_range
                     .contains_range(lookup_range)
                     .then_some(&target.definition)
             })
-        })
+        })?;
+        Some((defs, definition))
     }
 
     /// Classify how `param_name` of `func_scope` matches call arguments:
@@ -136,12 +137,14 @@ impl DefinitionTable {
         lookup_range: TextRange,
     ) -> Option<ResolvedName<'_>> {
         for scope in cursor.legb_scope_names_iter() {
-            if let Some(definition) = self.get_at_range(&scope, &name, lookup_range) {
+            if let Some((scope_definitions, definition)) =
+                self.get_at_range(&scope, &name, lookup_range)
+            {
                 return Some(ResolvedName {
                     name,
                     definition,
                     scope,
-                    scope_definitions: &self.definitions[&scope],
+                    scope_definitions,
                     expr_full_name: None,
                 });
             }
