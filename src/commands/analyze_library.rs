@@ -22,7 +22,6 @@ use crate::runner::parse_python_version;
 use crate::runner::run_pipeline;
 use crate::source_map;
 use crate::source_map::SourceMap;
-use crate::source_map::SourceResult;
 use crate::tracing::ProcessTimer;
 use crate::tracing::time;
 
@@ -57,10 +56,7 @@ fn detect_root_dir(src_map: &SourceMap) -> Result<PathBuf> {
 
     let samples: Vec<&Path> = src_map
         .values()
-        .filter_map(|v| match v {
-            SourceResult::Ok(p) => Some(p.as_path()),
-            _ => None,
-        })
+        .map(PathBuf::as_path)
         .take(MAX_SAMPLES)
         .collect();
     if samples.is_empty() {

@@ -43,20 +43,6 @@ struct SourceInfo {
 
 type SourceInfoMap = HashMap<ModuleName, SourceInfo, ahash::RandomState>;
 
-pub enum SourceResult {
-    Ok(PathBuf),
-    SourceError(anyhow::Error),
-}
-
-impl SourceResult {
-    /// Returns a reference to the PathBuf if this is Ok, otherwise None.
-    pub fn as_path(&self) -> Option<&PathBuf> {
-        match self {
-            SourceResult::Ok(path) => Some(path),
-            _ => None,
-        }
-    }
-}
 pub enum AstResult {
     Ok(ParsedModule),
     ParserError(anyhow::Error),
@@ -73,7 +59,7 @@ impl AstResult {
 }
 
 // Type aliases
-pub type SourceMap = HashMap<ModuleName, SourceResult, ahash::RandomState>;
+pub type SourceMap = HashMap<ModuleName, PathBuf, ahash::RandomState>;
 
 // Raw deserialized source DB (string paths) before module name resolution.
 pub(crate) type RawSourceMap = HashMap<String, PathBuf, ahash::RandomState>;
@@ -188,7 +174,7 @@ pub(crate) fn resolve_source_map(raw: RawSourceMap) -> SourceMap {
         let dominated = priorities.get(&mod_name).is_some_and(|&p| p <= priority);
         if !dominated {
             priorities.insert(mod_name, priority);
-            result.insert(mod_name, SourceResult::Ok(full_path));
+            result.insert(mod_name, full_path);
         }
     }
     result
@@ -226,19 +212,17 @@ fn make_source_info_map(
 
     // Add entries from the source map (real .py files). Move PathBufs out — the
     // caller no longer needs the SourceMap after this call.
-    for (name, source_result) in source_map {
-        if let SourceResult::Ok(path) = source_result {
-            let is_init = path.file_name().is_some_and(|f| f == "__init__.py");
-            info_map.insert(
+    for (name, path) in source_map {
+        let is_init = path.file_name().is_some_and(|f| f == "__init__.py");
+        info_map.insert(
+            name,
+            SourceInfo {
                 name,
-                SourceInfo {
-                    name,
-                    source_type: PySourceType::Python,
-                    is_init,
-                    path: Some(path),
-                },
-            );
-        }
+                source_type: PySourceType::Python,
+                is_init,
+                path: Some(path),
+            },
+        );
     }
 
     // Add entries from stubs (overrides source when both exist)
@@ -423,7 +407,6 @@ mod tests {
             let mod_name = ModuleName::from_str(mod_str);
             let actual_path = result
                 .get(&mod_name)
-                .and_then(|sr| sr.as_path())
                 .unwrap_or_else(|| panic!("Module '{}' not found", mod_str));
             assert_eq!(
                 actual_path,
