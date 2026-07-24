@@ -2024,9 +2024,9 @@ impl ProjectInfo {
                 } else {
                     match eff.kind {
                         EffectKind::ImportedVarMutation => {
-                            // We mark this call as unsafe but do not add an error
-                            // as this is not call is not happening at global scope.
-                            // If this callable is called, we will add the error there.
+                            // Mark this call unsafe but don't add an error here: it
+                            // is not happening at global scope. If this callable is
+                            // called, the error is added there instead.
                             state.mark_unsafe(&func);
                             ret = false;
                         }

@@ -154,8 +154,7 @@ impl ModuleNameExt for ModuleName {
     }
 
     fn append_str(&self, other: &str) -> Self {
-        // This could be completed in one line with format, but this approach
-        // is more performant
+        // Manual concat: avoids format!'s overhead on this hot path.
         let self_str = self.as_str();
         let mut s = String::with_capacity(self_str.len() + 1 + other.len());
         s.push_str(self_str);

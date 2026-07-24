@@ -63,17 +63,14 @@ impl ImportlibState {
         false
     }
 
+    /// Resolve the module name imported by an `importlib.import_module(...)` call.
     fn get_imported_module_name(self, call: &ExprCall) -> Option<ModuleName> {
-        // This computes an imported module name specifically for importlib's import_module
-
         self.get_imported_module_name_mixed_args(call)
             .or_else(|| self.get_imported_module_name_kw_args(call))
             .or_else(|| self.get_imported_module_name_pos_args(call))
     }
 
     fn get_imported_module_name_mixed_args(self, call: &ExprCall) -> Option<ModuleName> {
-        // This computes an imported module name specifically for importlib's import_module
-
         // Case where we have both positional and keyword arguments. The positional argument will always be name
         if call.arguments.args.len() == 1
             && call.arguments.keywords.len() == 1
@@ -88,8 +85,6 @@ impl ImportlibState {
     }
 
     fn get_imported_module_name_kw_args(self, call: &ExprCall) -> Option<ModuleName> {
-        // This computes an imported module name specifically for importlib's import_module
-
         // Case where we have only keyword arguments
         if let Some(kw_name) = call
             .arguments
@@ -111,8 +106,6 @@ impl ImportlibState {
     }
 
     fn get_imported_module_name_pos_args(self, call: &ExprCall) -> Option<ModuleName> {
-        // This computes an imported module name specifically for importlib's import_module
-
         // Case where we have only positional arguments
         if call.arguments.args.len() == 2
             && let Some(Expr::StringLiteral(name)) = call.arguments.args.first()
@@ -132,8 +125,6 @@ impl ImportlibState {
         name: &ExprStringLiteral,
         package: &ExprStringLiteral,
     ) -> Option<ModuleName> {
-        // This computes an imported module name specifically for importlib's import_module
-
         // For importlib.import_module, relative imports must have a leading '.' in `name`.
         let name_str = name.value.to_str();
         if !name_str.starts_with('.') {
