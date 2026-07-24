@@ -76,13 +76,13 @@ impl<'a> Builtins<'a> {
         let fname = func.as_var_name()?;
         let qname = ModuleName::builtins().append(&fname);
         if self.is_prohibited_call(&fname) {
-            let eff = Effect::new(EffectKind::ProhibitedFunctionCall, qname, func.range());
-            Some(eff)
-        } else if self.contains(&fname) {
-            // Known safe builtin; skip emitting any effect to avoid
-            // unnecessary work checking it in project.rs.
-            None
+            Some(Effect::new(
+                EffectKind::ProhibitedFunctionCall,
+                qname,
+                func.range(),
+            ))
         } else {
+            // Safe builtin or unknown call (treated as safe): emit no effect.
             None
         }
     }

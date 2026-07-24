@@ -859,16 +859,19 @@ impl<'a> SourceAnalyzer<'a> {
 
             // Compute the full module path and add to called imports if it differs from base
             if let Some(full_module) = get_qualified_import(&res, &attribute_module) {
+                // Only the import styles admitted by `is_import()` reach here; an
+                // unrecognized style falls back to `None`, conservatively treating
+                // the access as a distinct called import.
                 let imported_module = match &res.definition.style {
-                    DefinitionStyle::ImportModule(m) => *m,
+                    DefinitionStyle::ImportModule(m) => Some(*m),
                     DefinitionStyle::Import(parent) | DefinitionStyle::ImportAsEq(parent) => {
-                        parent.append(&res.name)
+                        Some(parent.append(&res.name))
                     }
-                    DefinitionStyle::ImportAs(parent, orig_name) => parent.append(orig_name),
-                    _ => panic!("Unexpected definition style: {:?}", res.definition.style),
+                    DefinitionStyle::ImportAs(parent, orig_name) => Some(parent.append(orig_name)),
+                    _ => None,
                 };
 
-                if imported_module != full_module {
+                if imported_module != Some(full_module) {
                     output.add_called_import(full_module, &self.cursor.scope());
                 }
             }
