@@ -1224,16 +1224,16 @@ impl<'a> SourceAnalyzer<'a> {
     }
 
     fn raise(&self, x: &StmtRaise, output: &mut ModuleEffects) {
-        let unknown = ModuleName::from_str("<unknown exception>");
         let name = match &x.exc {
-            Some(exc) => Self::exception_name(exc.as_ref()).unwrap_or(unknown),
+            Some(exc) => Self::exception_name(exc.as_ref())
+                .unwrap_or_else(|| ModuleName::from_str("<unknown exception>")),
             // Bare `raise` (re-raise): we can't determine the type, so treat it as caught if
             // we're inside any try body at all.
             None => {
                 if self.cursor.in_try_body() {
                     return;
                 }
-                unknown
+                ModuleName::from_str("<unknown exception>")
             }
         };
         if self.cursor.catches_exception(&name) {
@@ -1382,7 +1382,7 @@ impl<'a> SourceAnalyzer<'a> {
             match &name.asname {
                 None => output.add_pending_import(to, &self.cursor.scope()),
                 Some(asname) => {
-                    let as_name_module = ModuleName::from_name(&asname.id.clone());
+                    let as_name_module = ModuleName::from_name(&asname.id);
                     output.add_pending_import(as_name_module, &self.cursor.scope());
                     // add a pending import that maps the alias to the actual import
                     // we'll need this to check if imports are loaded

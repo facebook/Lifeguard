@@ -52,8 +52,8 @@ impl Graph {
             return *ix;
         }
 
-        let ix = self.graph.add_node(node.clone());
-        self.nodes.insert(node.clone(), ix);
+        let ix = self.graph.add_node(*node);
+        self.nodes.insert(*node, ix);
         ix
     }
 

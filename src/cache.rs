@@ -168,7 +168,7 @@ impl LibraryCache {
 
                 let se_imports: AHashSet<ModuleName> = side_effect_imports
                     .get(&name)
-                    .map(|s| s.iter().cloned().collect())
+                    .map(|s| s.iter().copied().collect())
                     .unwrap_or_default();
 
                 let (function_safety, mutation_candidates) = match safety_result {
@@ -748,7 +748,7 @@ fn candidate_mutates(
         return true;
     }
     ["__init__", "__new__"].into_iter().any(|method| {
-        let ctor = ModuleName::from_str(&format!("{}.{}", candidate.callee.as_str(), method));
+        let ctor = candidate.callee.append_str(method);
         callee_mutates(&ctor, candidate.arg_offset + 1)
     })
 }

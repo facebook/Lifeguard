@@ -461,10 +461,9 @@ impl<'a> ExportsBuilder<'a> {
     }
 
     fn process_definition(&mut self, name: &Name, def: &Definition) {
-        let qualname = self.module_name.append(name);
-
         match &def.style {
             DefinitionStyle::Unannotated(kind) | DefinitionStyle::Annotated(kind, _) => {
+                let qualname = self.module_name.append(name);
                 self.add_export(qualname, Self::symbol_kind_to_export_type(kind));
             }
 

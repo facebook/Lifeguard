@@ -613,8 +613,8 @@ fn get_called_function_imports(
         .module_effects
         .pending_imports
         .get(pending_module_name)
-        .unwrap_or(&AHashSet::new())
-        .clone();
+        .cloned()
+        .unwrap_or_default();
 
     for function in output.module_effects.called_functions.iter() {
         if let Some(imports) = output.module_effects.pending_imports.get(function) {

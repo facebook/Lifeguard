@@ -136,22 +136,21 @@ impl ImportlibState {
         // This computes an imported module name specifically for importlib's import_module
 
         // For importlib.import_module, relative imports must have a leading '.' in `name`.
-        if !name.value.to_str().starts_with('.') {
+        let name_str = name.value.to_str();
+        if !name_str.starts_with('.') {
             return None;
         }
 
         let package = ModuleName::from_str(package.value.to_str());
         // we take the actual dot count-1 because the name always has a leading dot
         // for example: in the foo.bar case where foo is the package, bar is passed in as ".bar"
-        let dot_count: u32 = name
-            .value
-            .to_str()
+        let dot_count: u32 = name_str
             .chars()
             .take_while(|c| *c == '.')
             .count()
             .saturating_sub(1) as u32;
 
-        let suffix = Name::new(name.value.to_str().trim_start_matches('.'));
+        let suffix = Name::new(name_str.trim_start_matches('.'));
 
         if dot_count == 0 {
             Some(package.append(&suffix))
@@ -299,24 +298,6 @@ pub fn resolve_to_known_module(
 
 type Imports = AHashSet<ModuleName>;
 
-/// Generate all parent modules for a given module path.
-/// For "a.b.c.d", returns ["a", "a.b", "a.b.c"] (not including the full path itself).
-fn get_parent_modules(module: &ModuleName) -> Vec<ModuleName> {
-    let module_str = module.as_str();
-    let dot_count = module_str.matches('.').count();
-    if dot_count == 0 {
-        return Vec::new();
-    }
-
-    let mut parents = Vec::with_capacity(dot_count);
-    for (i, c) in module_str.char_indices() {
-        if c == '.' {
-            parents.push(ModuleName::from_str(&module_str[..i]));
-        }
-    }
-    parents
-}
-
 struct ModuleImportCollector<'a> {
     module: ModuleName,
     is_init: bool,
@@ -405,14 +386,16 @@ impl<'a> ModuleImportCollector<'a> {
     fn import(&mut self, import: &StmtImport) {
         for name in &import.names {
             let imp = ModuleName::from_name(&name.name.id);
-            if imp.as_str() == "importlib" || imp.as_str().starts_with("importlib.") {
+            let imp_str = imp.as_str();
+            if imp_str == "importlib" || imp_str.starts_with("importlib.") {
                 self.has_importlib = true;
             }
-            // Add parent modules; For "a.b.c.d", this adds "a", "a.b", "a.b.c"
-            for parent in get_parent_modules(&imp) {
-                self.imports.insert(parent);
+            // Insert parent modules; for "a.b.c.d" this adds "a", "a.b", "a.b.c".
+            for (i, c) in imp_str.char_indices() {
+                if c == '.' {
+                    self.imports.insert(ModuleName::from_str(&imp_str[..i]));
+                }
             }
-            // Add the full module path
             self.imports.insert(imp);
         }
     }
