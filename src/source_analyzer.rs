@@ -1324,24 +1324,7 @@ impl<'a> SourceAnalyzer<'a> {
                 Some(asname) => &asname.id,
             };
             let exported_name = Attribute::new(self.info.module_name, as_name);
-
-            // if there are multiple imports that re-export into the same name,
-            // we don't want to add the effect to the first import statement
-            if self
-                .info
-                .exports
-                .get_re_export(&exported_name)
-                .is_some_and(|(v, r)| {
-                    v.module == ModuleName::empty() && v.attr.is_empty() && r != &x.range
-                })
-            {
-                let eff = Effect::new(
-                    EffectKind::ImportedVarReassignment,
-                    exported_name.as_module_name(),
-                    x.range,
-                );
-                self.add_effect(eff, output);
-            }
+            self.check_multi_reexport(&exported_name, x.range, output);
         }
     }
 
@@ -1358,21 +1341,33 @@ impl<'a> SourceAnalyzer<'a> {
         };
         for name in all_names {
             let exported_name = Attribute::new(self.info.module_name, name);
-            if self
-                .info
-                .exports
-                .get_re_export(&exported_name)
-                .is_some_and(|(v, r)| {
-                    v.module == ModuleName::empty() && v.attr.is_empty() && r != &x.range
-                })
-            {
-                let eff = Effect::new(
-                    EffectKind::ImportedVarReassignment,
-                    exported_name.as_module_name(),
-                    x.range,
-                );
-                self.add_effect(eff, output);
-            }
+            self.check_multi_reexport(&exported_name, x.range, output);
+        }
+    }
+
+    /// Emit an `ImportedVarReassignment` effect when `exported_name` is re-exported
+    /// by multiple imports (its binding was cleared at a different range), so the
+    /// effect is not attributed to the first import statement.
+    fn check_multi_reexport(
+        &self,
+        exported_name: &Attribute,
+        range: TextRange,
+        output: &mut ModuleEffects,
+    ) {
+        if self
+            .info
+            .exports
+            .get_re_export(exported_name)
+            .is_some_and(|(v, r)| {
+                v.module == ModuleName::empty() && v.attr.is_empty() && r != &range
+            })
+        {
+            let eff = Effect::new(
+                EffectKind::ImportedVarReassignment,
+                exported_name.as_module_name(),
+                range,
+            );
+            self.add_effect(eff, output);
         }
     }
 
@@ -1429,23 +1424,7 @@ impl<'a> SourceAnalyzer<'a> {
                 if &name.name == "*" {
                     self.add_star_import_from(&m, &scope, output, is_called);
                 } else {
-                    let name = &name.name.id;
-                    let maybe_sub = if m.as_str() == "" {
-                        ModuleName::from_str(name)
-                    } else {
-                        m.append(name)
-                    };
-                    if self.import_graph.contains(&maybe_sub)
-                        || self
-                            .import_graph
-                            .has_missing_import(&self.info.module_name, &m)
-                    {
-                        if is_called {
-                            output.add_called_import(maybe_sub, &scope);
-                        } else {
-                            output.add_pending_import(maybe_sub, &scope);
-                        }
-                    }
+                    self.add_sub_import(&m, &name.name.id, &scope, output, is_called);
                 }
             }
         }
@@ -1462,21 +1441,34 @@ impl<'a> SourceAnalyzer<'a> {
             return;
         };
         for name in all_names {
-            let maybe_sub = if m.as_str() == "" {
-                ModuleName::from_str(name)
+            self.add_sub_import(m, name, scope, output, is_called);
+        }
+    }
+
+    /// Add `m.name` (or bare `name` when `m` is empty) as a called or pending
+    /// import, when it resolves in the graph or `m` has a missing import.
+    fn add_sub_import(
+        &self,
+        m: &ModuleName,
+        name: &Name,
+        scope: &ModuleName,
+        output: &mut ModuleEffects,
+        is_called: bool,
+    ) {
+        let maybe_sub = if m.as_str() == "" {
+            ModuleName::from_str(name)
+        } else {
+            m.append(name)
+        };
+        if self.import_graph.contains(&maybe_sub)
+            || self
+                .import_graph
+                .has_missing_import(&self.info.module_name, m)
+        {
+            if is_called {
+                output.add_called_import(maybe_sub, scope);
             } else {
-                m.append(name)
-            };
-            if self.import_graph.contains(&maybe_sub)
-                || self
-                    .import_graph
-                    .has_missing_import(&self.info.module_name, m)
-            {
-                if is_called {
-                    output.add_called_import(maybe_sub, scope);
-                } else {
-                    output.add_pending_import(maybe_sub, scope);
-                }
+                output.add_pending_import(maybe_sub, scope);
             }
         }
     }
