@@ -116,16 +116,6 @@ impl DefinitionTable {
         Some(res)
     }
 
-    pub fn is_imported(&self, cursor: &Cursor, value: &Expr) -> bool {
-        self.lookup(cursor, value)
-            .is_some_and(|def| def.is_import())
-    }
-
-    pub fn is_global(&self, cursor: &Cursor, value: &Expr) -> bool {
-        self.resolve(cursor, value)
-            .is_some_and(|res| res.is_global())
-    }
-
     // Look up a name following Python's LEGB (Local-Enclosing-Global-Builtin) rule.
     // Class scopes are skipped when looking up from an enclosed function scope.
     // Builtins are handled separately in ModuleInfo::resolve_builtins.
@@ -150,11 +140,6 @@ impl DefinitionTable {
             }
         }
         None
-    }
-
-    // Look up a name in a chain of parent scopes.
-    fn lookup(&self, cursor: &Cursor, value: &Expr) -> Option<&Definition> {
-        Some(self.resolve(cursor, value)?.definition)
     }
 }
 
@@ -270,14 +255,6 @@ impl<'a> ModuleInfo<'a> {
             scope_definitions: defs,
             expr_full_name: value.full_name(),
         })
-    }
-
-    pub fn is_imported(&self, cursor: &Cursor, value: &Expr) -> bool {
-        self.definitions.is_imported(cursor, value)
-    }
-
-    pub fn is_global(&self, cursor: &Cursor, value: &Expr) -> bool {
-        self.definitions.is_global(cursor, value)
     }
 
     // Is this symbol reachable from module level (e.g. class variables would qualify because you
