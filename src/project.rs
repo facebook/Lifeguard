@@ -522,37 +522,33 @@ fn get_imports_in_function_module(
     curr_import: &ModuleName,
     analysis_map: &AnalysisMap,
 ) -> AHashSet<ModuleName> {
-    let mut function_pending_import = AHashSet::new();
-    let mut function_called_import = AHashSet::new();
-    let mut other_module_level_import = AHashSet::new();
-
     let mut additional_called_imports = AHashSet::new();
 
     // For curr_import = "foo.bar.baz.func", check for module in order: foo.bar.baz, foo.bar, foo
     for (parent_name, _) in curr_import.iter_parents() {
-        if let Some(output) = analysis_map.get(&parent_name) {
-            let module_pending_imports = &output.module_effects.pending_imports;
-            // Check for imports in parent_name module
-            if let Some(s) = module_pending_imports.get(&parent_name) {
-                other_module_level_import = s.clone();
-            }
-            if let Some(s) = module_pending_imports.get(curr_import) {
-                function_pending_import = s.clone();
-            }
-            if let Some(s) = output.module_effects.called_imports.get(curr_import) {
-                function_called_import = s.clone();
-            }
-            break;
-        }
-    }
-    for import in &function_called_import {
-        if function_pending_import.contains(import) || other_module_level_import.contains(import) {
-            additional_called_imports.insert(*import);
-        }
-    }
+        let Some(output) = analysis_map.get(&parent_name) else {
+            continue;
+        };
+        // All three sets come from this single matched module, so read them by
+        // reference rather than cloning.
+        let module_pending_imports = &output.module_effects.pending_imports;
+        let other_module_level_import = module_pending_imports.get(&parent_name);
+        let function_pending_import = module_pending_imports.get(curr_import);
+        let function_called_import = output.module_effects.called_imports.get(curr_import);
 
-    for import in &function_pending_import {
-        additional_called_imports.insert(*import);
+        if let Some(function_called_import) = function_called_import {
+            for import in function_called_import {
+                let in_pending = function_pending_import.is_some_and(|s| s.contains(import));
+                let in_module = other_module_level_import.is_some_and(|s| s.contains(import));
+                if in_pending || in_module {
+                    additional_called_imports.insert(*import);
+                }
+            }
+        }
+        if let Some(function_pending_import) = function_pending_import {
+            additional_called_imports.extend(function_pending_import.iter().copied());
+        }
+        break;
     }
 
     additional_called_imports
