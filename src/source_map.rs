@@ -113,22 +113,25 @@ pub fn load_source_map<P: AsRef<Path>>(db_path: P) -> Result<SourceMap> {
 /// serde_json::Value tree, saving allocation and conversion overhead.
 fn parse_source_map<P: AsRef<Path>>(db_path: P) -> Result<RawSourceMap> {
     let content = std::fs::read_to_string(db_path)?;
+    parse_source_map_content(&content)
+}
 
+fn parse_source_map_content(content: &str) -> Result<RawSourceMap> {
     // Detect format from the beginning of the file to pick the right
     // deserialization path without parsing the full JSON first.
-    let prefix = content.get(..200).unwrap_or(&content);
+    let prefix = content.get(..200).unwrap_or(content);
     if prefix.contains("\"build_map\"") {
-        let db: BxlSourceDb = serde_json::from_str(&content)?;
+        let db: BxlSourceDb = serde_json::from_str(content)?;
         Ok(db.build_map)
     } else if prefix.contains("\"sources\"") {
         // dbg-source-db format: sources win over dependencies on duplicate keys
-        let db: DbgSourceDb = serde_json::from_str(&content)?;
+        let db: DbgSourceDb = serde_json::from_str(content)?;
         let mut deps = db.dependencies;
         deps.extend(db.sources);
         Ok(deps)
     } else {
         // Flat format (source-db-no-deps)
-        Ok(serde_json::from_str(&content)?)
+        Ok(serde_json::from_str(content)?)
     }
 }
 
@@ -504,5 +507,51 @@ mod tests {
         assert!(source_priority(Path::new("module.rs")).is_err());
         assert!(source_priority(Path::new("module.txt")).is_err());
         assert!(source_priority(Path::new("no_extension")).is_err());
+    }
+
+    #[test]
+    fn test_parse_source_map_content_bxl() {
+        let raw = parse_source_map_content(
+            r#"{"build_map":{"pkg/mod.py":"src/pkg/mod.py","pkg/__init__.py":"src/pkg/__init__.py"}}"#,
+        )
+        .expect("bxl source db should parse");
+
+        assert_eq!(raw["pkg/mod.py"], PathBuf::from("src/pkg/mod.py"));
+        assert_eq!(raw["pkg/__init__.py"], PathBuf::from("src/pkg/__init__.py"));
+    }
+
+    #[test]
+    fn test_parse_source_map_content_dbg_prefers_sources() {
+        let raw = parse_source_map_content(
+            r#"{
+                "sources":{"pkg/mod.py":"src/pkg/mod.py"},
+                "dependencies":{"pkg/mod.py":"dep/pkg/mod.py","dep/mod.py":"dep/dep/mod.py"}
+            }"#,
+        )
+        .expect("dbg source db should parse");
+
+        assert_eq!(raw["pkg/mod.py"], PathBuf::from("src/pkg/mod.py"));
+        assert_eq!(raw["dep/mod.py"], PathBuf::from("dep/dep/mod.py"));
+    }
+
+    #[test]
+    fn test_parse_source_map_content_flat() {
+        let raw = parse_source_map_content(
+            r#"{"pkg/mod.py":"src/pkg/mod.py","pkg/util.py":"src/pkg/util.py"}"#,
+        )
+        .expect("flat source db should parse");
+
+        assert_eq!(raw["pkg/mod.py"], PathBuf::from("src/pkg/mod.py"));
+        assert_eq!(raw["pkg/util.py"], PathBuf::from("src/pkg/util.py"));
+    }
+
+    #[test]
+    fn test_parse_source_map_content_invalid_json() {
+        let err = parse_source_map_content(r#"{"build_map":{"pkg/mod.py":"src/pkg/mod.py"}"#);
+
+        assert!(
+            err.is_err(),
+            "malformed source db json should fail to parse"
+        );
     }
 }
