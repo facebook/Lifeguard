@@ -303,6 +303,11 @@ impl LibraryCache {
         func_safety_by_module: &HashMap<ModuleName, HashMap<String, FunctionSafetyInfo>>,
         globally_safe_funcs: &AHashSet<String>,
     ) -> bool {
+        let resolver = SafetyResolver::with_safe_index(
+            module_names,
+            func_safety_by_module,
+            globally_safe_funcs,
+        );
         self.modules
             .par_iter_mut()
             .map(|module| {
@@ -310,12 +315,7 @@ impl LibraryCache {
                     return false;
                 };
                 retain_unverified_errors(safety, |func_name| {
-                    is_call_verified_safe_indexed(
-                        func_name,
-                        module_names,
-                        func_safety_by_module,
-                        globally_safe_funcs,
-                    )
+                    resolver.is_call_verified_safe(func_name)
                 })
             })
             .reduce(|| false, |any_cleared, cleared| any_cleared || cleared)
@@ -367,8 +367,9 @@ impl LibraryCache {
             module.missing_imports = still_missing;
 
             if let CachedSafety::Ok(ref mut safety) = module.safety {
+                let resolver = SafetyResolver::new(&resolved_modules, &func_safety_by_module);
                 retain_unverified_errors(safety, |func_name| {
-                    is_call_verified_safe(func_name, &resolved_modules, &func_safety_by_module)
+                    resolver.is_call_verified_safe(func_name)
                 });
             }
         });
@@ -578,35 +579,151 @@ fn lookup_in_safety_map(local_name: &str, fs: &HashMap<String, FunctionSafetyInf
         .is_some_and(|(prefix, _)| is_safe(prefix))
 }
 
-/// Check if a function call can be verified as safe using cached per-function
-/// safety verdicts from the resolved modules.
+/// The merged per-function verdicts plus the module set they resolve against —
+/// shared context for reduce-time error clearing and promotion.
 ///
-/// For qualified names like "mod.sub.func", tries each parent as the module
-/// prefix (longest first) and looks up the remainder in that module's
-/// function_safety map.
-/// For unqualified names like "helper", checks all resolved modules.
-/// Returns true only if the function is found and verified Safe.
+/// A qualified name (`mod.sub.func`) is split at its longest module prefix and
+/// looked up there; an unqualified name (`helper`) uses `globally_safe` if
+/// present, else scans `modules`. `globally_if_imported` is promotion-only.
+#[derive(Clone, Copy)]
+struct SafetyResolver<'a> {
+    modules: &'a AHashSet<ModuleName>,
+    by_module: &'a HashMap<ModuleName, HashMap<String, FunctionSafetyInfo>>,
+    /// `Some` enables O(1) unqualified lookups; `None` scans `modules`.
+    globally_safe: Option<&'a AHashSet<String>>,
+    /// The `UnsafeIfImported` counterpart of `globally_safe`, promotion only.
+    globally_if_imported: Option<&'a AHashSet<String>>,
+}
+
+impl<'a> SafetyResolver<'a> {
+    /// No prebuilt indices — the unqualified fallback scans `modules`.
+    fn new(
+        modules: &'a AHashSet<ModuleName>,
+        by_module: &'a HashMap<ModuleName, HashMap<String, FunctionSafetyInfo>>,
+    ) -> Self {
+        SafetyResolver {
+            modules,
+            by_module,
+            globally_safe: None,
+            globally_if_imported: None,
+        }
+    }
+
+    /// Backed by the prebuilt globally-safe index for O(1) unqualified lookups.
+    fn with_safe_index(
+        modules: &'a AHashSet<ModuleName>,
+        by_module: &'a HashMap<ModuleName, HashMap<String, FunctionSafetyInfo>>,
+        globally_safe: &'a AHashSet<String>,
+    ) -> Self {
+        SafetyResolver {
+            modules,
+            by_module,
+            globally_safe: Some(globally_safe),
+            globally_if_imported: None,
+        }
+    }
+
+    /// Backed by both promotion indices, for promotion-verdict resolution.
+    fn promotion(
+        modules: &'a AHashSet<ModuleName>,
+        by_module: &'a HashMap<ModuleName, HashMap<String, FunctionSafetyInfo>>,
+        globally_safe: &'a AHashSet<String>,
+        globally_if_imported: &'a AHashSet<String>,
+    ) -> Self {
+        SafetyResolver {
+            modules,
+            by_module,
+            globally_safe: Some(globally_safe),
+            globally_if_imported: Some(globally_if_imported),
+        }
+    }
+
+    /// The longest prefix of `func_name` naming a module in `self.modules`,
+    /// paired with the remaining local name; `None` if unqualified.
+    fn split_at_module<'n>(&self, func_name: &'n str) -> Option<(ModuleName, &'n str)> {
+        let fqn = ModuleName::from_str(func_name);
+        fqn.iter_parents()
+            .find(|(parent, _)| self.modules.contains(parent))
+            .map(|(parent, dot_pos)| (parent, &func_name[dot_pos + 1..]))
+    }
+
+    /// Whether an unqualified name is verified safe: the index when present,
+    /// else a scan of `modules`.
+    fn unqualified_safe(&self, func_name: &str) -> bool {
+        if let Some(index) = self.globally_safe {
+            return index.contains(func_name);
+        }
+        self.modules
+            .iter()
+            .filter_map(|m| self.by_module.get(m))
+            .filter_map(|fs| fs.get(func_name))
+            .any(|info| info.verdict == FunctionSafety::Safe)
+    }
+
+    /// Whether a plain function call is found and verified `Safe`.
+    fn is_call_verified_safe(&self, func_name: &str) -> bool {
+        if let Some((module, local)) = self.split_at_module(func_name) {
+            return self
+                .by_module
+                .get(&module)
+                .is_some_and(|fs| lookup_in_safety_map(local, fs));
+        }
+        self.unqualified_safe(func_name)
+    }
+
+    /// The verdict a resolved `UnsafeMissingDep` function resolves to, or `None`
+    /// if it cannot yet be promoted.
+    fn can_promote(&self, info: &FunctionSafetyInfo) -> Option<FunctionSafety> {
+        // Promote only with positive evidence: the missing-dep concern, no hard
+        // `Unsafe` bit, and a non-empty callee set (all resolved below).
+        if !info.verdict.has(FunctionSafety::UnsafeMissingDep)
+            || info.verdict.has(FunctionSafety::Unsafe)
+            || info.missing_dep_callees.is_empty()
+        {
+            return None;
+        }
+        // Dropping the missing-dep concern leaves intrinsic concerns (e.g. an
+        // `UnsafeIfImported` floor) as the target.
+        let mut target = info.verdict.without(FunctionSafety::UnsafeMissingDep);
+        for callee in &info.missing_dep_callees {
+            target.insert(self.resolve_callee_verdict(callee.as_str())?);
+        }
+        Some(target)
+    }
+
+    /// Resolve a promotion callee to `Safe` or `UnsafeIfImported` (both
+    /// non-blocking), or `None` when it does not resolve or resolves to a
+    /// blocking verdict.
+    fn resolve_callee_verdict(&self, func_name: &str) -> Option<FunctionSafety> {
+        if let Some((module, local)) = self.split_at_module(func_name) {
+            return self
+                .by_module
+                .get(&module)
+                .and_then(|fs| lookup_verdict_in_safety_map(local, fs));
+        }
+
+        if self.globally_safe.is_some_and(|s| s.contains(func_name)) {
+            Some(FunctionSafety::Safe)
+        } else if self
+            .globally_if_imported
+            .is_some_and(|s| s.contains(func_name))
+        {
+            Some(FunctionSafety::UnsafeIfImported)
+        } else {
+            None
+        }
+    }
+}
+
+/// Whether a plain function call can be verified as safe using cached
+/// per-function safety verdicts from the resolved modules.
 #[doc(hidden)]
 pub fn is_call_verified_safe(
     func_name: &str,
     resolved_modules: &AHashSet<ModuleName>,
     func_safety_by_module: &HashMap<ModuleName, HashMap<String, FunctionSafetyInfo>>,
 ) -> bool {
-    let fqn = ModuleName::from_str(func_name);
-    for (parent, dot_pos) in fqn.iter_parents() {
-        if resolved_modules.contains(&parent) {
-            let local_name = &func_name[dot_pos + 1..];
-            return func_safety_by_module
-                .get(&parent)
-                .is_some_and(|fs| lookup_in_safety_map(local_name, fs));
-        }
-    }
-
-    resolved_modules
-        .iter()
-        .filter_map(|r| func_safety_by_module.get(r))
-        .filter_map(|fs| fs.get(func_name))
-        .any(|info| info.verdict == FunctionSafety::Safe)
+    SafetyResolver::new(resolved_modules, func_safety_by_module).is_call_verified_safe(func_name)
 }
 
 /// Look up the cached safety info of a mutation candidate's callee, resolving its FQN
@@ -803,21 +920,20 @@ pub(crate) fn promote_fixpoint(
     loop {
         let to_promote: Vec<(ModuleName, String, FunctionSafety)> = {
             // Reborrow as shared for parallel access.
-            let func_safety_by_module = &*func_safety_by_module;
-            let globally_safe_funcs = &globally_safe_funcs;
-            let globally_if_imported_funcs = &globally_if_imported_funcs;
-            func_safety_by_module
+            let resolver = SafetyResolver::promotion(
+                module_names,
+                &*func_safety_by_module,
+                &globally_safe_funcs,
+                &globally_if_imported_funcs,
+            );
+            resolver
+                .by_module
                 .par_iter()
                 .flat_map_iter(|(module, fs)| {
                     fs.iter().filter_map(move |(func_name, info)| {
-                        can_promote_missing_dep_function(
-                            info,
-                            module_names,
-                            func_safety_by_module,
-                            globally_safe_funcs,
-                            globally_if_imported_funcs,
-                        )
-                        .map(|target| (*module, func_name.clone(), target))
+                        resolver
+                            .can_promote(info)
+                            .map(|target| (*module, func_name.clone(), target))
                     })
                 })
                 .collect()
@@ -845,71 +961,6 @@ pub(crate) fn promote_fixpoint(
     (all_promoted, globally_safe_funcs)
 }
 
-/// The verdict a resolved `UnsafeMissingDep` function resolves to, or `None`
-/// if it cannot yet be promoted.
-pub(crate) fn can_promote_missing_dep_function(
-    info: &FunctionSafetyInfo,
-    module_names: &AHashSet<ModuleName>,
-    func_safety_by_module: &HashMap<ModuleName, HashMap<String, FunctionSafetyInfo>>,
-    globally_safe_funcs: &AHashSet<String>,
-    globally_if_imported_funcs: &AHashSet<String>,
-) -> Option<FunctionSafety> {
-    // Promote only with positive evidence: a non-empty callee set, all now
-    // resolved non-blocking. Requires the missing-dep concern and no hard `Unsafe`
-    // bit. No record (e.g. a re-export-propagated verdict) stays conservatively unsafe.
-    if !info.verdict.has(FunctionSafety::UnsafeMissingDep)
-        || info.verdict.has(FunctionSafety::Unsafe)
-        || info.missing_dep_callees.is_empty()
-    {
-        return None;
-    }
-    // Dropping the missing-dep concern leaves the intrinsic concerns (e.g. an
-    // `UnsafeIfImported` floor) standing as the target.
-    let mut target = info.verdict.without(FunctionSafety::UnsafeMissingDep);
-    for callee in &info.missing_dep_callees {
-        // A non-blocking callee resolves to `Safe` or `UnsafeIfImported`; fold that
-        // concern into the target (`Safe` is a no-op). Anything else blocks promotion.
-        let callee_verdict = resolve_callee_promotion_verdict(
-            callee.as_str(),
-            module_names,
-            func_safety_by_module,
-            globally_safe_funcs,
-            globally_if_imported_funcs,
-        )?;
-        target.insert(callee_verdict);
-    }
-    Some(target)
-}
-
-/// Resolve a promotion callee to `Safe` or `UnsafeIfImported` (both non-blocking),
-/// or `None` when it does not resolve or resolves to a blocking verdict. Mirrors
-/// `is_call_verified_safe_indexed`'s resolution, but distinguishes `UnsafeIfImported`.
-fn resolve_callee_promotion_verdict(
-    func_name: &str,
-    resolved_modules: &AHashSet<ModuleName>,
-    func_safety_by_module: &HashMap<ModuleName, HashMap<String, FunctionSafetyInfo>>,
-    globally_safe_funcs: &AHashSet<String>,
-    globally_if_imported_funcs: &AHashSet<String>,
-) -> Option<FunctionSafety> {
-    let fqn = ModuleName::from_str(func_name);
-    for (parent, dot_pos) in fqn.iter_parents() {
-        if resolved_modules.contains(&parent) {
-            let local_name = &func_name[dot_pos + 1..];
-            return func_safety_by_module
-                .get(&parent)
-                .and_then(|fs| lookup_verdict_in_safety_map(local_name, fs));
-        }
-    }
-
-    if globally_safe_funcs.contains(func_name) {
-        Some(FunctionSafety::Safe)
-    } else if globally_if_imported_funcs.contains(func_name) {
-        Some(FunctionSafety::UnsafeIfImported)
-    } else {
-        None
-    }
-}
-
 /// Like `lookup_in_safety_map` but returns the resolved verdict when it is
 /// non-blocking (`Safe` or `UnsafeIfImported`), else `None`. Uses the same
 /// class-prefix proxy: `Class.method` resolves via `Class`.
@@ -926,27 +977,6 @@ fn lookup_verdict_in_safety_map(
             .split_once('.')
             .and_then(|(prefix, _)| non_blocking(prefix))
     })
-}
-
-/// Like `is_call_verified_safe` but uses a pre-built index for the unqualified
-/// name fallback, turning it from O(modules) to O(1).
-fn is_call_verified_safe_indexed(
-    func_name: &str,
-    resolved_modules: &AHashSet<ModuleName>,
-    func_safety_by_module: &HashMap<ModuleName, HashMap<String, FunctionSafetyInfo>>,
-    globally_safe_funcs: &AHashSet<String>,
-) -> bool {
-    let fqn = ModuleName::from_str(func_name);
-    for (parent, dot_pos) in fqn.iter_parents() {
-        if resolved_modules.contains(&parent) {
-            let local_name = &func_name[dot_pos + 1..];
-            return func_safety_by_module
-                .get(&parent)
-                .is_some_and(|fs| lookup_in_safety_map(local_name, fs));
-        }
-    }
-
-    globally_safe_funcs.contains(func_name)
 }
 
 #[doc(hidden)]
