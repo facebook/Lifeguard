@@ -38,6 +38,7 @@ use crate::runner::Options;
 use crate::runner::parse_python_version;
 use crate::runner::run_pipeline;
 use crate::source_map;
+use crate::source_map::SourceMap;
 
 #[derive(Parser)]
 pub struct ComparePathsArgs {
@@ -145,12 +146,11 @@ fn print_module_names(indent: &str, label: &str, names: &[ModuleName], limit: us
 
 /// Run the single-pass (whole-program) path, capturing its output and errors.
 fn run_single_pass(
-    args: &ComparePathsArgs,
+    src_map: SourceMap,
     root_dir: &Path,
     options: &Options,
     compute_errors: bool,
 ) -> Result<PathResult> {
-    let src_map = source_map::load_source_map(&args.db_path)?;
     let result = run_pipeline(src_map, root_dir, ExecutionMode::WholeProgram, options)?;
     let errors = if compute_errors {
         post_resolution_errors(
@@ -183,12 +183,11 @@ fn run_single_pass(
 /// Run the incremental path (single-library map + reduce), capturing its output
 /// and the reduced errors.
 fn run_incremental(
-    args: &ComparePathsArgs,
+    src_map: SourceMap,
     root_dir: &Path,
     options: &Options,
     compute_errors: bool,
 ) -> Result<PathResult> {
-    let src_map = source_map::load_source_map(&args.db_path)?;
     let result = run_pipeline(src_map, root_dir, ExecutionMode::Incremental, options)?;
     let mut cache = LibraryCache::build(
         &result.safety_map,
@@ -391,8 +390,9 @@ pub fn run(args: ComparePathsArgs) -> Result<()> {
     };
 
     let compute_errors = args.explain.is_some();
-    let single_pass = run_single_pass(&args, &root_dir, &options, compute_errors)?;
-    let incremental = run_incremental(&args, &root_dir, &options, compute_errors)?;
+    let src_map = source_map::load_source_map(&args.db_path)?;
+    let single_pass = run_single_pass(src_map.clone(), &root_dir, &options, compute_errors)?;
+    let incremental = run_incremental(src_map, &root_dir, &options, compute_errors)?;
 
     let sp = eligible_map(&single_pass.output);
     let inc = eligible_map(&incremental.output);
