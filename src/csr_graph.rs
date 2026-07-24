@@ -108,20 +108,25 @@ impl CsrGraph {
                         low[v as usize] = lv;
                     }
                 } else {
-                    // Finished v: if it's an SCC root, pop the whole component.
+                    // Finished v: if it's an SCC root, pop its whole component off
+                    // scc_stack (no per-component allocation). Only components with
+                    // more than one node are cycles — self-loops are handled up
+                    // front — so a singleton root, which is the node already on top
+                    // of the stack, is popped without being marked.
                     if low[v as usize] == idx[v as usize] {
-                        let mut component: Vec<u32> = Vec::new();
-                        loop {
-                            let w = scc_stack.pop().expect("scc stack underflow");
-                            on_stack[w as usize] = false;
-                            component.push(w);
-                            if w == v {
-                                break;
-                            }
-                        }
-                        if component.len() > 1 {
-                            for &w in &component {
+                        if scc_stack.last() == Some(&v) {
+                            scc_stack.pop();
+                            on_stack[v as usize] = false;
+                        } else {
+                            // Multi-node SCC: every member from the stack top down to
+                            // and including v is in a cycle.
+                            loop {
+                                let w = scc_stack.pop().expect("scc stack underflow");
+                                on_stack[w as usize] = false;
                                 in_cycle[w as usize] = true;
+                                if w == v {
+                                    break;
+                                }
                             }
                         }
                     }
