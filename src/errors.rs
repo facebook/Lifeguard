@@ -206,11 +206,7 @@ impl SafetyError {
             EffectKind::TooManyArgs => Some(ErrorKind::TooManyArgs),
             _ => None,
         }
-        .map(|kind| Self {
-            kind,
-            metadata: eff.name.as_str().parse().unwrap(),
-            range: eff.range,
-        })
+        .map(|kind| Self::new_from_effect(kind, eff))
     }
 
     pub fn from_unsafe_call(eff: &Effect) -> Result<Self> {
@@ -226,11 +222,7 @@ impl SafetyError {
             | EffectKind::ImportedTypeAttr => ErrorKind::UnsafeMethodCall,
             _ => return Err(anyhow!("Unexpected call effect {:?}", eff)),
         };
-        Ok(Self {
-            kind,
-            metadata: eff.name.as_str().parse().unwrap(),
-            range: eff.range,
-        })
+        Ok(Self::new_from_effect(kind, eff))
     }
 }
 

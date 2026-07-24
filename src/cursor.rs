@@ -278,13 +278,16 @@ impl Cursor {
         self.scopes.iter().all(|s| s.kind.is_eager())
     }
 
+    /// First function scope among `indices` (positions into `self.scopes`).
+    fn function_scope(&self, mut indices: impl Iterator<Item = usize>) -> Option<ModuleName> {
+        indices
+            .find(|&i| self.scopes[i].kind == ScopeKind::Function)
+            .map(|i| self.qualified_scopes[i])
+    }
+
     /// Get the name of the outermost function scope, if it exists.
     pub fn enclosing_function_scope(&self) -> Option<ModuleName> {
-        let i = self
-            .scopes
-            .iter()
-            .position(|s| s.kind == ScopeKind::Function)?;
-        Some(self.qualified_scopes[i])
+        self.function_scope(0..self.scopes.len())
     }
 
     /// Get the name of the nearest (innermost) enclosing function scope,
@@ -294,22 +297,12 @@ impl Cursor {
     /// attributed to: class bodies are eager, so their effects execute when
     /// the immediately enclosing function is called.
     pub fn nearest_function_scope(&self) -> Option<ModuleName> {
-        for i in (0..self.scopes.len().saturating_sub(1)).rev() {
-            if self.scopes[i].kind == ScopeKind::Function {
-                return Some(self.qualified_scopes[i]);
-            }
-        }
-        None
+        self.function_scope((0..self.scopes.len().saturating_sub(1)).rev())
     }
 
     /// Get the name of the nearest (innermost) function scope, including the current scope.
     pub fn current_function_scope(&self) -> Option<ModuleName> {
-        for i in (0..self.scopes.len()).rev() {
-            if self.scopes[i].kind == ScopeKind::Function {
-                return Some(self.qualified_scopes[i]);
-            }
-        }
-        None
+        self.function_scope((0..self.scopes.len()).rev())
     }
 }
 

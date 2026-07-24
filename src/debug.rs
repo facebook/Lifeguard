@@ -65,32 +65,36 @@ pub fn print_module_imports_map(imports_map: &ModuleImportsMap) {
     }
 }
 
+/// Read a single `/proc/self/status` field by prefix (e.g. "VmHWM:"),
+/// returning the trimmed line if present (Linux only).
+fn read_proc_status_field(prefix: &str) -> Option<String> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    status
+        .lines()
+        .find(|line| line.starts_with(prefix))
+        .map(|line| line.trim().to_string())
+}
+
+/// Current resident set size (`VmRSS`) from /proc/self/status (Linux only).
+fn read_proc_rss() -> Option<String> {
+    read_proc_status_field("VmRSS:")
+}
+
+/// Peak resident set size (`VmHWM`) from /proc/self/status (Linux only).
+fn read_proc_peak_memory() -> Option<String> {
+    read_proc_status_field("VmHWM:")
+}
+
 /// Read and log VmRSS and VmHWM from /proc/self/status (Linux only).
 pub fn report_memory(label: &str) {
-    if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
-        let mut rss = None;
-        let mut hwm = None;
-        for line in status.lines() {
-            if line.starts_with("VmRSS:") {
-                rss = Some(line.trim());
-            } else if line.starts_with("VmHWM:") {
-                hwm = Some(line.trim());
-            }
-        }
-        if let (Some(rss), Some(hwm)) = (rss, hwm) {
-            debug!("[memory] {}: {} | {}", label, rss, hwm);
-        }
+    if let (Some(rss), Some(hwm)) = (read_proc_rss(), read_proc_peak_memory()) {
+        debug!("[memory] {}: {} | {}", label, rss, hwm);
     }
 }
 
 /// Report peak resident set size from /proc/self/status.
 pub fn report_peak_memory() {
-    if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
-        for line in status.lines() {
-            if line.starts_with("VmHWM:") {
-                debug!("Peak memory (VmHWM): {}", line.trim());
-                return;
-            }
-        }
+    if let Some(hwm) = read_proc_peak_memory() {
+        debug!("Peak memory (VmHWM): {}", hwm);
     }
 }
