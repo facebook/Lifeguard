@@ -47,7 +47,7 @@ pub fn run(args: ShowEffectsArgs) -> Result<()> {
         .file_name()
         .is_some_and(|f| f == "__init__.py" || f == "__init__.pyi");
     let module =
-        module_parser::parse_file_with_version(&source, typ, module_name, is_init, python_version);
+        module_parser::parse_file_with_version(&source, typ, module_name, is_init, python_version)?;
     let output = analyzer::analyze(&module, &exports, &import_graph, sources.stubs(), &config);
 
     // Display output

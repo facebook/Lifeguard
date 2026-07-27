@@ -82,27 +82,53 @@ fn is_thrift_generated(source: &str) -> bool {
     prefix.windows(MARKER.len()).any(|w| w == MARKER)
 }
 
-pub fn parse_file(
-    source: &str,
-    typ: PySourceType,
-    name: ModuleName,
-    is_init: bool,
-) -> ParsedModule {
-    parse_file_with_version(source, typ, name, is_init, default_python_version())
-}
-
+/// Parse `source` into a `ParsedModule`, failing with `Err` on any syntax error.
+/// Used for real files, where an unparseable file should surface as an error
+/// (and be treated as a missing module) rather than yield a partial AST.
 pub fn parse_file_with_version(
     source: &str,
     typ: PySourceType,
     name: ModuleName,
     is_init: bool,
     version: PythonVersion,
-) -> ParsedModule {
-    // Use Python version to support `lazy` keyword
+) -> Result<ParsedModule> {
     let options = ParseOptions::from(typ).with_target_version(to_ruff_version(&version));
-    let res = ruff_python_parser::parse_unchecked(source, options);
-    let newline_positions = compute_newline_positions(source);
-    let Mod::Module(ast) = res.into_syntax() else {
+    let parsed = ruff_python_parser::parse(source, options)
+        .map_err(|err| anyhow::anyhow!("failed to parse {}: {}", name.as_str(), err))?;
+    Ok(build_parsed_module(
+        parsed.into_syntax(),
+        source,
+        typ,
+        name,
+        is_init,
+    ))
+}
+
+/// Lenient parse via ruff's error recovery: never fails, returning a best-effort
+/// AST even for source with syntax errors. Only for test snippets and the
+/// compile-time-embedded bundled stubs, which are often partial or synthetic.
+fn parse_file_lenient(
+    source: &str,
+    typ: PySourceType,
+    name: ModuleName,
+    is_init: bool,
+    version: PythonVersion,
+) -> ParsedModule {
+    let options = ParseOptions::from(typ).with_target_version(to_ruff_version(&version));
+    let parsed = ruff_python_parser::parse_unchecked(source, options);
+    build_parsed_module(parsed.into_syntax(), source, typ, name, is_init)
+}
+
+/// Assemble a `ParsedModule` from a parsed module AST: record line offsets and
+/// flag Thrift-generated codegen. Shared by the strict and lenient parsers.
+fn build_parsed_module(
+    parsed: Mod,
+    source: &str,
+    typ: PySourceType,
+    name: ModuleName,
+    is_init: bool,
+) -> ParsedModule {
+    let Mod::Module(ast) = parsed else {
         unreachable!("PySourceType::Python and ::Stub always produce Mod::Module")
     };
     let is_thrift = typ == PySourceType::Python
@@ -114,8 +140,17 @@ pub fn parse_file_with_version(
         source_type: typ,
         is_init,
         is_thrift_generated: is_thrift,
-        newline_positions,
+        newline_positions: compute_newline_positions(source),
     }
+}
+
+pub fn parse_file(
+    source: &str,
+    typ: PySourceType,
+    name: ModuleName,
+    is_init: bool,
+) -> ParsedModule {
+    parse_file_lenient(source, typ, name, is_init, default_python_version())
 }
 
 pub fn parse_source(source: &str, module_name: ModuleName, is_init: bool) -> ParsedModule {
@@ -128,7 +163,7 @@ pub fn parse_source_with_version(
     is_init: bool,
     version: PythonVersion,
 ) -> ParsedModule {
-    parse_file_with_version(source, PySourceType::Python, module_name, is_init, version)
+    parse_file_lenient(source, PySourceType::Python, module_name, is_init, version)
 }
 
 pub fn parse_pyi(source: &str, module_name: ModuleName, is_init: bool) -> ParsedModule {
@@ -141,7 +176,7 @@ pub fn parse_pyi_with_version(
     is_init: bool,
     version: PythonVersion,
 ) -> ParsedModule {
-    parse_file_with_version(source, PySourceType::Stub, module_name, is_init, version)
+    parse_file_lenient(source, PySourceType::Stub, module_name, is_init, version)
 }
 
 pub fn read_and_parse_source(
@@ -158,15 +193,23 @@ pub fn read_and_parse_source_with_version(
     is_init: bool,
     version: PythonVersion,
 ) -> Result<ParsedModule> {
-    // Handle non-utf-8 encodings via lossy conversion.
     let bytes = std::fs::read(path)?;
-    let source = String::from_utf8_lossy(&bytes);
-    Ok(parse_source_with_version(
-        &source,
-        module_name,
-        is_init,
-        version,
-    ))
+    match String::from_utf8_lossy(&bytes) {
+        // Valid UTF-8: strict parse so a real syntax error surfaces (the module
+        // is then treated as missing downstream) rather than analyzed partially.
+        std::borrow::Cow::Borrowed(source) => {
+            parse_file_with_version(source, PySourceType::Python, module_name, is_init, version)
+        }
+        // Non-UTF-8, lossily decoded: parse leniently so replacement chars don't
+        // turn otherwise-valid encoded Python into a hard parser failure.
+        std::borrow::Cow::Owned(source) => Ok(parse_file_lenient(
+            &source,
+            PySourceType::Python,
+            module_name,
+            is_init,
+            version,
+        )),
+    }
 }
 
 /// Sorted byte offsets of every `\n` in `source`. Scans raw bytes, not `chars()`, so offsets match
@@ -201,6 +244,26 @@ mod tests {
         assert!(!is_gen("pkg.foo.bar", header));
         // Generated suffix but no autogenerated marker.
         assert!(!is_gen("pkg.foo.thrift_types", "x = 1\n"));
+    }
+
+    #[test]
+    fn parse_file_with_version_reports_parse_errors() {
+        let err = parse_file_with_version(
+            "def f(:\n",
+            PySourceType::Python,
+            ModuleName::from_str("broken"),
+            false,
+            default_python_version(),
+        );
+        let err = match err {
+            Ok(_) => panic!("invalid source should return a parse error"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.to_string().contains("failed to parse broken"),
+            "unexpected parse error: {err}"
+        );
     }
 
     #[test]

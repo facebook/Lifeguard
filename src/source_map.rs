@@ -271,7 +271,8 @@ fn parse_module(
             Some(result)
         }
         None => {
-            // Stub module: look up raw source from stubs
+            // Bundled/in-memory stubs may be partial or synthetic, so parse them
+            // leniently (error recovery) rather than dropping them on a syntax error.
             let src = stubs.get_raw_source(&info.name)?;
             Some(AstResult::Ok(parse_pyi_with_version(
                 src,
