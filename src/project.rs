@@ -497,7 +497,7 @@ fn filter_out_stubs(safety_map: &SafetyMap, sources: &impl ModuleProvider) {
     }
 }
 
-fn get_parent_module_imports(
+fn collect_parent_module_imports(
     curr_import: &ModuleName,
     analysis_map: &AnalysisMap,
 ) -> AHashSet<ModuleName> {
@@ -518,7 +518,7 @@ fn get_parent_module_imports(
     }
 }
 
-fn get_imports_in_function_module(
+fn collect_imports_in_function_module(
     curr_import: &ModuleName,
     analysis_map: &AnalysisMap,
 ) -> AHashSet<ModuleName> {
@@ -571,7 +571,7 @@ fn is_called_attribute_loaded(
     false
 }
 
-fn get_import_as_modules(
+fn fill_import_as_map(
     pending_module: &ModuleName,
     top_level_imports: &AHashSet<ModuleName>,
     module_pending_imports: &ModuleImportsMap,
@@ -593,7 +593,7 @@ fn get_import_as_modules(
     }
 }
 
-fn get_called_function_imports(
+fn collect_called_function_imports(
     pending_module_name: &ModuleName,
     analysis_map: &AnalysisMap,
 ) -> AHashSet<ModuleName> {
@@ -628,7 +628,7 @@ fn get_called_function_imports(
     function_called_imports
 }
 
-fn get_additional_called_imports(analysis_map: &AnalysisMap) -> ScopeImportsMap {
+fn compute_additional_called_imports(analysis_map: &AnalysisMap) -> ScopeImportsMap {
     // Empty-set fallback borrowed by every iteration; allocate once, not per module.
     let set_binding = AHashSet::new();
     analysis_map
@@ -650,7 +650,7 @@ fn get_additional_called_imports(analysis_map: &AnalysisMap) -> ScopeImportsMap 
                     {
                         additional_called_imports.insert(
                             *scope,
-                            get_imports_in_function_module(curr_import, analysis_map),
+                            collect_imports_in_function_module(curr_import, analysis_map),
                         );
                     }
                 }
@@ -740,7 +740,7 @@ fn compute_implicit_imports_for_module(
             .unwrap_or(&set_binding);
 
         // Build import_as_map entries
-        get_import_as_modules(
+        fill_import_as_map(
             pending_module,
             top_level_imports,
             module_pending_imports,
@@ -748,7 +748,7 @@ fn compute_implicit_imports_for_module(
         );
 
         // Accumulate called_function_imports
-        all_called_fn_imports.extend(get_called_function_imports(
+        all_called_fn_imports.extend(collect_called_function_imports(
             pending_module_name,
             ctx.analysis_map,
         ));
@@ -768,11 +768,11 @@ fn compute_implicit_imports_for_module(
             {
                 non_implicit_imports.insert(*curr_import);
                 non_implicit_imports
-                    .extend(get_parent_module_imports(curr_import, ctx.analysis_map));
+                    .extend(collect_parent_module_imports(curr_import, ctx.analysis_map));
             } else if called_functions.contains(curr_import) {
                 // mark function as loaded
                 non_implicit_imports.insert(*curr_import);
-                non_implicit_imports.extend(get_imports_in_function_module(
+                non_implicit_imports.extend(collect_imports_in_function_module(
                     curr_import,
                     ctx.analysis_map,
                 ));
@@ -812,12 +812,12 @@ fn compute_implicit_imports_for_module(
         .collect()
 }
 
-fn get_implicit_imports(analysis_map: &mut AnalysisMap, import_graph: &ImportGraph) {
+fn compute_implicit_imports(analysis_map: &mut AnalysisMap, import_graph: &ImportGraph) {
     let init_module_map = build_init_module_map(analysis_map);
 
     // we need this so we know when a module is loaded through an imported function call
     // we can't modify analysis_map again so using a global map
-    let additional_called_imports = get_additional_called_imports(analysis_map);
+    let additional_called_imports = compute_additional_called_imports(analysis_map);
 
     let ctx = ImplicitImportContext {
         analysis_map,
@@ -886,7 +886,7 @@ pub fn analyze_all(
     });
 
     time("  Getting implicit imports", || {
-        get_implicit_imports(&mut analysis_map, import_graph)
+        compute_implicit_imports(&mut analysis_map, import_graph)
     });
     (analysis_map, parse_errors)
 }
