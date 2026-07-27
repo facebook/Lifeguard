@@ -629,12 +629,11 @@ fn get_called_function_imports(
 }
 
 fn get_additional_called_imports(analysis_map: &AnalysisMap) -> ScopeImportsMap {
+    // Empty-set fallback borrowed by every iteration; allocate once, not per module.
     let set_binding = AHashSet::new();
-
-    // Each module will have its own additional_called_imports, which we merge at the end
-    let results: Vec<ScopeImportsMap> = analysis_map
+    analysis_map
         .par_iter()
-        .map(|(curr_module, output)| {
+        .fold(AHashMap::new, |mut acc, (curr_module, output)| {
             let mut additional_called_imports = AHashMap::new();
             let pending_imports_map = &output.module_effects.pending_imports;
             let called_imports_map = &output.module_effects.called_imports;
@@ -656,14 +655,13 @@ fn get_additional_called_imports(analysis_map: &AnalysisMap) -> ScopeImportsMap 
                     }
                 }
             }
-            let mut map = AHashMap::new();
-            map.insert(*curr_module, additional_called_imports);
-            map
+            acc.insert(*curr_module, additional_called_imports);
+            acc
         })
-        .collect();
-
-    // Merge all per-module additional_called_imports into one
-    results.into_iter().flatten().collect()
+        .reduce(AHashMap::new, |mut acc, map| {
+            acc.extend(map);
+            acc
+        })
 }
 
 fn build_init_module_map(analysis_map: &AnalysisMap) -> HashMap<ModuleName, ModuleName> {
