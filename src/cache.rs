@@ -1183,7 +1183,7 @@ impl CachedExports {
     fn from_exports(exports: &Exports) -> Self {
         let definitions: Vec<(ModuleName, ExportType)> = exports
             .get_exports()
-            .map(|(name, export)| (*name, export.typ))
+            .map(|(name, export)| (*name, *export))
             .collect();
 
         let re_exports: Vec<CachedReExport> = exports

@@ -43,11 +43,6 @@ pub enum ExportType {
     Global,
 }
 
-#[derive(Debug)]
-pub struct Export {
-    pub typ: ExportType,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Attribute {
     pub module: ModuleName,
@@ -106,7 +101,7 @@ where
 #[derive(Debug)]
 pub struct Exports {
     /// Map of definitions to the name of their containing module.
-    exports: AHashMap<ModuleName, Export>,
+    exports: AHashMap<ModuleName, ExportType>,
     /// Map of imported objects to their resolved names and locations.
     re_exports: AHashMap<Attribute, (Attribute, TextRange)>,
     /// Map of module name to the contents of that module's `__all__`.
@@ -169,7 +164,7 @@ impl Exports {
         let is_class_export = |n: &ModuleName| {
             self.exports
                 .get(n)
-                .is_some_and(|e| matches!(e.typ, ExportType::Class))
+                .is_some_and(|typ| matches!(typ, ExportType::Class))
         };
         if is_class_export(name) {
             return true;
@@ -183,14 +178,14 @@ impl Exports {
     pub fn is_global(&self, name: &ModuleName) -> bool {
         self.exports
             .get(name)
-            .is_some_and(|e| matches!(e.typ, ExportType::Global))
+            .is_some_and(|typ| matches!(typ, ExportType::Global))
     }
 
     /// Check if a symbol is a function.
     pub fn is_function(&self, name: &ModuleName) -> bool {
         self.exports
             .get(name)
-            .is_some_and(|e| matches!(e.typ, ExportType::Function))
+            .is_some_and(|typ| matches!(typ, ExportType::Function))
     }
 
     /// Get the return type of a function, if known from stub annotations.
@@ -199,7 +194,7 @@ impl Exports {
     }
 
     /// Get an iterator to all exported symbols and their export info.
-    pub fn get_exports(&self) -> impl Iterator<Item = (&ModuleName, &Export)> {
+    pub fn get_exports(&self) -> impl Iterator<Item = (&ModuleName, &ExportType)> {
         self.exports.iter()
     }
 
@@ -372,7 +367,7 @@ impl<'a> ExportsBuilder<'a> {
     }
 
     fn add_export(&mut self, name: ModuleName, typ: ExportType) {
-        self.inner.exports.insert(name, Export { typ });
+        self.inner.exports.insert(name, typ);
     }
 
     fn add_re_export(&mut self, exported: Attribute, imported: Attribute, range: TextRange) {

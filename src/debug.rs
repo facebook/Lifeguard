@@ -20,7 +20,7 @@ pub fn print_exports(exports: &Exports) {
 
     // Collect exports
     for (name, export) in exports.get_exports() {
-        let prefix = match export.typ {
+        let prefix = match export {
             ExportType::Class => "class",
             ExportType::Function => "function",
             ExportType::Global => "global",
