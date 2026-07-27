@@ -151,7 +151,7 @@ fn merge_all_effects(analysis_map: &AnalysisMap) -> EffectTable {
         // Nested function effects are NOT bubbled — the call graph handles them.
         for (scope, effects) in v.module_effects.effects.iter() {
             if let Some(parent) = v.definitions.enclosing_functions.get(scope) {
-                if !v.definitions.functions.contains(scope) {
+                if !v.definitions.is_function_scope(scope) {
                     let effs = effects.iter().cloned();
                     concurrent_table.entry(*parent).or_default().extend(effs);
                 }
@@ -197,7 +197,7 @@ fn build_nested_functions_map(analysis_map: &AnalysisMap) -> AHashMap<ModuleName
             |mut map: AHashMap<ModuleName, Vec<ModuleName>>, (_, v)| {
                 for (child, parent) in &v.definitions.enclosing_functions {
                     // Keep only immediate children; deeper wrappers run later.
-                    if v.definitions.functions.contains(child)
+                    if v.definitions.is_function_scope(child)
                         && child.parent().as_ref() == Some(parent)
                     {
                         map.entry(*parent).or_default().push(*child);
@@ -224,8 +224,7 @@ fn merge_all_functions_and_methods(
         .par_iter()
         .flat_map_iter(|(mod_name, v)| {
             v.definitions
-                .functions
-                .iter()
+                .function_scopes()
                 .map(|func| (*func, *mod_name))
         })
         .collect();

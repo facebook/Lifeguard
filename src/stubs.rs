@@ -74,7 +74,7 @@ impl Stubs {
         };
         let suffix = format!(".{}", method_name.as_str());
         let mut found = false;
-        for func in &builtins.definitions.functions {
+        for func in builtins.definitions.function_scopes() {
             if func.as_str().ends_with(&suffix) {
                 found = true;
                 if let Some(effects) = builtins.module_effects.effects.get(func) {

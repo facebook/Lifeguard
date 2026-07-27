@@ -52,11 +52,11 @@ pub struct DefinitionTable {
     pub definitions: AHashMap<ModuleName, Definitions>,
     // Scopes with statements executed at import time (module, class definitions)
     pub eager_scopes: AHashSet<ModuleName>,
-    // Fully qualified function and method names (e.g. foo.A.f)
-    pub functions: AHashSet<ModuleName>,
     // Tracks the enclosing top-level function scope for nested defs
     pub enclosing_functions: AHashMap<ModuleName, ModuleName>,
-    // Ordered parameter names per function scope, for arg-param matching
+    // Ordered parameter names per function scope, for arg-param matching.
+    // Holds an entry for exactly the function scopes (see `process_function_def`),
+    // so its keys double as the set of function scopes.
     pub param_names: AHashMap<ModuleName, Vec<Name>>,
 }
 
@@ -66,10 +66,20 @@ impl DefinitionTable {
         Self {
             definitions: AHashMap::new(),
             eager_scopes: AHashSet::new(),
-            functions: AHashSet::new(),
             enclosing_functions: AHashMap::new(),
             param_names: AHashMap::new(),
         }
+    }
+
+    /// Whether `scope` is a function/method body. `param_names` holds an entry
+    /// for every function scope, so its keys are the function-scope set.
+    pub fn is_function_scope(&self, scope: &ModuleName) -> bool {
+        self.param_names.contains_key(scope)
+    }
+
+    /// All function/method scopes defined in this module.
+    pub fn function_scopes(&self) -> impl Iterator<Item = &ModuleName> {
+        self.param_names.keys()
     }
 
     pub fn get(&self, scope: &ModuleName, name: &Name) -> Option<&Definition> {
@@ -292,7 +302,6 @@ struct CombinedDefinitionClassBuilder<'a> {
     // DefinitionTable fields
     definitions_map: AHashMap<ModuleName, Definitions>,
     eager_scopes: AHashSet<ModuleName>,
-    functions_set: AHashSet<ModuleName>,
     enclosing_functions: AHashMap<ModuleName, ModuleName>,
     param_names: AHashMap<ModuleName, Vec<Name>>,
 
@@ -309,7 +318,6 @@ impl<'a> CombinedDefinitionClassBuilder<'a> {
             cursor: Cursor::new(),
             definitions_map: AHashMap::new(),
             eager_scopes: AHashSet::new(),
-            functions_set: AHashSet::new(),
             enclosing_functions: AHashMap::new(),
             param_names: AHashMap::new(),
             classes_map: AHashMap::new(),
@@ -407,7 +415,6 @@ impl<'a> CombinedDefinitionClassBuilder<'a> {
         let scope = self.cursor.scope();
 
         // Record for DefinitionTable
-        self.functions_set.insert(scope);
         if let Some(parent) = self.cursor.enclosing_function_scope() {
             self.enclosing_functions.insert(scope, parent);
         }
@@ -558,7 +565,6 @@ impl<'a> CombinedDefinitionClassBuilder<'a> {
         let definitions = DefinitionTable {
             definitions: self.definitions_map,
             eager_scopes: self.eager_scopes,
-            functions: self.functions_set,
             enclosing_functions: self.enclosing_functions,
             param_names: self.param_names,
         };
@@ -687,6 +693,53 @@ def f(x, y):
         let scope = ModuleName::from_str("test.f");
         let defs = info.definitions.definitions.get(&scope).unwrap();
         assert_str_keys(defs.definitions.keys(), vec!["x", "y"]);
+    }
+
+    #[test]
+    fn test_function_scopes_track_all_functions() {
+        // Guards the invariant behind `is_function_scope` / `function_scopes`:
+        // `param_names` must hold an entry for every function scope — including
+        // zero-arg, nested, and method scopes — and nothing else, so its keys
+        // stay a faithful set of function scopes.
+        let code = r#"
+X = 1
+
+def no_args():
+    pass
+
+def with_args(a, b):
+    def nested():
+        pass
+
+class C:
+    def method(self):
+        pass
+"#;
+        let mod_name = ModuleName::from_str("test");
+        let parsed_module = parse_source(code, mod_name, false);
+        let config = AnalysisConfig::default();
+        let (definitions, _classes) = build_definitions_and_classes(&parsed_module, &config);
+
+        let mut fn_scopes: Vec<&str> = definitions.function_scopes().map(|s| s.as_str()).collect();
+        fn_scopes.sort();
+        assert_eq!(
+            fn_scopes,
+            vec![
+                "test.C.method",
+                "test.no_args",
+                "test.with_args",
+                "test.with_args.nested",
+            ],
+        );
+
+        // A zero-arg function must still register as a function scope (guards
+        // against `param_names` only being populated when params exist).
+        assert!(definitions.is_function_scope(&ModuleName::from_str("test.no_args")));
+        assert!(definitions.is_function_scope(&ModuleName::from_str("test.with_args.nested")));
+
+        // Module and class scopes are not function scopes.
+        assert!(!definitions.is_function_scope(&mod_name));
+        assert!(!definitions.is_function_scope(&ModuleName::from_str("test.C")));
     }
 
     fn make_module_info_and_resolve(
