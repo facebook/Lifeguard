@@ -147,7 +147,7 @@ fn resolve_alias<'a>(
 #[derive(Debug)]
 pub struct BindingsTable {
     bindings: AHashMap<ModuleName, Bindings>,
-    aliases: AHashMap<ModuleName, Aliases>,
+    alias_table: AliasTable,
 }
 
 impl BindingsTable {
@@ -167,12 +167,12 @@ impl BindingsTable {
     }
 
     pub fn lookup_alias(&self, scope: &ModuleName, name: &Name) -> Option<&Alias> {
-        get_nested(&self.aliases, scope, name)
+        self.alias_table.lookup_alias(scope, name)
     }
 
     /// Follow a chain of local aliases to its terminal binding.
     pub fn resolve(&self, scope: &ModuleName, name: &Name) -> Option<&Alias> {
-        resolve_alias(&self.aliases, scope, name)
+        self.alias_table.resolve(scope, name)
     }
 
     // Useful for testing
@@ -489,7 +489,7 @@ impl<'a, 'b> BindingsTableBuilder<'a, 'b> {
         self.module(&parsed_module.ast.body);
         BindingsTable {
             bindings: self.bindings,
-            aliases: self.aliases.aliases,
+            alias_table: self.aliases,
         }
     }
 
