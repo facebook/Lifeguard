@@ -1306,9 +1306,8 @@ impl ProjectInfo {
         // expect. Assembled in parallel (fold per thread, then merge); a flat
         // fqn-keyed map would build faster but can't reproduce the helpers' callee
         // resolution (class-prefix proxy + unqualified fallback + module gating).
-        // `mutated_params` are cloned but go unused: in a whole-program run a
-        // mutation candidate's callee is always unresolved, so it is never confirmed
-        // and the promotion fixpoint only reads verdicts.
+        // Keep the full `FunctionSafetyInfo`: mutation-candidate resolution may
+        // still consult `mutated_params` when a callee resolves through this view.
         let mut view: HashMap<ModuleName, HashMap<String, FunctionSafetyInfo>> = state
             .function_safety
             .par_iter()
