@@ -424,7 +424,7 @@ impl<'a> CombinedDefinitionClassBuilder<'a> {
     fn extract_function_params(&mut self, func: &StmtFunctionDef) {
         let scope = self.cursor.scope();
         if let Some(defs) = self.definitions_map.get_mut(&scope) {
-            let box params = &func.parameters;
+            let params = func.parameters.as_ref();
             let mut ordered_names = Vec::new();
             for p in params.iter_non_variadic_params() {
                 let def = Definition {

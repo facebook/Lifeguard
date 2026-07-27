@@ -86,23 +86,23 @@ impl ImportlibState {
 
     fn get_imported_module_name_kw_args(self, call: &ExprCall) -> Option<ModuleName> {
         // Case where we have only keyword arguments
-        if let Some(kw_name) = call
-            .arguments
-            .keywords
-            .iter()
-            .find(|kw| matches!(&kw.arg, Some(Identifier { id, .. }) if id.as_str() == "name"))
-            && let Expr::StringLiteral(name) = &kw_name.value
-        {
-            if let Some(kw_package) = call.arguments.keywords.iter().find(
+        let kw_name =
+            call.arguments.keywords.iter().find(
+                |kw| matches!(&kw.arg, Some(Identifier { id, .. }) if id.as_str() == "name"),
+            )?;
+        let Expr::StringLiteral(name) = &kw_name.value else {
+            return None;
+        };
+
+        if let Some(kw_package) =
+            call.arguments.keywords.iter().find(
                 |kw| matches!(&kw.arg, Some(Identifier { id, .. }) if id.as_str() == "package"),
-            ) && let Expr::StringLiteral(package) = &kw_package.value
-            {
-                return self.get_relative_imported_module_name(name, package);
-            } else {
-                return Some(ModuleName::from_str(name.value.to_str()));
-            }
+            )
+            && let Expr::StringLiteral(package) = &kw_package.value
+        {
+            return self.get_relative_imported_module_name(name, package);
         }
-        None
+        Some(ModuleName::from_str(name.value.to_str()))
     }
 
     fn get_imported_module_name_pos_args(self, call: &ExprCall) -> Option<ModuleName> {

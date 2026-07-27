@@ -130,19 +130,16 @@ fn resolve_alias<'a>(
         }
         visited[hop] = key;
 
-        let ret = match get_nested(aliases, &current_scope, current_name) {
-            Some(r) => r,
-            None => return last_ret,
+        let Some(ret) = get_nested(aliases, &current_scope, current_name) else {
+            return last_ret;
         };
         last_ret = Some(ret);
-        match ret {
-            Alias::Local(s, n) => {
-                current_scope = *s;
-                current_name = n;
-                continue;
-            }
-            _ => return Some(ret),
+        if let Alias::Local(s, n) = ret {
+            current_scope = *s;
+            current_name = n;
+            continue;
         }
+        return Some(ret);
     }
     last_ret
 }
@@ -361,14 +358,10 @@ impl<'a, 'b> AliasTableBuilder<'a, 'b> {
             }
         }
 
-        let def = self.expr_def(rhs);
-        match def {
-            Some(Value::Class(_)) | Some(Value::Module(_)) => {
-                // We have an alias to a class or module, so add it and exit.
-                self.add_alias(name.clone(), Alias::Global(def.unwrap()));
-                return;
-            }
-            _ => {}
+        if let Some(v @ (Value::Class(_) | Value::Module(_))) = self.expr_def(rhs) {
+            // We have an alias to a class or module, so add it and exit.
+            self.add_alias(name.clone(), Alias::Global(v));
+            return;
         }
 
         // If the rhs is not a class or module, try to resolve it as an alias to a variable

@@ -38,9 +38,9 @@ fn exception_matches(name: &ModuleName, exc_name: &ModuleName) -> bool {
 
 impl TryHandler {
     pub fn typed(names: Vec<ModuleName>) -> Self {
-        match names.len() {
-            1 => Self::Single(names.into_iter().next().unwrap()),
-            _ => Self::Multiple(names),
+        match <[ModuleName; 1]>::try_from(names) {
+            Ok([single]) => Self::Single(single),
+            Err(names) => Self::Multiple(names),
         }
     }
 

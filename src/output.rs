@@ -617,10 +617,8 @@ impl LifeGuardAnalysis {
         let avg_num_of_errors = if self.failing_modules.is_empty() {
             0.0
         } else {
-            {
-                self.aggregated_errors.values().sum::<usize>() as f64
-                    / self.failing_modules.len() as f64
-            }
+            self.aggregated_errors.values().sum::<usize>() as f64
+                / self.failing_modules.len() as f64
         };
 
         format!(
