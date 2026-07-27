@@ -34,7 +34,6 @@ use crate::tracing::time;
 /// Lightweight per-module metadata without a parsed AST.
 /// Used by the on-demand parsing pipeline to avoid holding all ASTs in memory.
 struct SourceInfo {
-    pub name: ModuleName,
     pub source_type: PySourceType,
     pub is_init: bool,
     /// File path relative to root_dir. None for in-memory stubs.
@@ -220,7 +219,6 @@ fn make_source_info_map(
         info_map.insert(
             name,
             SourceInfo {
-                name,
                 source_type: PySourceType::Python,
                 is_init,
                 path: Some(path),
@@ -236,7 +234,6 @@ fn make_source_info_map(
         info_map.insert(
             *mod_name,
             SourceInfo {
-                name: *mod_name,
                 source_type: PySourceType::Stub,
                 is_init: false,
                 path: None,
@@ -245,43 +242,6 @@ fn make_source_info_map(
     }
 
     (info_map, overridden)
-}
-
-/// Parse a single module on demand from its SourceInfo.
-/// For file-backed modules, reads and parses the file at root_dir/path.
-/// For stub modules (path is None), parses the stub source from Stubs.
-fn parse_module(
-    info: &SourceInfo,
-    root_dir: &Path,
-    stubs: &Stubs,
-    version: PythonVersion,
-) -> Option<AstResult> {
-    match &info.path {
-        Some(path) => {
-            let full_path = root_dir.join(path);
-            let result = match read_and_parse_source_with_version(
-                &full_path,
-                info.name,
-                info.is_init,
-                version,
-            ) {
-                Ok(parsed) => AstResult::Ok(parsed),
-                Err(e) => AstResult::ParserError(e),
-            };
-            Some(result)
-        }
-        None => {
-            // Bundled/in-memory stubs may be partial or synthetic, so parse them
-            // leniently (error recovery) rather than dropping them on a syntax error.
-            let src = stubs.get_raw_source(&info.name)?;
-            Some(AstResult::Ok(parse_pyi_with_version(
-                src,
-                info.name,
-                info.is_init,
-                version,
-            )))
-        }
-    }
 }
 
 /// Abstraction over "a source of parseable modules."
@@ -351,9 +311,37 @@ impl ModuleProvider for Sources {
         self.info_map.len()
     }
 
+    /// Parse a single module on demand from its `SourceInfo`.
     fn parse(&self, name: &ModuleName) -> Option<AstResult> {
-        let info = self.info_map.get(name)?;
-        parse_module(info, &self.root_dir, &self.stubs, self.python_version)
+        let name = *name;
+        let info = self.info_map.get(&name)?;
+        match &info.path {
+            // File-backed module: read and parse from root_dir/path.
+            Some(path) => {
+                let full_path = self.root_dir.join(path);
+                let result = match read_and_parse_source_with_version(
+                    &full_path,
+                    name,
+                    info.is_init,
+                    self.python_version,
+                ) {
+                    Ok(parsed) => AstResult::Ok(parsed),
+                    Err(e) => AstResult::ParserError(e),
+                };
+                Some(result)
+            }
+            // Stub module (no path): bundled/in-memory stubs may be partial or
+            // synthetic, so parse leniently rather than dropping them on an error.
+            None => {
+                let src = self.stubs.get_raw_source(&name)?;
+                Some(AstResult::Ok(parse_pyi_with_version(
+                    src,
+                    name,
+                    info.is_init,
+                    self.python_version,
+                )))
+            }
+        }
     }
 
     fn is_stub(&self, name: &ModuleName) -> bool {
