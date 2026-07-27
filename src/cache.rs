@@ -565,10 +565,7 @@ fn retain_unverified_errors(
 }
 
 fn lookup_in_safety_map(local_name: &str, fs: &HashMap<String, FunctionSafetyInfo>) -> bool {
-    let is_safe = |key: &str| {
-        fs.get(key)
-            .is_some_and(|info| info.verdict == FunctionSafety::Safe)
-    };
+    let is_safe = |key: &str| fs.get(key).is_some_and(|info| info.verdict.is_safe());
     if is_safe(local_name) {
         return true;
     }
@@ -655,7 +652,7 @@ impl<'a> SafetyResolver<'a> {
             .iter()
             .filter_map(|m| self.by_module.get(m))
             .filter_map(|fs| fs.get(func_name))
-            .any(|info| info.verdict == FunctionSafety::Safe)
+            .any(|info| info.verdict.is_safe())
     }
 
     /// Whether a plain function call is found and verified `Safe`.
@@ -875,7 +872,7 @@ pub(crate) fn apply_mutation_candidates<'a>(
                             // Only clearing all the way to `Safe` verifies callers' errors; any
                             // remaining concern (e.g. `UnsafeIfImported`) leaves cross-module
                             // calls unsafe.
-                            if info.verdict == FunctionSafety::Safe {
+                            if info.verdict.is_safe() {
                                 resolved_to_safe = true;
                             }
                         }
@@ -929,7 +926,7 @@ fn callee_resolves_unsafe(
     func_safety_by_module: &HashMap<ModuleName, HashMap<String, FunctionSafetyInfo>>,
 ) -> bool {
     lookup_callee_info(callee, module_names, func_safety_by_module)
-        .is_some_and(|info| info.verdict != FunctionSafety::Safe)
+        .is_some_and(|info| !info.verdict.is_safe())
 }
 
 /// Promote every `UnsafeMissingDep` function whose missing-dep callees now all resolve to `Safe`,
@@ -996,7 +993,7 @@ pub(crate) fn promote_fixpoint(
                 info.verdict = *target;
                 // Seed the index matching the resolved verdict so the promotion
                 // can unblock callers on the next round.
-                if *target == FunctionSafety::Safe {
+                if target.is_safe() {
                     globally_safe_funcs.insert(func_name.clone());
                 } else if *target == FunctionSafety::UnsafeIfImported {
                     // Not globally safe; must not seed the safe index.

@@ -67,6 +67,13 @@ impl FunctionSafety {
     pub fn without(self, other: FunctionSafety) -> FunctionSafety {
         FunctionSafety(self.0 & !other.0)
     }
+
+    /// Whether there are no safety concerns. Reads as intent: `Safe` is the empty
+    /// concern set, so `has(Safe)` is always false — prefer `is_safe()` over
+    /// `== FunctionSafety::Safe`.
+    pub fn is_safe(self) -> bool {
+        self.0 == 0
+    }
 }
 
 impl std::ops::BitOr for FunctionSafety {
