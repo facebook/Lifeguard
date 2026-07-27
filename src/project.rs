@@ -75,7 +75,8 @@ pub enum ExecutionMode {
     /// Single-pass whole-program analysis, does not cache anything.
     WholeProgram,
 }
-type ScopeImportsMap = AHashMap<ModuleName, AHashMap<ModuleName, AHashSet<ModuleName>>>;
+/// Per module, the extra imports transitively loaded by functions it calls.
+type AdditionalCalledImports = AHashMap<ModuleName, AHashSet<ModuleName>>;
 
 /// Shared immutable context for per-module analysis.
 struct AnalysisContext<'a> {
@@ -88,7 +89,7 @@ struct AnalysisContext<'a> {
 /// Shared immutable context for computing implicit imports.
 struct ImplicitImportContext<'a> {
     analysis_map: &'a AnalysisMap,
-    additional_called_imports: &'a ScopeImportsMap,
+    additional_called_imports: &'a AdditionalCalledImports,
     init_module_map: &'a HashMap<ModuleName, ModuleName>,
     import_graph: &'a ImportGraph,
 }
@@ -631,40 +632,36 @@ fn collect_called_function_imports(
     function_called_imports
 }
 
-fn compute_additional_called_imports(analysis_map: &AnalysisMap) -> ScopeImportsMap {
+fn compute_additional_called_imports(analysis_map: &AnalysisMap) -> AdditionalCalledImports {
     // Empty-set fallback borrowed by every iteration; allocate once, not per module.
     let set_binding = AHashSet::new();
     analysis_map
         .par_iter()
-        .fold(AHashMap::new, |mut acc, (curr_module, output)| {
-            let mut additional_called_imports = AHashMap::new();
+        .filter_map(|(curr_module, output)| {
             let pending_imports_map = &output.module_effects.pending_imports;
             let called_imports_map = &output.module_effects.called_imports;
             let called_functions = &output.module_effects.called_functions;
             let module_level_import = pending_imports_map.get(curr_module).unwrap_or(&set_binding);
 
-            for (scope, imports) in called_imports_map {
-                for curr_import in imports {
-                    if !module_level_import.contains(curr_import)
-                        && !pending_imports_map
-                            .get(scope)
-                            .is_some_and(|imports| imports.contains(curr_import))
-                        && called_functions.contains(curr_import)
-                    {
-                        additional_called_imports.insert(
-                            *scope,
-                            collect_imports_in_function_module(curr_import, analysis_map),
-                        );
-                    }
+            // Only the module-level scope's entry is ever consumed (as the
+            // `[module][module]` diagonal), so compute just that scope.
+            let mut additional: Option<AHashSet<ModuleName>> = None;
+            for curr_import in called_imports_map.get(curr_module)? {
+                if !module_level_import.contains(curr_import)
+                    && !pending_imports_map
+                        .get(curr_module)
+                        .is_some_and(|imports| imports.contains(curr_import))
+                    && called_functions.contains(curr_import)
+                {
+                    additional = Some(collect_imports_in_function_module(
+                        curr_import,
+                        analysis_map,
+                    ));
                 }
             }
-            acc.insert(*curr_module, additional_called_imports);
-            acc
+            additional.map(|set| (*curr_module, set))
         })
-        .reduce(AHashMap::new, |mut acc, map| {
-            acc.extend(map);
-            acc
-        })
+        .collect()
 }
 
 fn build_init_module_map(analysis_map: &AnalysisMap) -> HashMap<ModuleName, ModuleName> {
@@ -714,9 +711,7 @@ fn compute_implicit_imports_for_module(
                 .init_module_map
                 .get(pending_module)
                 .unwrap_or(pending_module);
-            ctx.additional_called_imports
-                .get(pending_module_name)
-                .and_then(|m| m.get(pending_module_name))
+            ctx.additional_called_imports.get(pending_module_name)
         })
         .flatten()
         .copied()
