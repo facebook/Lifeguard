@@ -737,32 +737,54 @@ impl<'a> SourceAnalyzer<'a> {
 
         self.check_indirectly_called_method(fname, res, attr, output);
 
-        if let Some(param) = &receiver_param {
-            if !is_safe_builtin_method {
-                let is_mutating = match typ {
-                    Some(t) => self.may_mutate_receiver(t, &attr.id),
-                    None => true,
-                };
-                if is_mutating {
-                    self.add_param_method_call(param, range, output);
-                }
-            }
-        };
+        // A safe builtin method (e.g. copy/get/index) never mutates its receiver,
+        // so it does not count as a parameter mutation.
+        if let Some(param) = &receiver_param
+            && !is_safe_builtin_method
+        {
+            self.check_param_method_mutation(param, typ, &attr.id, range, output);
+        }
+        self.check_global_receiver_mutation(res, typ, &attr.id, range, output);
 
-        // Calling a mutating method (e.g. list.append) on a module-level variable from a
-        // nested scope is a global variable mutation.
+        true
+    }
+
+    /// A mutating method (e.g. `list.append`) on a receiver that resolves to a
+    /// parameter records a parameter mutation.
+    fn check_param_method_mutation(
+        &self,
+        param: &(ModuleName, Name),
+        typ: Option<&ModuleName>,
+        attr: &Name,
+        range: TextRange,
+        output: &mut ModuleEffects,
+    ) {
+        let is_mutating = typ.is_none_or(|t| self.may_mutate_receiver(t, attr));
+        if is_mutating {
+            self.add_param_method_call(param, range, output);
+        }
+    }
+
+    /// Calling a mutating method on a module-level variable from a nested scope
+    /// is a global-variable mutation.
+    fn check_global_receiver_mutation(
+        &self,
+        res: &ResolvedName,
+        typ: Option<&ModuleName>,
+        attr: &Name,
+        range: TextRange,
+        output: &mut ModuleEffects,
+    ) {
         let is_global_receiver = res.is_global()
             || (res.scope == self.info.module_name && self.cursor.scope() != self.info.module_name);
         if is_global_receiver
             && let Some(t) = typ
-            && self.may_mutate_receiver(t, &attr.id)
+            && self.may_mutate_receiver(t, attr)
         {
             let name = ModuleName::from_name(&res.name);
             let eff = Effect::new(EffectKind::GlobalVarMutation, name, range);
             self.add_effect(eff, output);
         }
-
-        true
     }
 
     /// Check whether a method call may mutate its receiver. For stub-defined types,

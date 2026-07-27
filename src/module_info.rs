@@ -443,31 +443,36 @@ impl<'a> CombinedDefinitionClassBuilder<'a> {
     fn build_class_info(&self, cls: &StmtClassDef) -> crate::class::Class {
         let mut class = Class::empty(self.module_name);
         class.name = ModuleName::from_name(&cls.name.id);
+        self.extract_bases_and_metaclass(&mut class, cls);
+        self.extract_class_fields(&mut class, cls);
+        class
+    }
 
-        // Extract bases and metaclass
-        if let Some(args) = &cls.arguments {
-            for base in &args.args {
-                if let Some(b) = self.get_class_name(base) {
-                    class.bases.push(b);
-                } else {
-                    class.has_unknown_base = true;
-                }
+    fn extract_bases_and_metaclass(&self, class: &mut Class, cls: &StmtClassDef) {
+        let Some(args) = &cls.arguments else {
+            return;
+        };
+        for base in &args.args {
+            if let Some(b) = self.get_class_name(base) {
+                class.bases.push(b);
+            } else {
+                class.has_unknown_base = true;
             }
-
-            for kwarg in &args.keywords {
-                if let Some(id) = &kwarg.arg {
-                    if id.as_str() == "metaclass" {
-                        let mcls = self.get_class_name(&kwarg.value);
-                        class.metaclass = mcls;
-                        if mcls.is_none() {
-                            class.has_unknown_metaclass = true;
-                        }
-                    }
+        }
+        for kwarg in &args.keywords {
+            if let Some(id) = &kwarg.arg
+                && id.as_str() == "metaclass"
+            {
+                let mcls = self.get_class_name(&kwarg.value);
+                class.metaclass = mcls;
+                if mcls.is_none() {
+                    class.has_unknown_metaclass = true;
                 }
             }
         }
+    }
 
-        // Extract fields from class body
+    fn extract_class_fields(&self, class: &mut Class, cls: &StmtClassDef) {
         for stmt in &cls.body {
             match stmt {
                 Stmt::FunctionDef(func) => {
@@ -503,8 +508,6 @@ impl<'a> CombinedDefinitionClassBuilder<'a> {
                 _ => {}
             }
         }
-
-        class
     }
 
     fn get_class_name(&self, expr: &Expr) -> Option<ModuleName> {
