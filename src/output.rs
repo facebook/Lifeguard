@@ -5,6 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::collections::BTreeMap;
 use std::io::Write;
 
 use dashmap::DashMap;
@@ -729,18 +730,6 @@ pub fn write_verbose<W: Write>(
     let mut keys: Vec<ModuleName> = safety_map.iter().map(|entry| *entry.key()).collect();
     keys.sort();
 
-    let write_error = |out: &mut W, module: &ParsedModule, error: &SafetyError| {
-        let line = module.byte_to_line_number(error.range.start().into());
-
-        writeln!(
-            out,
-            "  Line {} - {:?} {}",
-            line,
-            error.kind,
-            error.metadata.as_str(),
-        )
-    };
-
     for module_name in &keys {
         let ast_result = sources.parse(module_name);
 
@@ -785,22 +774,62 @@ pub fn write_verbose<W: Write>(
             continue;
         }
 
-        writeln!(out, "### Errors")?;
-        module_safety.errors.sort();
-        for error in module_safety.errors.iter() {
-            write_error(out, parsed_module, error)?;
+        // Group errors by ErrorKind
+        let mut grouped_errors: BTreeMap<ErrorKind, Vec<(usize, &SafetyError)>> =
+            BTreeMap::new();
+        for error in &module_safety.errors {
+            let line = parsed_module.byte_to_line_number(error.range.start().into());
+            grouped_errors.entry(error.kind).or_default().push((line, error));
         }
 
-        writeln!(out, "### Load Imports Eagerly")?;
-        module_safety.force_imports_eager_overrides.sort();
-        for exclude in module_safety.force_imports_eager_overrides.iter() {
-            write_error(out, parsed_module, exclude)?;
+        // Sort errors within each group by line number
+        for errors_in_group in grouped_errors.values_mut() {
+            errors_in_group.sort_by_key(|(line, _)| *line);
         }
 
-        writeln!(out, "### Implicit Imports")?;
-        module_safety.implicit_imports.sort();
-        for import in module_safety.implicit_imports.iter() {
-            writeln!(out, "  {}", import.as_str())?;
+        // Write grouped errors
+        if !grouped_errors.is_empty() {
+            writeln!(out, "### Errors")?;
+            for (kind, errors) in &grouped_errors {
+                writeln!(out, "{:?} ({})", kind, errors.len())?;
+                for (line, error) in errors {
+                    writeln!(out, "  Line {} - {}", line, error.metadata.as_str())?;
+                }
+                writeln!(out)?;
+            }
+        }
+
+        // Group force_imports_eager_overrides by ErrorKind
+        let mut grouped_overrides: BTreeMap<ErrorKind, Vec<(usize, &SafetyError)>> =
+            BTreeMap::new();
+        for error in &module_safety.force_imports_eager_overrides {
+            let line = parsed_module.byte_to_line_number(error.range.start().into());
+            grouped_overrides.entry(error.kind).or_default().push((line, error));
+        }
+
+        // Sort overrides within each group by line number
+        for errors_in_group in grouped_overrides.values_mut() {
+            errors_in_group.sort_by_key(|(line, _)| *line);
+        }
+
+        // Write grouped overrides
+        if !grouped_overrides.is_empty() {
+            writeln!(out, "### Load Imports Eagerly")?;
+            for (kind, errors) in &grouped_overrides {
+                writeln!(out, "{:?} ({})", kind, errors.len())?;
+                for (line, error) in errors {
+                    writeln!(out, "  Line {} - {}", line, error.metadata.as_str())?;
+                }
+                writeln!(out)?;
+            }
+        }
+
+        if !module_safety.implicit_imports.is_empty() {
+            writeln!(out, "### Implicit Imports")?;
+            module_safety.implicit_imports.sort();
+            for import in &module_safety.implicit_imports {
+                writeln!(out, "  {}", import.as_str())?;
+            }
         }
 
         writeln!(out)?;
@@ -996,6 +1025,57 @@ mod tests {
         assert!(output.contains("### Errors"));
         assert!(output.contains("UnsafeFunctionCall"));
         assert!(output.contains("some_func()"));
+    }
+
+    #[test]
+    fn test_write_verbose_grouped_and_sorted() {
+        // Test that errors are grouped by kind and sorted by line number within each group
+        let source_code = "line1\nline2\nline3\nline4\nline5\nline6\n";
+        let sources = TestSources::new(&[("module", source_code)]);
+        let safety_map: SafetyMap = DashMap::new();
+        let mut safety = ModuleSafety::new();
+
+        // Add errors in non-sorted order, with multiple kinds
+        // Line 5 - UnsafeFunctionCall
+        safety.add_error(make_error(ErrorKind::UnsafeFunctionCall, "func_c()", 30));
+        // Line 2 - ImportedModuleAssignment
+        safety.add_error(make_error(ErrorKind::ImportedModuleAssignment, "sys", 6));
+        // Line 6 - UnsafeFunctionCall
+        safety.add_error(make_error(ErrorKind::UnsafeFunctionCall, "func_d()", 36));
+        // Line 4 - ImportedModuleAssignment
+        safety.add_error(make_error(ErrorKind::ImportedModuleAssignment, "os", 18));
+        // Line 1 - UnsafeFunctionCall
+        safety.add_error(make_error(ErrorKind::UnsafeFunctionCall, "func_a()", 0));
+
+        safety_map.insert(mn("module"), SafetyResult::Ok(safety));
+
+        let mut buf = Vec::new();
+        write_verbose(&mut buf, &safety_map, &sources).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+
+        // Verify grouping: ImportedModuleAssignment should come before UnsafeFunctionCall
+        // (BTreeMap sorts by key)
+        let imported_pos = output.find("ImportedModuleAssignment").unwrap();
+        let unsafe_pos = output.find("UnsafeFunctionCall").unwrap();
+        assert!(imported_pos < unsafe_pos, "Errors should be grouped by kind");
+
+        // Verify counts are displayed
+        assert!(output.contains("ImportedModuleAssignment (2)"));
+        assert!(output.contains("UnsafeFunctionCall (3)"));
+
+        // Verify sorting within ImportedModuleAssignment group
+        let imported_section = &output[imported_pos..unsafe_pos];
+        let sys_pos = imported_section.find("Line 2 - sys").unwrap();
+        let os_pos = imported_section.find("Line 4 - os").unwrap();
+        assert!(sys_pos < os_pos, "Errors should be sorted by line number within group");
+
+        // Verify sorting within UnsafeFunctionCall group
+        let unsafe_section = &output[unsafe_pos..];
+        let func_a_pos = unsafe_section.find("Line 1 - func_a()").unwrap();
+        let func_c_pos = unsafe_section.find("Line 5 - func_c()").unwrap();
+        let func_d_pos = unsafe_section.find("Line 6 - func_d()").unwrap();
+        assert!(func_a_pos < func_c_pos && func_c_pos < func_d_pos,
+            "Errors should be sorted by line number within group");
     }
 
     // ---- build_lazy_eligible / cycle propagation tests ----
