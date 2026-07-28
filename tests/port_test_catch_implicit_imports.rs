@@ -86,6 +86,52 @@ mod tests {
     }
 
     #[test]
+    fn test_catch_implicit_import_union_of_called_functions() {
+        // `helper` calls two functions at module scope, each loading a distinct
+        // submodule (`mod_a.fa` -> `pkg.x`, `mod_b.fb` -> `pkg.y`). `consumer`
+        // imports `helper` and references both, so both must be recognized as
+        // already loaded through `helper`'s calls -- neither is implicit.
+        let consumer = r#"
+            import pkg
+            import helper
+
+            pkg.x
+            pkg.y
+        "#;
+        let helper = r#"
+            import mod_a
+            import mod_b
+
+            mod_a.fa()
+            mod_b.fb()
+        "#;
+        let mod_a = r#"
+            import pkg.x
+
+            def fa():
+                pkg.x
+        "#;
+        let mod_b = r#"
+            import pkg.y
+
+            def fb():
+                pkg.y
+        "#;
+        let modules = vec![
+            ("consumer", consumer),
+            ("helper", helper),
+            ("mod_a", mod_a),
+            ("mod_b", mod_b),
+            ("pkg.x", "X = 1"),
+            ("pkg.y", "Y = 1"),
+            ("pkg.__init__", ""),
+        ];
+
+        let implicit_imports = Vec::new();
+        check_errors_and_implicit_imports(modules, implicit_imports);
+    }
+
+    #[test]
     fn test_catch_implicit_import_transitive_chained_attr() {
         // Thrift `.ttypes` pattern: consumer imports `pkg.a.ttypes` (binding `pkg`) and references
         // `pkg.b.ttypes.AmeLocation` without importing `pkg.b.ttypes`, relying on `pkg.a.ttypes`

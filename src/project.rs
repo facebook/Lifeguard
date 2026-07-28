@@ -643,8 +643,9 @@ fn compute_additional_called_imports(analysis_map: &AnalysisMap) -> AdditionalCa
             let module_level_import = pending_imports_map.get(curr_module).unwrap_or(&set_binding);
 
             // Only the module-level scope's entry is ever consumed (as the
-            // `[module][module]` diagonal), so compute just that scope.
-            let mut additional: Option<AHashSet<ModuleName>> = None;
+            // `[module][module]` diagonal), so compute just that scope. Union the
+            // imports loaded by every qualifying called function, not just the last.
+            let mut additional = AHashSet::new();
             for curr_import in called_imports_map.get(curr_module)? {
                 if !module_level_import.contains(curr_import)
                     && !pending_imports_map
@@ -652,13 +653,13 @@ fn compute_additional_called_imports(analysis_map: &AnalysisMap) -> AdditionalCa
                         .is_some_and(|imports| imports.contains(curr_import))
                     && called_functions.contains(curr_import)
                 {
-                    additional = Some(collect_imports_in_function_module(
+                    additional.extend(collect_imports_in_function_module(
                         curr_import,
                         analysis_map,
                     ));
                 }
             }
-            additional.map(|set| (*curr_module, set))
+            (!additional.is_empty()).then_some((*curr_module, additional))
         })
         .collect()
 }
