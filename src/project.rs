@@ -1302,7 +1302,7 @@ impl ProjectInfo {
         // resolution (class-prefix proxy + unqualified fallback + module gating).
         // Keep the full `FunctionSafetyInfo`: mutation-candidate resolution may
         // still consult `mutated_params` when a callee resolves through this view.
-        let mut view: HashMap<ModuleName, HashMap<String, FunctionSafetyInfo>> = state
+        let mut view: AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>> = state
             .function_safety
             .par_iter()
             .filter_map(|entry| {
@@ -1318,13 +1318,13 @@ impl ProjectInfo {
                 })
             })
             .fold(
-                HashMap::<ModuleName, HashMap<String, FunctionSafetyInfo>>::new,
+                AHashMap::<ModuleName, AHashMap<String, FunctionSafetyInfo>>::new,
                 |mut acc, (module, local, info)| {
                     acc.entry(module).or_default().insert(local, info);
                     acc
                 },
             )
-            .reduce(HashMap::new, |mut a, b| {
+            .reduce(AHashMap::new, |mut a, b| {
                 for (module, inner) in b {
                     a.entry(module).or_default().extend(inner);
                 }

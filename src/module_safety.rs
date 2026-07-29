@@ -5,15 +5,15 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use std::collections::HashMap;
-
 use pyrefly_python::module_name::ModuleName;
 use serde::Deserialize;
 use serde::Serialize;
 
 use crate::effects::ImportedArgs;
 use crate::errors::SafetyError;
+use crate::hasher::AHashMap;
 use crate::hasher::AHashSet;
+use crate::hasher::HashMapExt;
 use crate::hasher::HashSetExt;
 
 /// The set of safety concerns for a single function, as a bitset. Concerns are
@@ -199,7 +199,7 @@ pub struct ModuleSafety {
     pub implicit_imports: Vec<ModuleName>,
     /// Per-function safety info from call graph analysis.
     /// Keys are function-local names (e.g., "helper" for `mod.helper`).
-    pub function_safety: HashMap<String, FunctionSafetyInfo>,
+    pub function_safety: AHashMap<String, FunctionSafetyInfo>,
     /// Calls passing imported objects to cross-library-unresolved callees.
     pub mutation_candidates: Vec<MutationCandidate>,
 }
@@ -210,7 +210,7 @@ impl ModuleSafety {
             errors: Vec::new(),
             force_imports_eager_overrides: Vec::new(),
             implicit_imports: Vec::new(),
-            function_safety: HashMap::new(),
+            function_safety: AHashMap::new(),
             mutation_candidates: Vec::new(),
         }
     }

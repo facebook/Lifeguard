@@ -7,7 +7,6 @@
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
     use std::path::PathBuf;
     use std::time::SystemTime;
     use std::time::UNIX_EPOCH;
@@ -26,6 +25,7 @@ mod tests {
     use lifeguard::errors::ErrorKind;
     use lifeguard::errors::SafetyError;
     use lifeguard::exports::Exports;
+    use lifeguard::hasher::AHashMap;
     use lifeguard::hasher::HashMapExt;
     use lifeguard::imports::ImportGraph;
     use lifeguard::imports::resolve_to_known_module;
@@ -73,6 +73,13 @@ mod tests {
         )
     }
 
+    /// Build a `function_safety` map from entries (`AHashMap` has no `From<[_; N]>`).
+    fn fsmap<const N: usize>(
+        entries: [(String, FunctionSafetyInfo); N],
+    ) -> AHashMap<String, FunctionSafetyInfo> {
+        entries.into_iter().collect()
+    }
+
     fn empty_exports() -> CachedExports {
         CachedExports {
             definitions: Vec::new(),
@@ -111,7 +118,7 @@ mod tests {
             missing_imports: Default::default(),
             ambiguous_imports: Default::default(),
             side_effect_imports: Default::default(),
-            function_safety: HashMap::new(),
+            function_safety: AHashMap::new(),
             mutation_candidates: Vec::new(),
         }
     }
@@ -143,7 +150,7 @@ mod tests {
     #[cfg(target_pointer_width = "64")]
     fn test_cached_struct_sizes() {
         assert_eq!(std::mem::size_of::<LibraryCache>(), 120);
-        assert_eq!(std::mem::size_of::<CachedModule>(), 280);
+        assert_eq!(std::mem::size_of::<CachedModule>(), 264);
         assert_eq!(std::mem::size_of::<CachedSafety>(), 72);
         assert_eq!(std::mem::size_of::<CachedModuleSafety>(), 72);
         assert_eq!(std::mem::size_of::<lifeguard::cache::CachedError>(), 32);
@@ -1180,7 +1187,7 @@ mod tests {
             missing_imports: Default::default(),
             ambiguous_imports: Default::default(),
             side_effect_imports: Default::default(),
-            function_safety: HashMap::from([unsafe_if_imported("foo")]),
+            function_safety: fsmap([unsafe_if_imported("foo")]),
             mutation_candidates: Vec::new(),
         });
 
@@ -1191,7 +1198,7 @@ mod tests {
             missing_imports: Default::default(),
             ambiguous_imports: Default::default(),
             side_effect_imports: Default::default(),
-            function_safety: HashMap::from([(
+            function_safety: fsmap([(
                 "foo".to_string(),
                 FunctionSafetyInfo::new(FunctionSafety::UnsafeMissingDep),
             )]),
@@ -1451,12 +1458,12 @@ mod tests {
 
     #[test]
     fn test_dotted_local_name_class_safety() {
-        let mut fs = HashMap::new();
+        let mut fs = AHashMap::new();
         fs.insert(
             "MyClass".to_string(),
             FunctionSafetyInfo::new(FunctionSafety::Safe),
         );
-        let mut func_safety_by_module = HashMap::new();
+        let mut func_safety_by_module = AHashMap::new();
         func_safety_by_module.insert(mn("dep"), fs);
 
         let resolved = [mn("dep")].into_iter().collect();
@@ -1563,7 +1570,7 @@ mod tests {
                     missing_imports: Default::default(),
                     ambiguous_imports: Default::default(),
                     side_effect_imports: Default::default(),
-                    function_safety: HashMap::from([
+                    function_safety: fsmap([
                         safe("deco"),
                         unsafe_if_imported("deco.builder"),
                         unsafe_missing_dep("wrapper", "dep.safe"),
@@ -1577,7 +1584,7 @@ mod tests {
                     missing_imports: Default::default(),
                     ambiguous_imports: Default::default(),
                     side_effect_imports: Default::default(),
-                    function_safety: HashMap::from([safe("safe")]),
+                    function_safety: fsmap([safe("safe")]),
                     mutation_candidates: Vec::new(),
                 },
             ],
@@ -1625,10 +1632,7 @@ mod tests {
                 missing_imports: Default::default(),
                 ambiguous_imports: Default::default(),
                 side_effect_imports: Default::default(),
-                function_safety: HashMap::from([
-                    safe("deco"),
-                    unsafe_if_imported("deco.unused_helper"),
-                ]),
+                function_safety: fsmap([safe("deco"), unsafe_if_imported("deco.unused_helper")]),
                 mutation_candidates: Vec::new(),
             }],
             exports: empty_exports(),
@@ -1668,7 +1672,7 @@ mod tests {
                     missing_imports: Default::default(),
                     ambiguous_imports: Default::default(),
                     side_effect_imports: Default::default(),
-                    function_safety: HashMap::from([
+                    function_safety: fsmap([
                         safe("deco"),
                         safe("deco.builder"),
                         unsafe_missing_dep("wrapper", "dep.safe"),
@@ -1682,7 +1686,7 @@ mod tests {
                     missing_imports: Default::default(),
                     ambiguous_imports: Default::default(),
                     side_effect_imports: Default::default(),
-                    function_safety: HashMap::from([safe("safe")]),
+                    function_safety: fsmap([safe("safe")]),
                     mutation_candidates: Vec::new(),
                 },
             ],

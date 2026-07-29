@@ -21,6 +21,7 @@ use crate::errors::ErrorKind;
 use crate::errors::SafetyError;
 use crate::exports::ExportType;
 use crate::exports::Exports;
+use crate::hasher::AHashMap;
 use crate::hasher::AHashSet;
 use crate::hasher::HashMapExt;
 use crate::hasher::HashSetExt;
@@ -64,7 +65,7 @@ pub struct CachedModule {
     pub side_effect_imports: AHashSet<ModuleName>,
     /// Per-function safety info from call graph analysis.
     /// Keys are function-local names (e.g., "helper" for `mod.helper`).
-    pub function_safety: HashMap<String, FunctionSafetyInfo>,
+    pub function_safety: AHashMap<String, FunctionSafetyInfo>,
     /// Calls passing imported objects to cross-library-unresolved callees,
     /// resolved against the merged cache in the reduce step.
     pub mutation_candidates: Vec<MutationCandidate>,
@@ -176,7 +177,7 @@ impl LibraryCache {
                     SafetyResult::Ok(ms) => {
                         (ms.function_safety.clone(), ms.mutation_candidates.clone())
                     }
-                    _ => (HashMap::new(), Vec::new()),
+                    _ => (AHashMap::new(), Vec::new()),
                 };
 
                 let safety = CachedSafety::from_safety_result(safety_result);
@@ -282,7 +283,7 @@ impl LibraryCache {
     fn upgrade_missing_dep_functions(
         &mut self,
         module_names: &AHashSet<ModuleName>,
-        func_safety_by_module: &mut HashMap<ModuleName, HashMap<String, FunctionSafetyInfo>>,
+        func_safety_by_module: &mut AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
         clear_errors: bool,
     ) {
         let (promoted, globally_safe_funcs) = promote_fixpoint(module_names, func_safety_by_module);
@@ -335,7 +336,7 @@ impl LibraryCache {
 
         self.propagate_re_export_safety();
 
-        let mut func_safety_by_module: HashMap<ModuleName, HashMap<String, FunctionSafetyInfo>> =
+        let mut func_safety_by_module: AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>> =
             self.modules
                 .iter_mut()
                 .map(|m| (m.name, std::mem::take(&mut m.function_safety)))
@@ -396,7 +397,7 @@ impl LibraryCache {
     fn resolve_mutation_candidates(
         &mut self,
         module_names: &AHashSet<ModuleName>,
-        func_safety_by_module: &mut HashMap<ModuleName, HashMap<String, FunctionSafetyInfo>>,
+        func_safety_by_module: &mut AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
     ) -> bool {
         let mut module_errors: HashMap<ModuleName, Vec<String>> = HashMap::new();
         let resolved_to_safe = apply_mutation_candidates(
@@ -564,7 +565,7 @@ fn retain_unverified_errors(
     safety.errors.len() < before
 }
 
-fn lookup_in_safety_map(local_name: &str, fs: &HashMap<String, FunctionSafetyInfo>) -> bool {
+fn lookup_in_safety_map(local_name: &str, fs: &AHashMap<String, FunctionSafetyInfo>) -> bool {
     let is_safe = |key: &str| fs.get(key).is_some_and(|info| info.verdict.is_safe());
     if is_safe(local_name) {
         return true;
@@ -583,7 +584,7 @@ fn lookup_in_safety_map(local_name: &str, fs: &HashMap<String, FunctionSafetyInf
 #[derive(Clone, Copy)]
 struct SafetyResolver<'a> {
     modules: &'a AHashSet<ModuleName>,
-    by_module: &'a HashMap<ModuleName, HashMap<String, FunctionSafetyInfo>>,
+    by_module: &'a AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
     /// `Some` enables O(1) unqualified lookups; `None` scans `modules`.
     globally_safe: Option<&'a AHashSet<String>>,
     /// The `UnsafeIfImported` counterpart of `globally_safe`, promotion only.
@@ -594,7 +595,7 @@ impl<'a> SafetyResolver<'a> {
     /// No prebuilt indices — the unqualified fallback scans `modules`.
     fn new(
         modules: &'a AHashSet<ModuleName>,
-        by_module: &'a HashMap<ModuleName, HashMap<String, FunctionSafetyInfo>>,
+        by_module: &'a AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
     ) -> Self {
         SafetyResolver {
             modules,
@@ -607,7 +608,7 @@ impl<'a> SafetyResolver<'a> {
     /// Backed by the prebuilt globally-safe index for O(1) unqualified lookups.
     fn with_safe_index(
         modules: &'a AHashSet<ModuleName>,
-        by_module: &'a HashMap<ModuleName, HashMap<String, FunctionSafetyInfo>>,
+        by_module: &'a AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
         globally_safe: &'a AHashSet<String>,
     ) -> Self {
         SafetyResolver {
@@ -621,7 +622,7 @@ impl<'a> SafetyResolver<'a> {
     /// Backed by both promotion indices, for promotion-verdict resolution.
     fn promotion(
         modules: &'a AHashSet<ModuleName>,
-        by_module: &'a HashMap<ModuleName, HashMap<String, FunctionSafetyInfo>>,
+        by_module: &'a AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
         globally_safe: &'a AHashSet<String>,
         globally_if_imported: &'a AHashSet<String>,
     ) -> Self {
@@ -747,7 +748,7 @@ impl<'a> SafetyResolver<'a> {
 pub fn is_call_verified_safe(
     func_name: &str,
     resolved_modules: &AHashSet<ModuleName>,
-    func_safety_by_module: &HashMap<ModuleName, HashMap<String, FunctionSafetyInfo>>,
+    func_safety_by_module: &AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
 ) -> bool {
     SafetyResolver::new(resolved_modules, func_safety_by_module).is_call_verified_safe(func_name)
 }
@@ -757,7 +758,7 @@ pub fn is_call_verified_safe(
 /// and `deco_helper` are not.
 fn lookup_decorator_in_safety_map(
     local_name: &str,
-    fs: &HashMap<String, FunctionSafetyInfo>,
+    fs: &AHashMap<String, FunctionSafetyInfo>,
 ) -> bool {
     if !lookup_in_safety_map(local_name, fs) {
         return false;
@@ -776,7 +777,7 @@ fn lookup_decorator_in_safety_map(
 fn lookup_callee_info<'a>(
     callee: &ModuleName,
     module_names: &AHashSet<ModuleName>,
-    func_safety_by_module: &'a HashMap<ModuleName, HashMap<String, FunctionSafetyInfo>>,
+    func_safety_by_module: &'a AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
 ) -> Option<&'a FunctionSafetyInfo> {
     for (parent, dot_pos) in callee.iter_parents() {
         if module_names.contains(&parent) {
@@ -789,7 +790,7 @@ fn lookup_callee_info<'a>(
 
 /// Get a function's safety info from the nested module -> name map.
 pub(crate) fn get_function_safety<'a>(
-    map: &'a HashMap<ModuleName, HashMap<String, FunctionSafetyInfo>>,
+    map: &'a AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
     module: &ModuleName,
     name: &str,
 ) -> Option<&'a FunctionSafetyInfo> {
@@ -798,7 +799,7 @@ pub(crate) fn get_function_safety<'a>(
 
 /// Mutable version for updating verdicts in place.
 pub(crate) fn get_function_safety_mut<'a>(
-    map: &'a mut HashMap<ModuleName, HashMap<String, FunctionSafetyInfo>>,
+    map: &'a mut AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
     module: &ModuleName,
     name: &str,
 ) -> Option<&'a mut FunctionSafetyInfo> {
@@ -823,7 +824,7 @@ pub(crate) fn get_function_safety_mut<'a>(
 pub(crate) fn apply_mutation_candidates<'a>(
     modules: impl Iterator<Item = (ModuleName, &'a [MutationCandidate])>,
     module_names: &AHashSet<ModuleName>,
-    func_safety_by_module: &mut HashMap<ModuleName, HashMap<String, FunctionSafetyInfo>>,
+    func_safety_by_module: &mut AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
     mut module_scope_error: impl FnMut(ModuleName, String),
 ) -> bool {
     let mut resolved_to_safe = false;
@@ -894,7 +895,7 @@ pub(crate) fn apply_mutation_candidates<'a>(
 fn candidate_mutates(
     candidate: &MutationCandidate,
     module_names: &AHashSet<ModuleName>,
-    func_safety_by_module: &HashMap<ModuleName, HashMap<String, FunctionSafetyInfo>>,
+    func_safety_by_module: &AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
 ) -> bool {
     let callee_mutates = |callee: &ModuleName, arg_offset: usize| {
         lookup_callee_info(callee, module_names, func_safety_by_module).is_some_and(|info| {
@@ -923,7 +924,7 @@ fn candidate_mutates(
 fn callee_resolves_unsafe(
     callee: &ModuleName,
     module_names: &AHashSet<ModuleName>,
-    func_safety_by_module: &HashMap<ModuleName, HashMap<String, FunctionSafetyInfo>>,
+    func_safety_by_module: &AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
 ) -> bool {
     lookup_callee_info(callee, module_names, func_safety_by_module)
         .is_some_and(|info| !info.verdict.is_safe())
@@ -936,7 +937,7 @@ fn callee_resolves_unsafe(
 /// globally-safe-name index.
 pub(crate) fn promote_fixpoint(
     module_names: &AHashSet<ModuleName>,
-    func_safety_by_module: &mut HashMap<ModuleName, HashMap<String, FunctionSafetyInfo>>,
+    func_safety_by_module: &mut AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
 ) -> (Vec<(ModuleName, String)>, AHashSet<String>) {
     // Index of globally safe function names. Only include functions from modules in `module_names`,
     // to match `is_call_verified_safe`'s unqualified fallback.
@@ -1011,7 +1012,7 @@ pub(crate) fn promote_fixpoint(
 /// class-prefix proxy: `Class.method` resolves via `Class`.
 fn lookup_verdict_in_safety_map(
     local_name: &str,
-    fs: &HashMap<String, FunctionSafetyInfo>,
+    fs: &AHashMap<String, FunctionSafetyInfo>,
 ) -> Option<FunctionSafety> {
     let non_blocking = |key: &str| match fs.get(key).map(|info| info.verdict) {
         Some(v @ (FunctionSafety::Safe | FunctionSafety::UnsafeIfImported)) => Some(v),
@@ -1048,7 +1049,7 @@ impl CachedModule {
             missing_imports: AHashSet::new(),
             ambiguous_imports: AHashSet::new(),
             side_effect_imports: AHashSet::new(),
-            function_safety: HashMap::new(),
+            function_safety: AHashMap::new(),
             mutation_candidates: Vec::new(),
         }
     }
@@ -1268,7 +1269,7 @@ mod tests {
                     missing_imports: AHashSet::new(),
                     ambiguous_imports: AHashSet::new(),
                     side_effect_imports: AHashSet::new(),
-                    function_safety: HashMap::new(),
+                    function_safety: AHashMap::new(),
                     mutation_candidates: Vec::new(),
                 },
                 CachedModule {
@@ -1286,7 +1287,7 @@ mod tests {
                     missing_imports: AHashSet::new(),
                     ambiguous_imports: AHashSet::new(),
                     side_effect_imports: AHashSet::new(),
-                    function_safety: HashMap::new(),
+                    function_safety: AHashMap::new(),
                     mutation_candidates: Vec::new(),
                 },
             ],
@@ -1299,22 +1300,28 @@ mod tests {
         };
 
         let module_names: AHashSet<ModuleName> = [module_a, module_b].into_iter().collect();
-        let func_safety_by_module = HashMap::from([
+        let func_safety_by_module: AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>> = [
             (
                 module_a,
-                HashMap::from([(
+                [(
                     "helper".to_owned(),
                     FunctionSafetyInfo::new(FunctionSafety::Safe),
-                )]),
+                )]
+                .into_iter()
+                .collect(),
             ),
             (
                 module_b,
-                HashMap::from([(
+                [(
                     "helper".to_owned(),
                     FunctionSafetyInfo::new(FunctionSafety::Safe),
-                )]),
+                )]
+                .into_iter()
+                .collect(),
             ),
-        ]);
+        ]
+        .into_iter()
+        .collect();
         let globally_safe_funcs: AHashSet<String> = ["helper".to_owned()].into_iter().collect();
 
         let resolver = SafetyResolver::with_safe_index(

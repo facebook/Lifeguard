@@ -523,7 +523,9 @@ mod tests {
     use crate::cache::CachedModule;
     use crate::cache::CachedModuleSafety;
     use crate::errors::ErrorKind;
+    use crate::hasher::AHashMap;
     use crate::hasher::AHashSet;
+    use crate::hasher::HashMapExt;
     use crate::hasher::HashSetExt;
     use crate::module_safety::FunctionSafety;
     use crate::module_safety::FunctionSafetyInfo;
@@ -602,7 +604,7 @@ mod tests {
                     missing_imports: [dependency].into_iter().collect(),
                     ambiguous_imports: AHashSet::new(),
                     side_effect_imports: AHashSet::new(),
-                    function_safety: HashMap::new(),
+                    function_safety: AHashMap::new(),
                     mutation_candidates: Vec::new(),
                 },
                 CachedModule {
@@ -612,10 +614,12 @@ mod tests {
                     missing_imports: AHashSet::new(),
                     ambiguous_imports: AHashSet::new(),
                     side_effect_imports: AHashSet::new(),
-                    function_safety: HashMap::from([(
+                    function_safety: [(
                         "safe_func".to_owned(),
                         FunctionSafetyInfo::new(FunctionSafety::Safe),
-                    )]),
+                    )]
+                    .into_iter()
+                    .collect(),
                     mutation_candidates: Vec::new(),
                 },
             ],
