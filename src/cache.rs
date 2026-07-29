@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
 
+use dashmap::DashMap;
 use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
 use ruff_text_size::TextRange;
@@ -23,6 +24,7 @@ use crate::exports::ExportType;
 use crate::exports::Exports;
 use crate::hasher::AHashMap;
 use crate::hasher::AHashSet;
+use crate::hasher::FixedState;
 use crate::hasher::HashMapExt;
 use crate::hasher::HashSetExt;
 use crate::imports::ImportGraph;
@@ -287,6 +289,7 @@ impl LibraryCache {
         clear_errors: bool,
     ) {
         let (promoted, globally_safe_funcs) = promote_fixpoint(module_names, func_safety_by_module);
+        let decorator_scan_cache: DashMap<String, bool, FixedState> = DashMap::default();
         if !promoted.is_empty() || clear_errors {
             // With positive evidence (a promotion or a mutation candidate now
             // `Safe`), clear every verified-safe error kind.
@@ -294,7 +297,8 @@ impl LibraryCache {
                 module_names,
                 func_safety_by_module,
                 &globally_safe_funcs,
-            );
+            )
+            .with_decorator_cache(&decorator_scan_cache);
             self.clear_errors_where(&resolver, |_| true);
         } else {
             // Without promotion evidence, clear only `UnsafeDecoratorCall`: its
@@ -302,7 +306,8 @@ impl LibraryCache {
             // the globally-safe index, so an empty one suffices.
             let empty = AHashSet::new();
             let resolver =
-                SafetyResolver::with_safe_index(module_names, func_safety_by_module, &empty);
+                SafetyResolver::with_safe_index(module_names, func_safety_by_module, &empty)
+                    .with_decorator_cache(&decorator_scan_cache);
             self.clear_errors_where(&resolver, |kind| kind == ErrorKind::UnsafeDecoratorCall);
         }
         debug!("{} functions promoted", promoted.len());
@@ -589,6 +594,9 @@ struct SafetyResolver<'a> {
     globally_safe: Option<&'a AHashSet<String>>,
     /// The `UnsafeIfImported` counterpart of `globally_safe`, promotion only.
     globally_if_imported: Option<&'a AHashSet<String>>,
+    /// Caches `scan_unqualified_decorator_safe` by name, so its O(modules) scan
+    /// runs once per distinct decorator instead of once per call site.
+    decorator_scan_cache: Option<&'a DashMap<String, bool, FixedState>>,
 }
 
 impl<'a> SafetyResolver<'a> {
@@ -602,6 +610,7 @@ impl<'a> SafetyResolver<'a> {
             by_module,
             globally_safe: None,
             globally_if_imported: None,
+            decorator_scan_cache: None,
         }
     }
 
@@ -616,6 +625,7 @@ impl<'a> SafetyResolver<'a> {
             by_module,
             globally_safe: Some(globally_safe),
             globally_if_imported: None,
+            decorator_scan_cache: None,
         }
     }
 
@@ -631,7 +641,13 @@ impl<'a> SafetyResolver<'a> {
             by_module,
             globally_safe: Some(globally_safe),
             globally_if_imported: Some(globally_if_imported),
+            decorator_scan_cache: None,
         }
+    }
+
+    fn with_decorator_cache(mut self, cache: &'a DashMap<String, bool, FixedState>) -> Self {
+        self.decorator_scan_cache = Some(cache);
+        self
     }
 
     /// The longest prefix of `func_name` naming a module in `self.modules`,
@@ -678,6 +694,20 @@ impl<'a> SafetyResolver<'a> {
                 .get(&module)
                 .is_some_and(|fs| lookup_decorator_in_safety_map(local, fs));
         }
+        let Some(cache) = self.decorator_scan_cache else {
+            return self.scan_unqualified_decorator_safe(func_name);
+        };
+        if let Some(cached) = cache.get(func_name) {
+            return *cached;
+        }
+        let result = self.scan_unqualified_decorator_safe(func_name);
+        cache.insert(func_name.to_owned(), result);
+        result
+    }
+
+    /// Whether any module has `func_name` as a decorator-verified-safe function.
+    /// O(modules); callers should memoize by name (see `decorator_scan_cache`).
+    fn scan_unqualified_decorator_safe(&self, func_name: &str) -> bool {
         self.modules
             .iter()
             .filter_map(|m| self.by_module.get(m))
