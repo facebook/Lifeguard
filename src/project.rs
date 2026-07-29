@@ -632,25 +632,21 @@ fn collect_called_function_imports(
 }
 
 fn compute_additional_called_imports(analysis_map: &AnalysisMap) -> AdditionalCalledImports {
-    // Empty-set fallback borrowed by every iteration; allocate once, not per module.
-    let set_binding = AHashSet::new();
     analysis_map
         .par_iter()
         .filter_map(|(curr_module, output)| {
             let pending_imports_map = &output.module_effects.pending_imports;
             let called_imports_map = &output.module_effects.called_imports;
             let called_functions = &output.module_effects.called_functions;
-            let module_level_import = pending_imports_map.get(curr_module).unwrap_or(&set_binding);
 
             // Only the module-level scope's entry is ever consumed (as the
             // `[module][module]` diagonal), so compute just that scope. Union the
             // imports loaded by every qualifying called function, not just the last.
             let mut additional = AHashSet::new();
             for curr_import in called_imports_map.get(curr_module)? {
-                if !module_level_import.contains(curr_import)
-                    && !pending_imports_map
-                        .get(curr_module)
-                        .is_some_and(|imports| imports.contains(curr_import))
+                if !pending_imports_map
+                    .get(curr_module)
+                    .is_some_and(|imports| imports.contains(curr_import))
                     && called_functions.contains(curr_import)
                 {
                     additional.extend(collect_imports_in_function_module(
