@@ -46,8 +46,13 @@ pub fn run(args: ShowEffectsArgs) -> Result<()> {
     let is_init = path
         .file_name()
         .is_some_and(|f| f == "__init__.py" || f == "__init__.pyi");
-    let module =
-        module_parser::parse_file_with_version(&source, typ, module_name, is_init, python_version)?;
+    let module = module_parser::parse_file(&source, typ, module_name, is_init, python_version);
+    if let Some(err) = module.first_syntax_error() {
+        eprintln!(
+            "warning: {} has a syntax error, analyzing best-effort: {err}",
+            path.display()
+        );
+    }
     let output = analyzer::analyze(&module, &exports, &import_graph, sources.stubs(), &config);
 
     // Display output

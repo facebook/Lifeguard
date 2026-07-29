@@ -34,6 +34,11 @@ pub struct ParsedModule {
     /// `.ttypes` or thrift-python `.thrift_types`.
     /// These modules are treated as safe (all effects removed) during analysis.
     pub is_thrift_generated: bool,
+    /// The first syntax error ruff reported while (error-recoveringly) parsing,
+    /// if any. The AST is still populated best-effort; the real-file read boundary
+    /// surfaces this (treating a broken file as missing), while test snippets and
+    /// embedded stubs deliberately ignore it.
+    first_syntax_error: Option<String>,
     /// Sorted array of all of the byte positions of line numbers.
     newline_positions: Vec<u32>,
 }
@@ -41,6 +46,12 @@ pub struct ParsedModule {
 impl ParsedModule {
     pub fn is_stub(&self) -> bool {
         self.source_type == PySourceType::Stub
+    }
+
+    /// The first syntax error ruff reported while parsing, or `None` if the
+    /// source parsed cleanly. The AST is populated best-effort regardless.
+    pub fn first_syntax_error(&self) -> Option<&str> {
+        self.first_syntax_error.as_deref()
     }
 
     pub fn byte_to_line_number(&self, pos: u32) -> usize {
@@ -82,32 +93,12 @@ fn is_thrift_generated(source: &str) -> bool {
     prefix.windows(MARKER.len()).any(|w| w == MARKER)
 }
 
-/// Parse `source` into a `ParsedModule`, failing with `Err` on any syntax error.
-/// Used for real files, where an unparseable file should surface as an error
-/// (and be treated as a missing module) rather than yield a partial AST.
-pub fn parse_file_with_version(
-    source: &str,
-    typ: PySourceType,
-    name: ModuleName,
-    is_init: bool,
-    version: PythonVersion,
-) -> Result<ParsedModule> {
-    let options = ParseOptions::from(typ).with_target_version(to_ruff_version(&version));
-    let parsed = ruff_python_parser::parse(source, options)
-        .map_err(|err| anyhow::anyhow!("failed to parse {}: {}", name.as_str(), err))?;
-    Ok(build_parsed_module(
-        parsed.into_syntax(),
-        source,
-        typ,
-        name,
-        is_init,
-    ))
-}
-
-/// Lenient parse via ruff's error recovery: never fails, returning a best-effort
-/// AST even for source with syntax errors. Only for test snippets and the
-/// compile-time-embedded bundled stubs, which are often partial or synthetic.
-fn parse_file_lenient(
+/// Parse `source` into a `ParsedModule` via ruff's error recovery: never fails,
+/// yielding a best-effort AST even for source with syntax errors, capturing the
+/// first reported error in `first_syntax_error`. The real-file read boundary
+/// surfaces that error (treating a broken file as missing); test snippets and
+/// embedded stubs, which are often partial or synthetic, ignore it.
+pub fn parse_file(
     source: &str,
     typ: PySourceType,
     name: ModuleName,
@@ -116,17 +107,26 @@ fn parse_file_lenient(
 ) -> ParsedModule {
     let options = ParseOptions::from(typ).with_target_version(to_ruff_version(&version));
     let parsed = ruff_python_parser::parse_unchecked(source, options);
-    build_parsed_module(parsed.into_syntax(), source, typ, name, is_init)
+    let first_syntax_error = parsed.errors().first().map(|err| err.to_string());
+    build_parsed_module(
+        parsed.into_syntax(),
+        source,
+        typ,
+        name,
+        is_init,
+        first_syntax_error,
+    )
 }
 
 /// Assemble a `ParsedModule` from a parsed module AST: record line offsets and
-/// flag Thrift-generated codegen. Shared by the strict and lenient parsers.
+/// flag Thrift-generated codegen.
 fn build_parsed_module(
     parsed: Mod,
     source: &str,
     typ: PySourceType,
     name: ModuleName,
     is_init: bool,
+    first_syntax_error: Option<String>,
 ) -> ParsedModule {
     let Mod::Module(ast) = parsed else {
         unreachable!("PySourceType::Python and ::Stub always produce Mod::Module")
@@ -140,21 +140,19 @@ fn build_parsed_module(
         source_type: typ,
         is_init,
         is_thrift_generated: is_thrift,
+        first_syntax_error,
         newline_positions: compute_newline_positions(source),
     }
 }
 
-pub fn parse_file(
-    source: &str,
-    typ: PySourceType,
-    name: ModuleName,
-    is_init: bool,
-) -> ParsedModule {
-    parse_file_lenient(source, typ, name, is_init, default_python_version())
-}
-
 pub fn parse_source(source: &str, module_name: ModuleName, is_init: bool) -> ParsedModule {
-    parse_file(source, PySourceType::Python, module_name, is_init)
+    parse_file(
+        source,
+        PySourceType::Python,
+        module_name,
+        is_init,
+        default_python_version(),
+    )
 }
 
 pub fn parse_source_with_version(
@@ -163,11 +161,17 @@ pub fn parse_source_with_version(
     is_init: bool,
     version: PythonVersion,
 ) -> ParsedModule {
-    parse_file_lenient(source, PySourceType::Python, module_name, is_init, version)
+    parse_file(source, PySourceType::Python, module_name, is_init, version)
 }
 
 pub fn parse_pyi(source: &str, module_name: ModuleName, is_init: bool) -> ParsedModule {
-    parse_file(source, PySourceType::Stub, module_name, is_init)
+    parse_file(
+        source,
+        PySourceType::Stub,
+        module_name,
+        is_init,
+        default_python_version(),
+    )
 }
 
 pub fn parse_pyi_with_version(
@@ -176,7 +180,7 @@ pub fn parse_pyi_with_version(
     is_init: bool,
     version: PythonVersion,
 ) -> ParsedModule {
-    parse_file_lenient(source, PySourceType::Stub, module_name, is_init, version)
+    parse_file(source, PySourceType::Stub, module_name, is_init, version)
 }
 
 pub fn read_and_parse_source(
@@ -195,14 +199,18 @@ pub fn read_and_parse_source_with_version(
 ) -> Result<ParsedModule> {
     let bytes = std::fs::read(path)?;
     match String::from_utf8_lossy(&bytes) {
-        // Valid UTF-8: strict parse so a real syntax error surfaces (the module
-        // is then treated as missing downstream) rather than analyzed partially.
+        // Valid UTF-8: a real syntax error surfaces as `Err` (the module is then
+        // treated as missing downstream) rather than analyzed partially.
         std::borrow::Cow::Borrowed(source) => {
-            parse_file_with_version(source, PySourceType::Python, module_name, is_init, version)
+            let module = parse_file(source, PySourceType::Python, module_name, is_init, version);
+            if let Some(err) = &module.first_syntax_error {
+                anyhow::bail!("failed to parse {}: {}", module_name.as_str(), err);
+            }
+            Ok(module)
         }
-        // Non-UTF-8, lossily decoded: parse leniently so replacement chars don't
-        // turn otherwise-valid encoded Python into a hard parser failure.
-        std::borrow::Cow::Owned(source) => Ok(parse_file_lenient(
+        // Non-UTF-8, lossily decoded: keep the best-effort AST so replacement
+        // chars don't turn otherwise-valid encoded Python into a hard failure.
+        std::borrow::Cow::Owned(source) => Ok(parse_file(
             &source,
             PySourceType::Python,
             module_name,
@@ -247,22 +255,29 @@ mod tests {
     }
 
     #[test]
-    fn parse_file_with_version_reports_parse_errors() {
-        let err = parse_file_with_version(
+    fn parse_file_flags_syntax_errors() {
+        let broken = parse_file(
             "def f(:\n",
             PySourceType::Python,
             ModuleName::from_str("broken"),
             false,
             default_python_version(),
         );
-        let err = match err {
-            Ok(_) => panic!("invalid source should return a parse error"),
-            Err(err) => err,
-        };
-
         assert!(
-            err.to_string().contains("failed to parse broken"),
-            "unexpected parse error: {err}"
+            broken.first_syntax_error.is_some(),
+            "invalid source should capture a syntax error"
+        );
+
+        let ok = parse_file(
+            "def f():\n    pass\n",
+            PySourceType::Python,
+            ModuleName::from_str("ok"),
+            false,
+            default_python_version(),
+        );
+        assert!(
+            ok.first_syntax_error.is_none(),
+            "valid source has no syntax error"
         );
     }
 
