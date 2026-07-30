@@ -775,11 +775,13 @@ pub fn write_verbose<W: Write>(
         }
 
         // Group errors by ErrorKind
-        let mut grouped_errors: BTreeMap<ErrorKind, Vec<(usize, &SafetyError)>> =
-            BTreeMap::new();
+        let mut grouped_errors: BTreeMap<ErrorKind, Vec<(usize, &SafetyError)>> = BTreeMap::new();
         for error in &module_safety.errors {
             let line = parsed_module.byte_to_line_number(error.range.start().into());
-            grouped_errors.entry(error.kind).or_default().push((line, error));
+            grouped_errors
+                .entry(error.kind)
+                .or_default()
+                .push((line, error));
         }
 
         // Sort errors within each group by line number
@@ -804,7 +806,10 @@ pub fn write_verbose<W: Write>(
             BTreeMap::new();
         for error in &module_safety.force_imports_eager_overrides {
             let line = parsed_module.byte_to_line_number(error.range.start().into());
-            grouped_overrides.entry(error.kind).or_default().push((line, error));
+            grouped_overrides
+                .entry(error.kind)
+                .or_default()
+                .push((line, error));
         }
 
         // Sort overrides within each group by line number
@@ -1057,7 +1062,10 @@ mod tests {
         // (BTreeMap sorts by key)
         let imported_pos = output.find("ImportedModuleAssignment").unwrap();
         let unsafe_pos = output.find("UnsafeFunctionCall").unwrap();
-        assert!(imported_pos < unsafe_pos, "Errors should be grouped by kind");
+        assert!(
+            imported_pos < unsafe_pos,
+            "Errors should be grouped by kind"
+        );
 
         // Verify counts are displayed
         assert!(output.contains("ImportedModuleAssignment (2)"));
@@ -1067,15 +1075,20 @@ mod tests {
         let imported_section = &output[imported_pos..unsafe_pos];
         let sys_pos = imported_section.find("Line 2 - sys").unwrap();
         let os_pos = imported_section.find("Line 4 - os").unwrap();
-        assert!(sys_pos < os_pos, "Errors should be sorted by line number within group");
+        assert!(
+            sys_pos < os_pos,
+            "Errors should be sorted by line number within group"
+        );
 
         // Verify sorting within UnsafeFunctionCall group
         let unsafe_section = &output[unsafe_pos..];
         let func_a_pos = unsafe_section.find("Line 1 - func_a()").unwrap();
         let func_c_pos = unsafe_section.find("Line 5 - func_c()").unwrap();
         let func_d_pos = unsafe_section.find("Line 6 - func_d()").unwrap();
-        assert!(func_a_pos < func_c_pos && func_c_pos < func_d_pos,
-            "Errors should be sorted by line number within group");
+        assert!(
+            func_a_pos < func_c_pos && func_c_pos < func_d_pos,
+            "Errors should be sorted by line number within group"
+        );
     }
 
     // ---- build_lazy_eligible / cycle propagation tests ----
