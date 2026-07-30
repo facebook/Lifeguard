@@ -28,7 +28,6 @@ use crate::hasher::AHashSet;
 use crate::hasher::HashMapExt;
 use crate::hasher::HashSetExt;
 use crate::imports::ImportGraph;
-use crate::module_parser::ParsedModule;
 use crate::module_safety::SafetyResult;
 use crate::project::SafetyMap;
 use crate::project::SideEffectMap;
@@ -352,10 +351,10 @@ fn build_lazy_eligible(
     let cycle_children: DashMap<ModuleName, Vec<ModuleName>> = DashMap::new();
     import_graph.modules_par_iter().for_each(|module_name| {
         // Record if this module is a direct child of a cycle module
-        if let Some(parent) = module_name.parent() {
-            if cycle_module_set.contains(&parent) {
-                cycle_children.entry(parent).or_default().push(*module_name);
-            }
+        if let Some(parent) = module_name.parent()
+            && cycle_module_set.contains(&parent)
+        {
+            cycle_children.entry(parent).or_default().push(*module_name);
         }
 
         if classified.passing_modules.contains(module_name) {
