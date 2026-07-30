@@ -20,7 +20,6 @@ use tracing::debug;
 use crate::config::AnalysisConfig;
 use crate::errors::ErrorKind;
 use crate::errors::SafetyError;
-use crate::exports::ExportType;
 use crate::exports::Exports;
 use crate::hasher::AHashMap;
 use crate::hasher::AHashSet;
@@ -96,13 +95,12 @@ pub struct CachedError {
     pub parameterized_decorator: bool,
 }
 
-/// Cached export information for a library.
+/// Cached re-export information for a library. Only re-exports are consumed by
+/// the reduce (`analyze-binary`); the map phase's other export tables
+/// (definitions/`__all__`/return types) are not, so they are not cached.
 #[derive(Serialize, Deserialize)]
 pub struct CachedExports {
-    pub definitions: Vec<(ModuleName, ExportType)>,
     pub re_exports: Vec<CachedReExport>,
-    pub all: Vec<(ModuleName, Vec<String>)>,
-    pub return_types: Vec<(ModuleName, ModuleName)>,
 }
 
 /// A cached re-export entry (module.attr -> source_module.source_attr).
@@ -143,10 +141,7 @@ impl LibraryCache {
         LibraryCache {
             modules: Vec::new(),
             exports: CachedExports {
-                definitions: Vec::new(),
                 re_exports: Vec::new(),
-                all: Vec::new(),
-                return_types: Vec::new(),
             },
         }
     }
@@ -241,10 +236,18 @@ impl LibraryCache {
         let extra_modules: usize = dep_caches.iter().map(|d| d.modules.len()).sum();
         self.modules.reserve(extra_modules);
 
+        // Only `re_exports` is read during the reduce (re-export safety
+        // propagation + the lazy-eligible re-export map). `definitions`, `all`,
+        // and `return_types` are never consumed here and account for the bulk of
+        // the accumulated export entries, so skip merging them entirely.
+        let extra_re: usize = dep_caches.iter().map(|d| d.exports.re_exports.len()).sum();
+        self.exports.re_exports.reserve(extra_re);
+
         for dep in dep_caches {
             self.modules.extend(dep.modules);
-            self.exports.merge(dep.exports);
+            self.exports.re_exports.extend(dep.exports.re_exports);
         }
+
         self.modules.sort_by_key(|m| m.name);
         self.merge_duplicate_modules();
         self.exports.sort_and_dedup();
@@ -1281,11 +1284,6 @@ impl CachedError {
 
 impl CachedExports {
     fn from_exports(exports: &Exports) -> Self {
-        let definitions: Vec<(ModuleName, ExportType)> = exports
-            .get_exports()
-            .map(|(name, export)| (*name, *export))
-            .collect();
-
         let re_exports: Vec<CachedReExport> = exports
             .get_re_exports()
             .map(|(exported, (imported, _range))| CachedReExport {
@@ -1296,47 +1294,18 @@ impl CachedExports {
             })
             .collect();
 
-        let all: Vec<(ModuleName, Vec<String>)> = exports
-            .iter_all()
-            .map(|(name, names)| (*name, names.iter().map(|n| n.to_string()).collect()))
-            .collect();
-
-        let return_types: Vec<(ModuleName, ModuleName)> =
-            exports.iter_return_types().map(|(k, v)| (*k, *v)).collect();
-
-        let mut result = CachedExports {
-            definitions,
-            re_exports,
-            all,
-            return_types,
-        };
+        let mut result = CachedExports { re_exports };
         result.sort_and_dedup();
         result
     }
 
     fn sort_and_dedup(&mut self) {
-        self.definitions.par_sort_by_key(|(name, _)| *name);
-        self.definitions.dedup_by_key(|(name, _)| *name);
-
         self.re_exports.par_sort_by(|a, b| {
             (&a.exported_module, &a.exported_attr).cmp(&(&b.exported_module, &b.exported_attr))
         });
         self.re_exports.dedup_by(|a, b| {
             a.exported_module == b.exported_module && a.exported_attr == b.exported_attr
         });
-
-        self.all.par_sort_by_key(|(name, _)| *name);
-        self.all.dedup_by_key(|(name, _)| *name);
-
-        self.return_types.par_sort_by_key(|(k, _)| *k);
-        self.return_types.dedup_by_key(|(k, _)| *k);
-    }
-
-    fn merge(&mut self, other: CachedExports) {
-        self.definitions.extend(other.definitions);
-        self.re_exports.extend(other.re_exports);
-        self.all.extend(other.all);
-        self.return_types.extend(other.return_types);
     }
 }
 
@@ -1391,10 +1360,7 @@ mod tests {
                 },
             ],
             exports: CachedExports {
-                definitions: Vec::new(),
                 re_exports: Vec::new(),
-                all: Vec::new(),
-                return_types: Vec::new(),
             },
         };
 

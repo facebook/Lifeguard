@@ -82,10 +82,7 @@ mod tests {
 
     fn empty_exports() -> CachedExports {
         CachedExports {
-            definitions: Vec::new(),
             re_exports: Vec::new(),
-            all: Vec::new(),
-            return_types: Vec::new(),
         }
     }
 
@@ -149,12 +146,12 @@ mod tests {
     #[test]
     #[cfg(target_pointer_width = "64")]
     fn test_cached_struct_sizes() {
-        assert_eq!(std::mem::size_of::<LibraryCache>(), 120);
+        assert_eq!(std::mem::size_of::<LibraryCache>(), 48);
         assert_eq!(std::mem::size_of::<CachedModule>(), 264);
         assert_eq!(std::mem::size_of::<CachedSafety>(), 72);
         assert_eq!(std::mem::size_of::<CachedModuleSafety>(), 72);
         assert_eq!(std::mem::size_of::<lifeguard::cache::CachedError>(), 32);
-        assert_eq!(std::mem::size_of::<CachedExports>(), 96);
+        assert_eq!(std::mem::size_of::<CachedExports>(), 24);
         assert_eq!(std::mem::size_of::<CachedReExport>(), 64);
     }
 

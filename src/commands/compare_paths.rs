@@ -536,10 +536,7 @@ mod tests {
 
     fn empty_exports() -> CachedExports {
         CachedExports {
-            definitions: Vec::new(),
             re_exports: Vec::new(),
-            all: Vec::new(),
-            return_types: Vec::new(),
         }
     }
 
