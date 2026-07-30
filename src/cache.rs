@@ -452,48 +452,74 @@ impl LibraryCache {
     /// function_safety["foo"] = Safe, then B should also get that entry.
     #[doc(hidden)]
     pub fn propagate_re_export_safety(&mut self) {
-        let module_index: HashMap<ModuleName, usize> = self
+        let module_index: AHashMap<ModuleName, usize> = self
             .modules
             .iter()
             .enumerate()
             .map(|(i, m)| (m.name, i))
             .collect();
 
-        loop {
-            let mut changed = false;
-            for re in &self.exports.re_exports {
-                let source_safety = module_index.get(&re.imported_module).and_then(|&idx| {
-                    self.modules[idx]
-                        .function_safety
-                        .get(&re.imported_attr)
-                        .cloned()
-                });
+        // Worklist over the re-export edges: when an edge changes its
+        // destination verdict, only edges reading from that destination can
+        // need reprocessing. Merge is monotone, so this reaches the same
+        // fixpoint as rescanning every edge each round while revisiting far
+        // fewer. Edges are moved out so they can be read while `self.modules` is
+        // mutated (disjoint fields), then restored at the end.
+        let re_exports = std::mem::take(&mut self.exports.re_exports);
 
-                if let Some(safety) = source_safety {
-                    if let Some(&idx) = module_index.get(&re.exported_module) {
-                        match self.modules[idx]
-                            .function_safety
-                            .entry(re.exported_attr.clone())
-                        {
-                            std::collections::hash_map::Entry::Vacant(e) => {
-                                e.insert(safety);
-                                changed = true;
-                            }
-                            std::collections::hash_map::Entry::Occupied(mut e) => {
-                                // Concerns are orthogonal, so a re-exported symbol inherits the
-                                // union of its source's concerns rather than the "safer" of the two.
-                                if e.get_mut().merge(safety) {
-                                    changed = true;
-                                }
-                            }
-                        }
+        // Maps a source `(module, attr)` to the edges that read from it.
+        let mut dependents: AHashMap<(ModuleName, &str), Vec<u32>> =
+            AHashMap::with_capacity(re_exports.len());
+        for (i, re) in re_exports.iter().enumerate() {
+            dependents
+                .entry((re.imported_module, re.imported_attr.as_str()))
+                .or_default()
+                .push(i as u32);
+        }
+
+        let mut queued = vec![true; re_exports.len()];
+        let mut worklist: Vec<u32> = (0..re_exports.len() as u32).collect();
+
+        while let Some(i) = worklist.pop() {
+            queued[i as usize] = false;
+            let re = &re_exports[i as usize];
+
+            // Pull the source symbol's current safety; skip until it resolves.
+            let Some(safety) = lookup_function_safety(
+                &self.modules,
+                &module_index,
+                re.imported_module,
+                &re.imported_attr,
+            ) else {
+                continue;
+            };
+            let Some(&dst_idx) = module_index.get(&re.exported_module) else {
+                continue;
+            };
+
+            // The re-exported symbol inherits the union of its source's concerns.
+            let dest_changed = merge_function_safety_entry(
+                &mut self.modules[dst_idx].function_safety,
+                &re.exported_attr,
+                safety,
+            );
+
+            // Only edges reading from this destination can now change; re-queue them.
+            if dest_changed
+                && let Some(deps) = dependents.get(&(re.exported_module, re.exported_attr.as_str()))
+            {
+                for &j in deps {
+                    if !queued[j as usize] {
+                        queued[j as usize] = true;
+                        worklist.push(j);
                     }
                 }
             }
-            if !changed {
-                break;
-            }
         }
+
+        // `dependents` borrows `re_exports`; drop it before moving them back.
+        drop(dependents);
+        self.exports.re_exports = re_exports;
     }
 
     /// Reconstruct a SafetyMap from cached module data.
@@ -848,6 +874,35 @@ pub(crate) fn get_function_safety_mut<'a>(
     name: &str,
 ) -> Option<&'a mut FunctionSafetyInfo> {
     map.get_mut(module)?.get_mut(name)
+}
+
+/// The current safety of `module.attr` in the merged modules, if both the module
+/// and the attribute are present. Cloned so the caller can merge it into another
+/// module without holding a borrow on the source.
+fn lookup_function_safety(
+    modules: &[CachedModule],
+    module_index: &AHashMap<ModuleName, usize>,
+    module: ModuleName,
+    attr: &str,
+) -> Option<FunctionSafetyInfo> {
+    let idx = *module_index.get(&module)?;
+    modules[idx].function_safety.get(attr).cloned()
+}
+
+/// Merge `incoming` into `fs[attr]`, inserting it if absent. Returns whether the
+/// entry changed (so callers can decide whether to reprocess dependents).
+fn merge_function_safety_entry(
+    fs: &mut AHashMap<String, FunctionSafetyInfo>,
+    attr: &str,
+    incoming: FunctionSafetyInfo,
+) -> bool {
+    match fs.get_mut(attr) {
+        Some(existing) => existing.merge(incoming),
+        None => {
+            fs.insert(attr.to_owned(), incoming);
+            true
+        }
+    }
 }
 
 /// Resolve mutation candidates against per-function safety verdicts.
