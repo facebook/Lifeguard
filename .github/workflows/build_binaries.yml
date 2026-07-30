@@ -9,8 +9,7 @@ on:
   workflow_dispatch:
   workflow_call:
 
-permissions:
-  contents: read
+permissions: {}
 
 env:
   PACKAGE_FILE_NAME: lifeguard_lazy_imports
@@ -20,6 +19,8 @@ env:
 jobs:
   sdist:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -51,6 +52,8 @@ jobs:
 
   macos:
     runs-on: macos-14
+    permissions:
+      contents: read
     strategy:
       matrix:
         platform:
@@ -87,6 +90,8 @@ jobs:
 
   windows:
     runs-on: windows-latest
+    permissions:
+      contents: read
     strategy:
       matrix:
         platform:
@@ -124,6 +129,8 @@ jobs:
 
   linux:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     strategy:
       matrix:
         target:
