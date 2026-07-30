@@ -1315,20 +1315,20 @@ impl CachedExports {
     }
 
     fn sort_and_dedup(&mut self) {
-        self.definitions.sort_by_key(|(name, _)| *name);
+        self.definitions.par_sort_by_key(|(name, _)| *name);
         self.definitions.dedup_by_key(|(name, _)| *name);
 
-        self.re_exports.sort_by(|a, b| {
+        self.re_exports.par_sort_by(|a, b| {
             (&a.exported_module, &a.exported_attr).cmp(&(&b.exported_module, &b.exported_attr))
         });
         self.re_exports.dedup_by(|a, b| {
             a.exported_module == b.exported_module && a.exported_attr == b.exported_attr
         });
 
-        self.all.sort_by_key(|(name, _)| *name);
+        self.all.par_sort_by_key(|(name, _)| *name);
         self.all.dedup_by_key(|(name, _)| *name);
 
-        self.return_types.sort_by_key(|(k, _)| *k);
+        self.return_types.par_sort_by_key(|(k, _)| *k);
         self.return_types.dedup_by_key(|(k, _)| *k);
     }
 
