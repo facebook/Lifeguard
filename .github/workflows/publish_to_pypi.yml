@@ -39,7 +39,7 @@ jobs:
         run: ls -la dist/
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # release/v1.13
+        uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # release/v1.13
         with:
           # Wheels for 0.1.0 are already on PyPI; skip them so a re-run can
           # upload only newly-added files (e.g. the sdist) instead of 400ing.
