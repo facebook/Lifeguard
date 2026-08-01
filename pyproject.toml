@@ -8,7 +8,7 @@ manifest-path = "src/Cargo.toml"
 python-source = "python"
 module-name = "lifeguard_lazy_imports"
 strip = false
-include = ["rust-toolchain"]
+include = ["rust-toolchain", "LICENSE"]
 
 [project]
 name = "lifeguard-lazy-imports"
