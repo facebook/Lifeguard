@@ -396,7 +396,7 @@ impl LibraryCache {
 
         self.modules.par_iter_mut().for_each(|module| {
             if let CachedSafety::Ok(ref mut safety) = module.safety {
-                resolve_implicit_imports(&mut safety.implicit_imports, &module_names);
+                dedupe_implicit_imports(&mut safety.implicit_imports);
             }
 
             let from_ambiguous = ambiguous_resolved.get(&module.name);
@@ -1218,18 +1218,11 @@ fn lookup_verdict_in_safety_map(
 }
 
 #[doc(hidden)]
-pub fn resolve_implicit_imports(
-    implicit_imports: &mut Vec<ModuleName>,
-    module_names: &AHashSet<ModuleName>,
-) {
+/// Keep cached implicit import guards exact. Unlike missing import graph edges,
+/// these output values name the submodule access that must be loaded eagerly.
+pub fn dedupe_implicit_imports(implicit_imports: &mut Vec<ModuleName>) {
     let mut seen = AHashSet::with_capacity(implicit_imports.len());
-    implicit_imports.retain_mut(|imp| {
-        if let Some(resolved) = resolve_to_known_module(imp, module_names) {
-            *imp = resolved;
-            return seen.insert(resolved);
-        }
-        seen.insert(*imp)
-    });
+    implicit_imports.retain(|imp| seen.insert(*imp));
 }
 
 impl CachedModule {

@@ -448,9 +448,12 @@ fn propagate_implicit_imports_along_paths(
             let mut visited = AHashSet::new();
             let mut stack: Vec<ModuleName> = consumers
                 .iter()
-                .flat_map(|c| import_graph.get_imports(c))
-                .filter(|m| ancestors.contains(*m))
-                .copied()
+                .flat_map(|c| {
+                    import_graph
+                        .get_imports(c)
+                        .filter(|m| ancestors.contains(*m))
+                        .copied()
+                })
                 .collect();
             while let Some(m) = stack.pop() {
                 if !visited.insert(m) {
@@ -688,7 +691,7 @@ fn add_cycle_deps(all_cycles: &[Vec<ModuleName>], ctx: &CycleDepsContext) {
             let cycle_imports: SmallSet<ModuleName> = ctx
                 .import_graph
                 .get_imports(module_name)
-                .filter(|m| cycle_set.contains(m))
+                .filter(|m| *m != module_name && cycle_set.contains(m))
                 .cloned()
                 .collect();
 
@@ -1068,6 +1071,34 @@ mod tests {
         // a.child (child of cycle member a) should also get the cycle deps propagated
         let child_deps = lazy_eligible.get(&a_child).unwrap();
         assert!(child_deps.contains(&b));
+    }
+
+    #[test]
+    fn test_cycle_deps_skip_self_edges() {
+        let mut import_graph = ImportGraph::new();
+        let a = mn("a");
+
+        import_graph.graph.add_node(&a);
+        import_graph.graph.add_edge(&a, &a);
+
+        let mut classified = ClassifiedModules {
+            failing_modules: SmallSet::new(),
+            passing_modules: SmallSet::new(),
+            load_imports_eagerly: SmallSet::new(),
+            implicit_imports: AHashMap::new(),
+            aggregated_errors: AHashMap::new(),
+        };
+        classified.passing_modules.insert(a);
+
+        let re_export_map = AHashMap::new();
+        let lazy_eligible =
+            build_lazy_eligible(&import_graph, &classified, &re_export_map, &[vec![a]]);
+
+        let deps = lazy_eligible.get(&a).unwrap();
+        assert!(
+            !deps.contains(&a),
+            "a module should not list itself as a cycle dependency",
+        );
     }
 
     #[test]

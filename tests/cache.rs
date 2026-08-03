@@ -18,8 +18,8 @@ mod tests {
     use lifeguard::cache::CachedReExport;
     use lifeguard::cache::CachedSafety;
     use lifeguard::cache::LibraryCache;
+    use lifeguard::cache::dedupe_implicit_imports;
     use lifeguard::cache::is_call_verified_safe;
-    use lifeguard::cache::resolve_implicit_imports;
     use lifeguard::config::AnalysisConfig;
     use lifeguard::effects::ImportedArgs;
     use lifeguard::errors::ErrorKind;
@@ -1125,23 +1125,22 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_implicit_imports_dotted_paths() {
-        let known = [mn("dep"), mn("other")].into_iter().collect();
-
+    fn test_dedupe_implicit_imports_preserves_dotted_paths() {
         let mut implicits = vec![mn("dep.ClassName"), mn("other"), mn("missing.Foo")];
-        resolve_implicit_imports(&mut implicits, &known);
+        dedupe_implicit_imports(&mut implicits);
 
-        assert_eq!(implicits, vec![mn("dep"), mn("other"), mn("missing.Foo")]);
+        assert_eq!(
+            implicits,
+            vec![mn("dep.ClassName"), mn("other"), mn("missing.Foo")]
+        );
     }
 
     #[test]
-    fn test_resolve_implicit_imports_deduplicates() {
-        let known = [mn("dep")].into_iter().collect();
+    fn test_dedupe_implicit_imports_deduplicates_exact_paths() {
+        let mut implicits = vec![mn("dep.ClassA"), mn("dep.ClassB"), mn("dep.ClassA")];
+        dedupe_implicit_imports(&mut implicits);
 
-        let mut implicits = vec![mn("dep.ClassA"), mn("dep.ClassB"), mn("dep")];
-        resolve_implicit_imports(&mut implicits, &known);
-
-        assert_eq!(implicits, vec![mn("dep")]);
+        assert_eq!(implicits, vec![mn("dep.ClassA"), mn("dep.ClassB")]);
     }
 
     #[test]
@@ -1719,6 +1718,101 @@ mod tests {
         assert!(
             safety.errors.is_empty(),
             "a decorator error verified safe together with its immediate nested functions should clear",
+        );
+    }
+
+    #[test]
+    fn graph_only_stub_ancestors_do_not_rewrite_implicit_imports() {
+        let options = Options {
+            verbose_output_path: None,
+            sorted_output: true,
+            main_module: None,
+            python_version: default_python_version(),
+        };
+
+        let mut cache = LibraryCache::empty();
+        cache.modules.push(safe_cached_module(
+            "consumer",
+            &["provider"],
+            &["collections.abc"],
+        ));
+        cache
+            .modules
+            .push(safe_cached_module("provider", &["collections"], &[]));
+        cache
+            .modules
+            .push(safe_cached_module("collections", &[], &[]));
+
+        let graph_only_stubs = [mn("collections")].into_iter().collect();
+        let analysis = LifeGuardAnalysis::from_cache(&mut cache, &graph_only_stubs, &options);
+
+        let consumer_deps = analysis
+            .output
+            .lazy_eligible
+            .get(&mn("consumer"))
+            .expect("consumer should be lazy-eligible");
+        assert!(
+            consumer_deps.value().contains(&mn("collections.abc")),
+            "the direct implicit-import guard should keep the unresolved submodule",
+        );
+
+        let provider_deps = analysis
+            .output
+            .lazy_eligible
+            .get(&mn("provider"))
+            .expect("provider should be lazy-eligible");
+        assert!(
+            !provider_deps.value().contains(&mn("collections")),
+            "graph-only stub ancestors should not receive propagated implicit-import guards",
+        );
+    }
+
+    #[test]
+    fn real_source_ancestors_do_not_rewrite_implicit_imports() {
+        let options = Options {
+            verbose_output_path: None,
+            sorted_output: true,
+            main_module: None,
+            python_version: default_python_version(),
+        };
+
+        let mut cache = LibraryCache::empty();
+        cache.modules.push(safe_cached_module(
+            "consumer",
+            &["provider"],
+            &["torch.nn.functional"],
+        ));
+        cache
+            .modules
+            .push(safe_cached_module("provider", &["torch.nn"], &[]));
+        cache.modules.push(safe_cached_module("torch", &[], &[]));
+        cache.modules.push(safe_cached_module("torch.nn", &[], &[]));
+
+        let graph_only_stubs = Default::default();
+        let analysis = LifeGuardAnalysis::from_cache(&mut cache, &graph_only_stubs, &options);
+
+        let consumer_deps = analysis
+            .output
+            .lazy_eligible
+            .get(&mn("consumer"))
+            .expect("consumer should be lazy-eligible");
+        assert!(
+            consumer_deps.value().contains(&mn("torch.nn.functional")),
+            "the direct implicit-import guard should keep the exact accessed submodule",
+        );
+        assert!(
+            !consumer_deps.value().contains(&mn("torch.nn")),
+            "a real source ancestor should not replace the exact implicit-import guard",
+        );
+
+        let provider_deps = analysis
+            .output
+            .lazy_eligible
+            .get(&mn("provider"))
+            .expect("provider should be lazy-eligible");
+        assert!(
+            !provider_deps.value().contains(&mn("torch.nn")),
+            "real source ancestors should not receive propagated implicit-import guards",
         );
     }
 }
