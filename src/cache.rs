@@ -34,6 +34,7 @@ use crate::module_safety::ModuleSafety;
 use crate::module_safety::MutationCandidate;
 use crate::module_safety::MutationCandidateSite;
 use crate::module_safety::SafetyResult;
+use crate::mro::c3_linearize;
 use crate::project::SafetyMap;
 use crate::project::SideEffectMap;
 use crate::pyrefly::sys_info::PythonVersion;
@@ -48,6 +49,10 @@ use crate::traits::ModuleNameExt;
 pub struct LibraryCache {
     pub modules: Vec<CachedModule>,
     pub exports: CachedExports,
+    /// Class FQN -> base-class FQNs, for reduce-time MRO resolution of inherited
+    /// `Class.method` calls.
+    #[serde(default)]
+    pub class_bases: Vec<(ModuleName, Vec<ModuleName>)>,
 }
 
 /// Cached analysis for a single module within a library.
@@ -143,6 +148,7 @@ impl LibraryCache {
             exports: CachedExports {
                 re_exports: Vec::new(),
             },
+            class_bases: Vec::new(),
         }
     }
 
@@ -196,7 +202,17 @@ impl LibraryCache {
 
         let exports = CachedExports::from_exports(exports);
 
-        LibraryCache { modules, exports }
+        LibraryCache {
+            modules,
+            exports,
+            class_bases: Vec::new(),
+        }
+    }
+
+    /// Attach class base edges (class FQN -> base FQNs) for MRO resolution during
+    /// the reduce step. Populated by the map phase (`analyze-library`).
+    pub fn set_class_bases(&mut self, class_bases: Vec<(ModuleName, Vec<ModuleName>)>) {
+        self.class_bases = class_bases;
     }
 
     /// Write the cache to a binary file using postcard. Modules are serialized
@@ -208,7 +224,7 @@ impl LibraryCache {
             .par_iter()
             .map(postcard::to_allocvec)
             .collect::<Result<_, _>>()?;
-        let bytes = postcard::to_allocvec(&(&self.exports, &module_blobs))?;
+        let bytes = postcard::to_allocvec(&(&self.exports, &self.class_bases, &module_blobs))?;
         std::fs::write(path, bytes)?;
         Ok(())
     }
@@ -218,12 +234,20 @@ impl LibraryCache {
     /// struct deserialization then runs in parallel.
     pub fn read_from_file(path: &Path) -> anyhow::Result<Self> {
         let bytes = std::fs::read(path)?;
-        let (exports, module_blobs): (CachedExports, Vec<Vec<u8>>) = postcard::from_bytes(&bytes)?;
+        let (exports, class_bases, module_blobs): (
+            CachedExports,
+            Vec<(ModuleName, Vec<ModuleName>)>,
+            Vec<Vec<u8>>,
+        ) = postcard::from_bytes(&bytes)?;
         let modules = module_blobs
             .par_iter()
             .map(|blob| postcard::from_bytes(blob))
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(LibraryCache { modules, exports })
+        Ok(LibraryCache {
+            modules,
+            exports,
+            class_bases,
+        })
     }
 
     /// Merge dependency caches into this cache.
@@ -246,6 +270,7 @@ impl LibraryCache {
         for dep in dep_caches {
             self.modules.extend(dep.modules);
             self.exports.re_exports.extend(dep.exports.re_exports);
+            self.class_bases.extend(dep.class_bases);
         }
 
         self.modules.sort_by_key(|m| m.name);
@@ -304,6 +329,7 @@ impl LibraryCache {
         module_names: &AHashSet<ModuleName>,
         func_safety_by_module: &mut AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
         clear_errors: bool,
+        class_bases: &HashMap<ModuleName, Vec<ModuleName>>,
     ) {
         let (promoted, globally_safe_funcs) = promote_fixpoint(module_names, func_safety_by_module);
         let decorator_scan_cache: DashMap<String, bool, FixedState> = DashMap::default();
@@ -315,7 +341,8 @@ impl LibraryCache {
                 func_safety_by_module,
                 &globally_safe_funcs,
             )
-            .with_decorator_cache(&decorator_scan_cache);
+            .with_decorator_cache(&decorator_scan_cache)
+            .with_class_bases(class_bases);
             self.clear_errors_where(&resolver, |_| true);
         } else {
             // Without promotion evidence, clear only `UnsafeDecoratorCall`: its
@@ -324,7 +351,8 @@ impl LibraryCache {
             let empty = AHashSet::new();
             let resolver =
                 SafetyResolver::with_safe_index(module_names, func_safety_by_module, &empty)
-                    .with_decorator_cache(&decorator_scan_cache);
+                    .with_decorator_cache(&decorator_scan_cache)
+                    .with_class_bases(class_bases);
             self.clear_errors_where(&resolver, |kind| kind == ErrorKind::UnsafeDecoratorCall);
         }
         debug!("{} functions promoted", promoted.len());
@@ -355,6 +383,8 @@ impl LibraryCache {
     pub fn resolve_cross_library_errors(&mut self) {
         let module_names: AHashSet<ModuleName> = self.modules.iter().map(|m| m.name).collect();
         let ambiguous_resolved = self.resolve_ambiguous_imports(&module_names);
+
+        let class_bases = merge_class_bases(std::mem::take(&mut self.class_bases));
 
         self.propagate_re_export_safety();
 
@@ -396,14 +426,20 @@ impl LibraryCache {
             module.missing_imports = still_missing;
 
             if let CachedSafety::Ok(ref mut safety) = module.safety {
-                let resolver = SafetyResolver::new(&resolved_modules, &func_safety_by_module);
+                let resolver = SafetyResolver::new(&resolved_modules, &func_safety_by_module)
+                    .with_class_bases(&class_bases);
                 retain_unverified_errors(safety, |error| resolver.is_error_verified_safe(error));
             }
         });
 
         let resolved = self.resolve_mutation_candidates(&module_names, &mut func_safety_by_module);
 
-        self.upgrade_missing_dep_functions(&module_names, &mut func_safety_by_module, resolved);
+        self.upgrade_missing_dep_functions(
+            &module_names,
+            &mut func_safety_by_module,
+            resolved,
+            &class_bases,
+        );
 
         for module in &mut self.modules {
             if let Some(fs) = func_safety_by_module.remove(&module.name) {
@@ -613,14 +649,32 @@ fn retain_unverified_errors(
     safety.errors.len() < before
 }
 
-fn lookup_in_safety_map(local_name: &str, fs: &AHashMap<String, FunctionSafetyInfo>) -> bool {
-    let is_safe = |key: &str| fs.get(key).is_some_and(|info| info.verdict.is_safe());
-    if is_safe(local_name) {
-        return true;
+/// Fold accumulated `(class FQN, bases)` pairs into a lookup map, merging any
+/// FQN contributed by more than one library (e.g. a stub and the real module,
+/// or overlapping targets). Bases are unioned preserving first-seen order so the
+/// result is independent of dep-cache append order — a bare `collect()` would
+/// instead keep whichever tuple landed last.
+fn merge_class_bases(
+    entries: Vec<(ModuleName, Vec<ModuleName>)>,
+) -> HashMap<ModuleName, Vec<ModuleName>> {
+    let mut merged: HashMap<ModuleName, Vec<ModuleName>> = HashMap::with_capacity(entries.len());
+    for (class_fqn, bases) in entries {
+        let existing = merged.entry(class_fqn).or_default();
+        for base in bases {
+            if !existing.contains(&base) {
+                existing.push(base);
+            }
+        }
     }
-    local_name
-        .split_once('.')
-        .is_some_and(|(prefix, _)| is_safe(prefix))
+    merged
+}
+
+/// Whether `local_name` is cached `Safe` in `fs`.
+/// Inherited methods resolve up the class MRO in the resolver
+/// (`SafetyResolver::mro_method_verdict`).
+fn lookup_in_safety_map(local_name: &str, fs: &AHashMap<String, FunctionSafetyInfo>) -> bool {
+    fs.get(local_name)
+        .is_some_and(|info| info.verdict.is_safe())
 }
 
 /// The merged per-function verdicts plus the module set they resolve against —
@@ -640,6 +694,9 @@ struct SafetyResolver<'a> {
     /// Caches `scan_unqualified_decorator_safe` by name, so its O(modules) scan
     /// runs once per distinct decorator instead of once per call site.
     decorator_scan_cache: Option<&'a DashMap<String, bool, FixedState>>,
+    /// Class FQN -> base FQNs, enabling MRO resolution of inherited
+    /// `Class.method` calls when there is no exact method verdict.
+    class_bases: Option<&'a HashMap<ModuleName, Vec<ModuleName>>>,
 }
 
 impl<'a> SafetyResolver<'a> {
@@ -654,6 +711,7 @@ impl<'a> SafetyResolver<'a> {
             globally_safe: None,
             globally_if_imported: None,
             decorator_scan_cache: None,
+            class_bases: None,
         }
     }
 
@@ -669,6 +727,7 @@ impl<'a> SafetyResolver<'a> {
             globally_safe: Some(globally_safe),
             globally_if_imported: None,
             decorator_scan_cache: None,
+            class_bases: None,
         }
     }
 
@@ -685,12 +744,39 @@ impl<'a> SafetyResolver<'a> {
             globally_safe: Some(globally_safe),
             globally_if_imported: Some(globally_if_imported),
             decorator_scan_cache: None,
+            class_bases: None,
         }
     }
 
     fn with_decorator_cache(mut self, cache: &'a DashMap<String, bool, FixedState>) -> Self {
         self.decorator_scan_cache = Some(cache);
         self
+    }
+
+    /// Attach class base edges.
+    fn with_class_bases(mut self, class_bases: &'a HashMap<ModuleName, Vec<ModuleName>>) -> Self {
+        self.class_bases = Some(class_bases);
+        self
+    }
+
+    /// Resolve `local` = `Class.method` (or `Outer.Inner.method`) up the MRO of
+    /// `module`.`Class`: return the verdict of the first ancestor, in C3 method
+    /// resolution order, that defines an exact `Base.method` entry, or `None` if
+    /// no reachable ancestor defines it. `Class` itself is skipped — its own
+    /// method is checked by the caller before falling back to the MRO.
+    fn mro_method_verdict(&self, module: &ModuleName, local: &str) -> Option<FunctionSafety> {
+        let class_bases = self.class_bases?;
+        let (class_local, method) = local.rsplit_once('.')?;
+        let class_fqn = module.append_str(class_local);
+        for ancestor in c3_linearize(class_bases, &class_fqn).iter().skip(1) {
+            let candidate = ancestor.append_str(method);
+            if let Some((bmod, blocal)) = self.split_at_module(candidate.as_str()) {
+                if let Some(info) = self.by_module.get(&bmod).and_then(|fs| fs.get(blocal)) {
+                    return Some(info.verdict);
+                }
+            }
+        }
+        None
     }
 
     /// The longest prefix of `func_name` naming a module in `self.modules`,
@@ -718,10 +804,16 @@ impl<'a> SafetyResolver<'a> {
     /// Whether a plain function call is found and verified `Safe`.
     fn is_call_verified_safe(&self, func_name: &str) -> bool {
         if let Some((module, local)) = self.split_at_module(func_name) {
-            return self
+            if self
                 .by_module
                 .get(&module)
-                .is_some_and(|fs| lookup_in_safety_map(local, fs));
+                .is_some_and(|fs| lookup_in_safety_map(local, fs))
+            {
+                return true;
+            }
+            return self
+                .mro_method_verdict(&module, local)
+                .is_some_and(|v| v.is_safe());
         }
         self.unqualified_safe(func_name)
     }
@@ -799,7 +891,11 @@ impl<'a> SafetyResolver<'a> {
             return self
                 .by_module
                 .get(&module)
-                .and_then(|fs| lookup_verdict_in_safety_map(local, fs));
+                .and_then(|fs| lookup_verdict_in_safety_map(local, fs))
+                .or_else(|| {
+                    self.mro_method_verdict(&module, local)
+                        .filter(|&v| v.is_safe() || v == FunctionSafety::UnsafeIfImported)
+                });
         }
 
         if self.globally_safe.is_some_and(|s| s.contains(func_name)) {
@@ -1110,21 +1206,15 @@ pub(crate) fn promote_fixpoint(
 }
 
 /// Like `lookup_in_safety_map` but returns the resolved verdict when it is
-/// non-blocking (`Safe` or `UnsafeIfImported`), else `None`. Uses the same
-/// class-prefix proxy: `Class.method` resolves via `Class`.
+/// non-blocking (`Safe` or `UnsafeIfImported`), else `None`.
 fn lookup_verdict_in_safety_map(
     local_name: &str,
     fs: &AHashMap<String, FunctionSafetyInfo>,
 ) -> Option<FunctionSafety> {
-    let non_blocking = |key: &str| match fs.get(key).map(|info| info.verdict) {
-        Some(v @ (FunctionSafety::Safe | FunctionSafety::UnsafeIfImported)) => Some(v),
+    match fs.get(local_name)?.verdict {
+        v @ (FunctionSafety::Safe | FunctionSafety::UnsafeIfImported) => Some(v),
         _ => None,
-    };
-    non_blocking(local_name).or_else(|| {
-        local_name
-            .split_once('.')
-            .and_then(|(prefix, _)| non_blocking(prefix))
-    })
+    }
 }
 
 #[doc(hidden)]
@@ -1316,6 +1406,110 @@ mod tests {
     use super::*;
 
     #[test]
+    fn mro_resolves_inherited_method_to_base_verdict() {
+        let modules: AHashSet<ModuleName> =
+            [ModuleName::from_str("base"), ModuleName::from_str("sub")]
+                .into_iter()
+                .collect();
+        let mut by_module: AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>> =
+            AHashMap::new();
+        by_module.insert(
+            ModuleName::from_str("base"),
+            [(
+                "Base.method".to_owned(),
+                FunctionSafetyInfo::new(FunctionSafety::Safe),
+            )]
+            .into_iter()
+            .collect(),
+        );
+        // `sub.Sub` inherits `method` from `base.Base`; it has no own entry.
+        by_module.insert(ModuleName::from_str("sub"), AHashMap::new());
+        let class_bases: HashMap<ModuleName, Vec<ModuleName>> = [(
+            ModuleName::from_str("sub.Sub"),
+            vec![ModuleName::from_str("base.Base")],
+        )]
+        .into_iter()
+        .collect();
+
+        let resolver = SafetyResolver::new(&modules, &by_module).with_class_bases(&class_bases);
+        assert!(
+            resolver.is_call_verified_safe("sub.Sub.method"),
+            "an inherited method resolves to the defining base's Safe verdict via the MRO",
+        );
+
+        let no_mro = SafetyResolver::new(&modules, &by_module);
+        assert!(
+            !no_mro.is_call_verified_safe("sub.Sub.method"),
+            "without MRO data an inherited method is not verified (no class fallback)",
+        );
+    }
+
+    #[test]
+    fn mro_diamond_prefers_right_branch_override_over_shared_ancestor() {
+        let module = ModuleName::from_str("m");
+        let modules: AHashSet<ModuleName> = [module].into_iter().collect();
+        let mut by_module: AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>> =
+            AHashMap::new();
+        by_module.insert(
+            module,
+            [
+                (
+                    "A.method".to_owned(),
+                    FunctionSafetyInfo::new(FunctionSafety::Safe),
+                ),
+                (
+                    "C.method".to_owned(),
+                    FunctionSafetyInfo::new(FunctionSafety::Unsafe),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        // D(B, C); B(A); C(A). `method` is Safe on the shared ancestor A and
+        // overridden Unsafe on the right branch C. C3 MRO of D is [D, B, C, A],
+        // so D.method resolves to C (Unsafe); a depth-first walk would wrongly
+        // reach A (Safe) first and clear the call.
+        let class_bases: HashMap<ModuleName, Vec<ModuleName>> = [
+            (
+                ModuleName::from_str("m.D"),
+                vec![ModuleName::from_str("m.B"), ModuleName::from_str("m.C")],
+            ),
+            (
+                ModuleName::from_str("m.B"),
+                vec![ModuleName::from_str("m.A")],
+            ),
+            (
+                ModuleName::from_str("m.C"),
+                vec![ModuleName::from_str("m.A")],
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        let resolver = SafetyResolver::new(&modules, &by_module).with_class_bases(&class_bases);
+        assert!(
+            !resolver.is_call_verified_safe("m.D.method"),
+            "diamond method resolves via C3 to the Unsafe right-branch override, not the Safe ancestor",
+        );
+    }
+
+    #[test]
+    fn merge_class_bases_unions_duplicate_class_fqns() {
+        let c = ModuleName::from_str("pkg.mod.C");
+        let base_a = ModuleName::from_str("pkg.mod.A");
+        let base_b = ModuleName::from_str("pkg.mod.B");
+
+        // Two libraries contribute `pkg.mod.C`: a duplicate base and a new one.
+        let merged = merge_class_bases(vec![(c, vec![base_a]), (c, vec![base_a, base_b])]);
+
+        assert_eq!(
+            merged.get(&c),
+            Some(&vec![base_a, base_b]),
+            "duplicate FQN base lists union preserving first-seen order, not last-wins",
+        );
+    }
+
+    #[test]
     fn clear_verified_errors_processes_every_module() {
         let module_a = ModuleName::from_str("test.module_a");
         let module_b = ModuleName::from_str("test.module_b");
@@ -1362,6 +1556,7 @@ mod tests {
             exports: CachedExports {
                 re_exports: Vec::new(),
             },
+            class_bases: Vec::new(),
         };
 
         let module_names: AHashSet<ModuleName> = [module_a, module_b].into_iter().collect();

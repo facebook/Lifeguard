@@ -195,6 +195,7 @@ fn run_incremental(
         &result.exports,
         &result.side_effect_imports,
     );
+    cache.set_class_bases(result.class_bases);
     // Per-library caches drop stub-only modules; the reduce re-adds them.
     let graph_only_stubs = cache.inject_bundled_stub_graph(options.python_version);
     let analysis = LifeGuardAnalysis::from_cache(&mut cache, &graph_only_stubs, options);
@@ -621,6 +622,7 @@ mod tests {
                 },
             ],
             exports: empty_exports(),
+            class_bases: Vec::new(),
         };
 
         assert_eq!(

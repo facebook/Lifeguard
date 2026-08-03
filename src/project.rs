@@ -289,6 +289,9 @@ pub struct AnalysisOutput {
     pub safety_map: SafetyMap,
     pub side_effect_imports: SideEffectMap,
     pub parse_errors: ParseErrors,
+    /// Class FQN -> base-class FQNs, for reduce-time MRO resolution of inherited
+    /// `Class.method` calls.
+    pub class_bases: Vec<(ModuleName, Vec<ModuleName>)>,
 }
 
 // Collects whole-project analysis output, as well as any global state that is required while
@@ -458,6 +461,8 @@ pub fn run_analysis(
         filter_out_stubs(&safety_map, sources)
     });
 
+    let class_bases = time("  Extracting class bases", || info.classes.base_edges());
+
     // Deallocating ProjectInfo takes seconds on large projects. Hand it to a
     // dedicated background thread so the dealloc is non-blocking
     drop_in_background(info);
@@ -466,6 +471,7 @@ pub fn run_analysis(
         safety_map,
         side_effect_imports,
         parse_errors,
+        class_bases,
     }
 }
 

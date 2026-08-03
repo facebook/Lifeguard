@@ -110,14 +110,16 @@ pub fn run(args: AnalyzeLibraryArgs) -> Result<()> {
 
         let result = run_pipeline(src_map, &root_dir, ExecutionMode::Incremental, &options)?;
 
-        time("Building cache", || {
+        let mut cache = time("Building cache", || {
             LibraryCache::build(
                 &result.safety_map,
                 &result.import_graph,
                 &result.exports,
                 &result.side_effect_imports,
             )
-        })
+        });
+        cache.set_class_bases(result.class_bases);
+        cache
     };
 
     time("Writing cache", || {

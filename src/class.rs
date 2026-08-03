@@ -105,6 +105,16 @@ impl ClassTable {
     pub(crate) fn par_keys(&self) -> impl ParallelIterator<Item = &ModuleName> {
         self.table.par_iter().map(|(k, _)| k)
     }
+
+    /// Class FQN -> its base-class FQNs, for classes that declare bases. Used by
+    /// the reduce step to resolve inherited `Class.method` calls up the MRO.
+    pub fn base_edges(&self) -> Vec<(ModuleName, Vec<ModuleName>)> {
+        self.table
+            .iter()
+            .filter(|(_, class)| !class.bases.is_empty())
+            .map(|(name, class)| (*name, class.bases.clone()))
+            .collect()
+    }
 }
 
 #[cfg(test)]

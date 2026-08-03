@@ -146,7 +146,7 @@ mod tests {
     #[test]
     #[cfg(target_pointer_width = "64")]
     fn test_cached_struct_sizes() {
-        assert_eq!(std::mem::size_of::<LibraryCache>(), 48);
+        assert_eq!(std::mem::size_of::<LibraryCache>(), 72);
         assert_eq!(std::mem::size_of::<CachedModule>(), 264);
         assert_eq!(std::mem::size_of::<CachedSafety>(), 72);
         assert_eq!(std::mem::size_of::<CachedModuleSafety>(), 72);
@@ -1454,10 +1454,19 @@ mod tests {
     }
 
     #[test]
-    fn test_dotted_local_name_class_safety() {
+    fn test_dotted_local_name_exact_method_only() {
+        // Regression test to make sure we have gotten rid of the "class fallback" heuristic.
+        //
+        // A `Class.method` callee is verified via its own exact entry, never the
+        // bare `Class` (constructor) verdict. `is_call_verified_safe` carries no
+        // MRO data, so a method with no exact entry is not verified.
         let mut fs = AHashMap::new();
         fs.insert(
             "MyClass".to_string(),
+            FunctionSafetyInfo::new(FunctionSafety::Safe),
+        );
+        fs.insert(
+            "MyClass.safe_method".to_string(),
             FunctionSafetyInfo::new(FunctionSafety::Safe),
         );
         let mut func_safety_by_module = AHashMap::new();
@@ -1466,18 +1475,22 @@ mod tests {
         let resolved = [mn("dep")].into_iter().collect();
 
         assert!(
-            is_call_verified_safe("dep.MyClass.method", &resolved, &func_safety_by_module),
-            "dep.MyClass.method should resolve via class-level safety",
+            is_call_verified_safe("dep.MyClass.safe_method", &resolved, &func_safety_by_module),
+            "an exact safe method verdict resolves",
         );
 
         assert!(
             is_call_verified_safe("dep.MyClass", &resolved, &func_safety_by_module),
-            "dep.MyClass should match directly",
+            "the class constructor entry resolves directly",
         );
 
         assert!(
-            !is_call_verified_safe("dep.OtherClass.method", &resolved, &func_safety_by_module),
-            "dep.OtherClass.method should not match when OtherClass is not safe",
+            !is_call_verified_safe(
+                "dep.MyClass.other_method",
+                &resolved,
+                &func_safety_by_module
+            ),
+            "a method with no exact verdict no longer falls back to the class verdict",
         );
     }
 
@@ -1586,6 +1599,7 @@ mod tests {
                 },
             ],
             exports: empty_exports(),
+            class_bases: Vec::new(),
         };
 
         cache.resolve_cross_library_errors();
@@ -1633,6 +1647,7 @@ mod tests {
                 mutation_candidates: Vec::new(),
             }],
             exports: empty_exports(),
+            class_bases: Vec::new(),
         };
 
         cache.resolve_cross_library_errors();
@@ -1688,6 +1703,7 @@ mod tests {
                 },
             ],
             exports: empty_exports(),
+            class_bases: Vec::new(),
         };
 
         cache.resolve_cross_library_errors();

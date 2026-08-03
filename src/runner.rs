@@ -89,6 +89,7 @@ pub struct PipelineResult {
     pub import_graph: ImportGraph,
     pub exports: crate::exports::Exports,
     pub side_effect_imports: project::SideEffectMap,
+    pub class_bases: Vec<(ModuleName, Vec<ModuleName>)>,
 }
 
 /// Run the analysis pipeline up to (but not including) final output generation.
@@ -132,6 +133,7 @@ pub fn run_pipeline(
         import_graph,
         exports,
         side_effect_imports: output.side_effect_imports,
+        class_bases: output.class_bases,
     })
 }
 
@@ -148,6 +150,7 @@ pub fn process_source_map(
         import_graph,
         exports,
         side_effect_imports,
+        class_bases: _,
     } = result;
 
     if let Some(out) = &options.verbose_output_path {

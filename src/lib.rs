@@ -29,6 +29,7 @@ pub mod module_effects;
 pub mod module_info;
 pub mod module_parser;
 pub mod module_safety;
+pub mod mro;
 pub mod output;
 pub mod project;
 pub mod pyrefly;
