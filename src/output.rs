@@ -717,6 +717,40 @@ fn add_cycle_deps(all_cycles: &[Vec<ModuleName>], ctx: &CycleDepsContext) {
     }
 }
 
+/// Group `errors` by kind and write them under `header`: kinds sorted by name,
+/// entries within each kind sorted by line number, each with a per-kind count.
+/// Writes nothing when `errors` is empty.
+fn write_grouped_errors<W: Write>(
+    out: &mut W,
+    header: &str,
+    errors: &[SafetyError],
+    module: &ParsedModule,
+) -> std::io::Result<()> {
+    if errors.is_empty() {
+        return Ok(());
+    }
+
+    let mut by_kind: AHashMap<ErrorKind, Vec<(usize, &SafetyError)>> = AHashMap::new();
+    for error in errors {
+        let line = module.byte_to_line_number(error.range.start().into());
+        by_kind.entry(error.kind).or_default().push((line, error));
+    }
+
+    let mut groups: Vec<(ErrorKind, Vec<(usize, &SafetyError)>)> = by_kind.into_iter().collect();
+    groups.sort_by_cached_key(|(kind, _)| format!("{kind:?}"));
+
+    writeln!(out, "{header}")?;
+    for (kind, mut entries) in groups {
+        entries.sort_by_key(|(line, _)| *line);
+        writeln!(out, "{kind:?} ({})", entries.len())?;
+        for (line, error) in entries {
+            writeln!(out, "  Line {line} - {}", error.metadata.as_str())?;
+        }
+        writeln!(out)?;
+    }
+    Ok(())
+}
+
 /// Write all errors to a file. Parses each module on demand to get line numbers.
 pub fn write_verbose<W: Write>(
     out: &mut W,
@@ -731,18 +765,6 @@ pub fn write_verbose<W: Write>(
 
     let mut keys: Vec<ModuleName> = safety_map.iter().map(|entry| *entry.key()).collect();
     keys.sort();
-
-    let write_error = |out: &mut W, module: &ParsedModule, error: &SafetyError| {
-        let line = module.byte_to_line_number(error.range.start().into());
-
-        writeln!(
-            out,
-            "  Line {} - {:?} {}",
-            line,
-            error.kind,
-            error.metadata.as_str(),
-        )
-    };
 
     for module_name in &keys {
         let ast_result = sources.parse(module_name);
@@ -788,22 +810,20 @@ pub fn write_verbose<W: Write>(
             continue;
         }
 
-        writeln!(out, "### Errors")?;
-        module_safety.errors.sort();
-        for error in module_safety.errors.iter() {
-            write_error(out, parsed_module, error)?;
-        }
+        write_grouped_errors(out, "### Errors", &module_safety.errors, parsed_module)?;
+        write_grouped_errors(
+            out,
+            "### Load Imports Eagerly",
+            &module_safety.force_imports_eager_overrides,
+            parsed_module,
+        )?;
 
-        writeln!(out, "### Load Imports Eagerly")?;
-        module_safety.force_imports_eager_overrides.sort();
-        for exclude in module_safety.force_imports_eager_overrides.iter() {
-            write_error(out, parsed_module, exclude)?;
-        }
-
-        writeln!(out, "### Implicit Imports")?;
-        module_safety.implicit_imports.sort();
-        for import in module_safety.implicit_imports.iter() {
-            writeln!(out, "  {}", import.as_str())?;
+        if !module_safety.implicit_imports.is_empty() {
+            writeln!(out, "### Implicit Imports")?;
+            module_safety.implicit_imports.sort();
+            for import in &module_safety.implicit_imports {
+                writeln!(out, "  {}", import.as_str())?;
+            }
         }
 
         writeln!(out)?;
@@ -999,6 +1019,65 @@ mod tests {
         assert!(output.contains("### Errors"));
         assert!(output.contains("UnsafeFunctionCall"));
         assert!(output.contains("some_func()"));
+    }
+
+    #[test]
+    fn test_write_verbose_grouped_and_sorted() {
+        // Test that errors are grouped by kind and sorted by line number within each group
+        let source_code = "line1\nline2\nline3\nline4\nline5\nline6\n";
+        let sources = TestSources::new(&[("module", source_code)]);
+        let safety_map: SafetyMap = DashMap::new();
+        let mut safety = ModuleSafety::new();
+
+        // Add errors in non-sorted order, with multiple kinds
+        // Line 6 - UnsafeFunctionCall
+        safety.add_error(make_error(ErrorKind::UnsafeFunctionCall, "func_c()", 30));
+        // Line 2 - ImportedModuleAssignment
+        safety.add_error(make_error(ErrorKind::ImportedModuleAssignment, "sys", 6));
+        // Line 7 - UnsafeFunctionCall
+        safety.add_error(make_error(ErrorKind::UnsafeFunctionCall, "func_d()", 36));
+        // Line 4 - ImportedModuleAssignment
+        safety.add_error(make_error(ErrorKind::ImportedModuleAssignment, "os", 18));
+        // Line 1 - UnsafeFunctionCall
+        safety.add_error(make_error(ErrorKind::UnsafeFunctionCall, "func_a()", 0));
+
+        safety_map.insert(mn("module"), SafetyResult::Ok(safety));
+
+        let mut buf = Vec::new();
+        write_verbose(&mut buf, &safety_map, &sources).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+
+        // Verify grouping: kinds are sorted by name, so ImportedModuleAssignment
+        // comes before UnsafeFunctionCall.
+        let imported_pos = output.find("ImportedModuleAssignment").unwrap();
+        let unsafe_pos = output.find("UnsafeFunctionCall").unwrap();
+        assert!(
+            imported_pos < unsafe_pos,
+            "Errors should be grouped by kind"
+        );
+
+        // Verify counts are displayed
+        assert!(output.contains("ImportedModuleAssignment (2)"));
+        assert!(output.contains("UnsafeFunctionCall (3)"));
+
+        // Verify sorting within ImportedModuleAssignment group
+        let imported_section = &output[imported_pos..unsafe_pos];
+        let sys_pos = imported_section.find("Line 2 - sys").unwrap();
+        let os_pos = imported_section.find("Line 4 - os").unwrap();
+        assert!(
+            sys_pos < os_pos,
+            "Errors should be sorted by line number within group"
+        );
+
+        // Verify sorting within UnsafeFunctionCall group
+        let unsafe_section = &output[unsafe_pos..];
+        let func_a_pos = unsafe_section.find("Line 1 - func_a()").unwrap();
+        let func_c_pos = unsafe_section.find("Line 6 - func_c()").unwrap();
+        let func_d_pos = unsafe_section.find("Line 7 - func_d()").unwrap();
+        assert!(
+            func_a_pos < func_c_pos && func_c_pos < func_d_pos,
+            "Errors should be sorted by line number within group"
+        );
     }
 
     // ---- build_lazy_eligible / cycle propagation tests ----
