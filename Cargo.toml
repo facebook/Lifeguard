@@ -1,7 +1,7 @@
 [patch.crates-io]
 backtrace = { git = "https://github.com/rust-lang/backtrace-rs", rev = "df979dcf80027eb047d7bb9e0874710c15009f31" }
-cxx = { git = "https://github.com/facebookexperimental/cxx.git", rev = "d98f6c434f8e6a018533c31a7a4cf7cdc7252210" }
-cxx-build = { git = "https://github.com/facebookexperimental/cxx.git", rev = "d98f6c434f8e6a018533c31a7a4cf7cdc7252210" }
+cxx = { git = "https://github.com/facebookexperimental/cxx.git", rev = "b835645da52253df462725516fbd460ef000d496" }
+cxx-build = { git = "https://github.com/facebookexperimental/cxx.git", rev = "b835645da52253df462725516fbd460ef000d496" }
 
 [workspace]
 members = ["resources", "src", "tests", "tests/e2e"]
