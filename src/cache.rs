@@ -204,7 +204,8 @@ impl LibraryCache {
 
         modules.sort_by_key(|m| m.name);
 
-        let exports = CachedExports::from_exports(exports);
+        let own_modules: AHashSet<ModuleName> = modules.iter().map(|m| m.name).collect();
+        let exports = CachedExports::from_exports(exports, &own_modules);
 
         LibraryCache {
             modules,
@@ -1410,9 +1411,15 @@ impl CachedError {
 }
 
 impl CachedExports {
-    fn from_exports(exports: &Exports) -> Self {
+    /// Build the cached re-exports for a library, keeping only those exported by
+    /// one of the library's own modules. `get_re_exports()` also yields the bundled
+    /// stubs' re-exports, identical across every cache; dropping them is safe because
+    /// each re-export is owned by exactly one module's cache and the reduce rebuilds
+    /// stub chains from the bundled stub graph.
+    fn from_exports(exports: &Exports, own_modules: &AHashSet<ModuleName>) -> Self {
         let re_exports: Vec<CachedReExport> = exports
             .get_re_exports()
+            .filter(|(exported, _)| own_modules.contains(&exported.module))
             .map(|(exported, (imported, _range))| CachedReExport {
                 exported_module: exported.module,
                 exported_attr: exported.attr.to_string(),
