@@ -41,11 +41,9 @@ jobs:
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # release/v1.13
         with:
-          # Wheels for 0.1.0 are already on PyPI; skip them so a re-run can
-          # upload only newly-added files (e.g. the sdist) instead of 400ing.
+          # Idempotent re-runs: skip files already on PyPI (e.g. after a
+          # partial upload) rather than failing.
           skip-existing: true
-          # Print the full server response (e.g. the 400 body) on upload errors.
-          verbose: true
 
   push-tag:
     name: Push version tag
