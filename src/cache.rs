@@ -735,15 +735,13 @@ fn lookup_in_safety_map(local_name: &str, fs: &AHashMap<String, FunctionSafetyIn
 ///
 /// A qualified name (`mod.sub.func`) is split at its longest module prefix and
 /// looked up there; an unqualified name (`helper`) uses `globally_safe` if
-/// present, else scans `modules`. `globally_if_imported` is promotion-only.
+/// present, else scans `modules`.
 #[derive(Clone, Copy)]
 struct SafetyResolver<'a> {
     modules: &'a AHashSet<ModuleName>,
     by_module: &'a AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
     /// `Some` enables O(1) unqualified lookups; `None` scans `modules`.
     globally_safe: Option<&'a AHashSet<String>>,
-    /// The `UnsafeIfImported` counterpart of `globally_safe`, promotion only.
-    globally_if_imported: Option<&'a AHashSet<String>>,
     /// Caches `scan_unqualified_decorator_safe` by name, so its O(modules) scan
     /// runs once per distinct decorator instead of once per call site.
     decorator_scan_cache: Option<&'a DashMap<String, bool, FixedState>>,
@@ -762,7 +760,6 @@ impl<'a> SafetyResolver<'a> {
             modules,
             by_module,
             globally_safe: None,
-            globally_if_imported: None,
             decorator_scan_cache: None,
             class_bases: None,
         }
@@ -778,24 +775,6 @@ impl<'a> SafetyResolver<'a> {
             modules,
             by_module,
             globally_safe: Some(globally_safe),
-            globally_if_imported: None,
-            decorator_scan_cache: None,
-            class_bases: None,
-        }
-    }
-
-    /// Backed by both promotion indices, for promotion-verdict resolution.
-    fn promotion(
-        modules: &'a AHashSet<ModuleName>,
-        by_module: &'a AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
-        globally_safe: &'a AHashSet<String>,
-        globally_if_imported: &'a AHashSet<String>,
-    ) -> Self {
-        SafetyResolver {
-            modules,
-            by_module,
-            globally_safe: Some(globally_safe),
-            globally_if_imported: Some(globally_if_imported),
             decorator_scan_cache: None,
             class_bases: None,
         }
@@ -936,53 +915,6 @@ impl<'a> SafetyResolver<'a> {
                 self.is_call_verified_safe_no_unqualified(func_name)
             }
             _ => self.is_call_verified_safe(func_name),
-        }
-    }
-
-    /// The verdict a resolved `UnsafeMissingDep` function resolves to, or `None`
-    /// if it cannot yet be promoted.
-    fn can_promote(&self, info: &FunctionSafetyInfo) -> Option<FunctionSafety> {
-        // Promote only with positive evidence: the missing-dep concern, no hard
-        // `Unsafe` bit, and a non-empty callee set (all resolved below).
-        if !info.verdict.has(FunctionSafety::UnsafeMissingDep)
-            || info.verdict.has(FunctionSafety::Unsafe)
-            || info.missing_dep_callees.is_empty()
-        {
-            return None;
-        }
-        // Dropping the missing-dep concern leaves intrinsic concerns (e.g. an
-        // `UnsafeIfImported` floor) as the target.
-        let mut target = info.verdict.without(FunctionSafety::UnsafeMissingDep);
-        for callee in &info.missing_dep_callees {
-            target.insert(self.resolve_callee_verdict(callee.as_str())?);
-        }
-        Some(target)
-    }
-
-    /// Resolve a promotion callee to `Safe` or `UnsafeIfImported` (both
-    /// non-blocking), or `None` when it does not resolve or resolves to a
-    /// blocking verdict.
-    fn resolve_callee_verdict(&self, func_name: &str) -> Option<FunctionSafety> {
-        if let Some((module, local)) = self.split_at_module(func_name) {
-            return self
-                .by_module
-                .get(&module)
-                .and_then(|fs| lookup_verdict_in_safety_map(local, fs))
-                .or_else(|| {
-                    self.mro_method_verdict(&module, local)
-                        .filter(|&v| v.is_safe() || v == FunctionSafety::UnsafeIfImported)
-                });
-        }
-
-        if self.globally_safe.is_some_and(|s| s.contains(func_name)) {
-            Some(FunctionSafety::Safe)
-        } else if self
-            .globally_if_imported
-            .is_some_and(|s| s.contains(func_name))
-        {
-            Some(FunctionSafety::UnsafeIfImported)
-        } else {
-            None
         }
     }
 }
@@ -1216,6 +1148,62 @@ fn union_larger(a: AHashSet<String>, b: AHashSet<String>) -> AHashSet<String> {
     large
 }
 
+/// A promotion candidate's callee, FQN pre-resolved so the fixpoint never re-splits it.
+enum ResolvedCallee {
+    Qualified { module: ModuleName, local: String },
+    Unqualified { name: String },
+}
+
+/// A promotion candidate with its callees pre-resolved and base verdict precomputed.
+struct PromotionCandidate {
+    module: ModuleName,
+    name: String,
+    /// `verdict.without(UnsafeMissingDep)` — stable across rounds.
+    base_verdict: FunctionSafety,
+    callees: Vec<ResolvedCallee>,
+}
+
+/// Split a callee FQN at its longest module prefix, like `SafetyResolver::split_at_module`.
+fn resolve_callee(func_name: &str, module_names: &AHashSet<ModuleName>) -> ResolvedCallee {
+    match ModuleName::from_str(func_name)
+        .iter_parents()
+        .find(|(parent, _)| module_names.contains(parent))
+    {
+        Some((module, dot_pos)) => ResolvedCallee::Qualified {
+            module,
+            local: func_name[dot_pos + 1..].to_owned(),
+        },
+        None => ResolvedCallee::Unqualified {
+            name: func_name.to_owned(),
+        },
+    }
+}
+
+/// The verdict a callee resolves to (`Safe`/`UnsafeIfImported`), or `None` if
+/// unresolved: qualified reads the exact module safety-map entry, unqualified the
+/// global name indices (safe wins over if-imported).
+fn resolve_callee_verdict(
+    callee: &ResolvedCallee,
+    func_safety_by_module: &AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
+    globally_safe: &AHashSet<String>,
+    globally_if_imported: &AHashSet<String>,
+) -> Option<FunctionSafety> {
+    match callee {
+        ResolvedCallee::Qualified { module, local } => func_safety_by_module
+            .get(module)
+            .and_then(|fs| lookup_verdict_in_safety_map(local, fs)),
+        ResolvedCallee::Unqualified { name } => {
+            if globally_safe.contains(name.as_str()) {
+                Some(FunctionSafety::Safe)
+            } else if globally_if_imported.contains(name.as_str()) {
+                Some(FunctionSafety::UnsafeIfImported)
+            } else {
+                None
+            }
+        }
+    }
+}
+
 /// Promote every `UnsafeMissingDep` function whose missing-dep callees now all resolve to `Safe`,
 /// iterating to a fixpoint (one promotion can unblock a caller the next round).
 ///
@@ -1266,10 +1254,10 @@ pub(crate) fn promote_fixpoint(
         );
     drop(module_fs);
 
-    // Only functions passing `can_promote`'s guard ever promote, and the guard is
-    // stable across rounds (promotion only clears the missing-dep bit), so collect
-    // the guard-passers once instead of rescanning every function each round.
-    let mut candidates: Vec<(ModuleName, String)> = func_safety_by_module
+    // Collect the promotion guard-passers once — the guard is stable across rounds
+    // (promotion only clears the missing-dep bit) — resolving each callee FQN here
+    // so the fixpoint never re-splits it.
+    let candidates: Vec<PromotionCandidate> = func_safety_by_module
         .par_iter()
         .filter(|(module, _)| module_names.contains(module))
         .flat_map_iter(|(module, fs)| {
@@ -1278,61 +1266,126 @@ pub(crate) fn promote_fixpoint(
                     && !info.verdict.has(FunctionSafety::Unsafe)
                     && !info.missing_dep_callees.is_empty()
                 {
-                    Some((*module, name.clone()))
+                    Some(PromotionCandidate {
+                        module: *module,
+                        name: name.clone(),
+                        base_verdict: info.verdict.without(FunctionSafety::UnsafeMissingDep),
+                        callees: info
+                            .missing_dep_callees
+                            .iter()
+                            .map(|callee| resolve_callee(callee.as_str(), module_names))
+                            .collect(),
+                    })
                 } else {
                     None
                 }
             })
         })
         .collect();
+    let n = candidates.len();
 
+    // Reverse index (source symbol -> dependent candidates) so a round re-checks
+    // only the previous round's promotions' dependents. A qualified callee is
+    // watched under its exact `(module, local)`, an unqualified one by bare name.
+    let mut qualified_deps: AHashMap<ModuleName, AHashMap<String, Vec<u32>>> = AHashMap::new();
+    let mut unqualified_deps: AHashMap<String, Vec<u32>> = AHashMap::new();
+    fn watch(deps: &mut AHashMap<String, Vec<u32>>, key: &str, i: u32) {
+        match deps.get_mut(key) {
+            Some(watchers) => watchers.push(i),
+            None => {
+                deps.insert(key.to_owned(), vec![i]);
+            }
+        }
+    }
+    for (i, cand) in candidates.iter().enumerate() {
+        for callee in &cand.callees {
+            match callee {
+                ResolvedCallee::Qualified { module, local } => {
+                    watch(qualified_deps.entry(*module).or_default(), local, i as u32);
+                }
+                ResolvedCallee::Unqualified { name } => {
+                    watch(&mut unqualified_deps, name, i as u32);
+                }
+            }
+        }
+    }
+
+    // Round-synchronized worklist: each round's promotions are computed against the
+    // frozen start-of-round state (in parallel) and applied together, so promotions
+    // within a round never observe one another — the fixpoint result is identical to
+    // a full per-round rescan. Later rounds shrink to the previous round's dependents.
     let mut all_promoted: Vec<(ModuleName, String)> = Vec::new();
-    loop {
-        let to_promote: Vec<(usize, FunctionSafety)> = {
-            // Reborrow as shared for parallel access.
-            let resolver = SafetyResolver::promotion(
-                module_names,
-                &*func_safety_by_module,
-                &globally_safe_funcs,
-                &globally_if_imported_funcs,
-            );
-            candidates
-                .par_iter()
-                .enumerate()
-                .filter_map(|(i, (module, func_name))| {
-                    let info = resolver.by_module.get(module)?.get(func_name)?;
-                    resolver.can_promote(info).map(|target| (i, target))
-                })
-                .collect()
-        };
+    let mut promoted_flag = vec![false; n];
+    let mut in_dirty = vec![true; n];
+    let mut dirty: Vec<u32> = (0..n as u32).collect();
+    while !dirty.is_empty() {
+        let this_round = std::mem::take(&mut dirty);
+        for &i in &this_round {
+            in_dirty[i as usize] = false;
+        }
+        // Frozen phase: read only, so every candidate sees end-of-previous-round state.
+        let fsbm: &AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>> =
+            func_safety_by_module;
+        let to_promote: Vec<(u32, FunctionSafety)> = this_round
+            .par_iter()
+            .filter_map(|&i| {
+                if promoted_flag[i as usize] {
+                    return None;
+                }
+                let cand = &candidates[i as usize];
+                let mut target = cand.base_verdict;
+                for callee in &cand.callees {
+                    target.insert(resolve_callee_verdict(
+                        callee,
+                        fsbm,
+                        &globally_safe_funcs,
+                        &globally_if_imported_funcs,
+                    )?);
+                }
+                Some((i, target))
+            })
+            .collect();
         if to_promote.is_empty() {
             break;
         }
+        // Apply phase: commit verdicts and seed the indices for the next round.
+        // Seed/record only when the verdict write lands, matching the whole-program
+        // path and avoiding claiming a promotion for a function that isn't present.
         for &(i, target) in &to_promote {
-            let (module_name, func_name) = &candidates[i];
+            promoted_flag[i as usize] = true;
+            let cand = &candidates[i as usize];
             if let Some(info) =
-                get_function_safety_mut(func_safety_by_module, module_name, func_name)
+                get_function_safety_mut(func_safety_by_module, &cand.module, &cand.name)
             {
                 info.verdict = target;
-                // Seed the index matching the resolved verdict so the promotion
-                // can unblock callers on the next round.
                 if target.is_safe() {
-                    globally_safe_funcs.insert(func_name.clone());
+                    globally_safe_funcs.insert(cand.name.clone());
                 } else if target == FunctionSafety::UnsafeIfImported {
                     // Not globally safe; must not seed the safe index.
-                    globally_if_imported_funcs.insert(func_name.clone());
+                    globally_if_imported_funcs.insert(cand.name.clone());
                 }
+                all_promoted.push((cand.module, cand.name.clone()));
             }
-            all_promoted.push((*module_name, func_name.clone()));
         }
-        // Drop the promoted entries so later rounds skip them.
-        let promoted_idx: AHashSet<usize> = to_promote.iter().map(|&(i, _)| i).collect();
-        let mut i = 0;
-        candidates.retain(|_| {
-            let keep = !promoted_idx.contains(&i);
-            i += 1;
-            keep
-        });
+        // Enqueue the dependents of everything promoted this round.
+        let mut enqueue = |j: u32| {
+            if !promoted_flag[j as usize] && !in_dirty[j as usize] {
+                in_dirty[j as usize] = true;
+                dirty.push(j);
+            }
+        };
+        for &(i, _) in &to_promote {
+            let cand = &candidates[i as usize];
+            if let Some(deps) = qualified_deps
+                .get(&cand.module)
+                .and_then(|by_local| by_local.get(cand.name.as_str()))
+            {
+                deps.iter().for_each(|&j| enqueue(j));
+            }
+            if let Some(deps) = unqualified_deps.get(cand.name.as_str()) {
+                deps.iter().for_each(|&j| enqueue(j));
+            }
+        }
     }
     (all_promoted, globally_safe_funcs)
 }
