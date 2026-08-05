@@ -257,36 +257,54 @@ fn build_re_export_map_from_cache(
     re_exports: &[CachedReExport],
     failing_modules: &SmallSet<ModuleName>,
 ) -> AHashMap<ModuleName, AHashSet<ModuleName>> {
+    type ReMap = AHashMap<ModuleName, AHashSet<ModuleName>>;
+    /// Per-task accumulator threaded through `resolve_reexport_chain`.
+    #[derive(Default)]
+    struct ChainScratch {
+        map: ReMap,
+        memo: AHashMap<usize, Option<ModuleName>>,
+        path: Vec<usize>,
+        visited: AHashSet<usize>,
+    }
+
     let chain: AHashMap<(ModuleName, &str), usize> = re_exports
         .iter()
         .enumerate()
         .map(|(i, r)| ((r.exported_module, r.exported_attr.as_str()), i))
         .collect();
 
-    let mut memo: AHashMap<usize, Option<ModuleName>> = AHashMap::with_capacity(re_exports.len());
-    let mut path_buf = Vec::new();
-    let mut visited_buf = AHashSet::new();
-
-    let mut map: AHashMap<ModuleName, AHashSet<ModuleName>> = AHashMap::new();
-    for (start_idx, re_export) in re_exports.iter().enumerate() {
-        let result = resolve_reexport_chain(
-            start_idx,
-            re_exports,
-            &chain,
-            &mut memo,
-            &mut path_buf,
-            &mut visited_buf,
-        );
-        let Some(source_module) = result else {
-            continue;
-        };
-        if failing_modules.contains(&source_module) {
-            map.entry(re_export.exported_module)
-                .or_default()
-                .insert(source_module);
-        }
-    }
-    map
+    // Resolve each re-export's chain in parallel: the `chain` index is read-only,
+    // and each task keeps its own scratch and result map (per-task memos recompute
+    // some chains, but the pass parallelizes). Then union the maps.
+    re_exports
+        .par_iter()
+        .enumerate()
+        .fold(ChainScratch::default, |mut acc, (start_idx, re_export)| {
+            if let Some(source_module) = resolve_reexport_chain(
+                start_idx,
+                re_exports,
+                &chain,
+                &mut acc.memo,
+                &mut acc.path,
+                &mut acc.visited,
+            ) && failing_modules.contains(&source_module)
+            {
+                acc.map
+                    .entry(re_export.exported_module)
+                    .or_default()
+                    .insert(source_module);
+            }
+            acc
+        })
+        .map(|acc| acc.map)
+        .reduce(ReMap::new, |a, b| {
+            // Extend the larger map with the smaller to minimize rehashing.
+            let (mut large, small) = if a.len() >= b.len() { (a, b) } else { (b, a) };
+            for (module, sources) in small {
+                large.entry(module).or_default().extend(sources);
+            }
+            large
+        })
 }
 
 fn resolve_reexport_chain(

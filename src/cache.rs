@@ -317,32 +317,40 @@ impl LibraryCache {
             .flat_map(|attrs| attrs.into_values())
             .collect();
 
-        self.modules.sort_by_key(|m| m.name);
-        self.merge_duplicate_modules();
-        // Sort the (already-deduped, much smaller) set for a stable output order.
-        self.exports.sort_and_dedup();
+        // The module sort+coalesce and the re-export sort are independent (disjoint
+        // fields), so run them concurrently instead of back to back.
+        let modules = &mut self.modules;
+        let exports = &mut self.exports;
+        rayon::join(
+            || {
+                modules.sort_by_key(|m| m.name);
+                Self::merge_duplicate_modules(modules);
+            },
+            // Sort the (already-deduped, much smaller) set for a stable output order.
+            || exports.sort_and_dedup(),
+        );
     }
 
     /// Merge consecutive modules with the same name (assumes sorted by name).
-    fn merge_duplicate_modules(&mut self) {
-        if self.modules.len() < 2 {
+    fn merge_duplicate_modules(modules: &mut Vec<CachedModule>) {
+        if modules.len() < 2 {
             return;
         }
 
         let mut write = 0;
-        for read in 1..self.modules.len() {
-            if self.modules[write].name == self.modules[read].name {
-                let name = self.modules[read].name;
-                let other = std::mem::replace(&mut self.modules[read], CachedModule::empty(name));
-                self.modules[write].merge(other);
+        for read in 1..modules.len() {
+            if modules[write].name == modules[read].name {
+                let name = modules[read].name;
+                let other = std::mem::replace(&mut modules[read], CachedModule::empty(name));
+                modules[write].merge(other);
             } else {
                 write += 1;
                 if write != read {
-                    self.modules.swap(write, read);
+                    modules.swap(write, read);
                 }
             }
         }
-        self.modules.truncate(write + 1);
+        modules.truncate(write + 1);
     }
 
     /// Resolve ambiguous imports: `from X import Y` where X was in the library
