@@ -576,13 +576,7 @@ impl LibraryCache {
             queued[i as usize] = false;
             let re = &re_exports[i as usize];
 
-            // Pull the source symbol's current safety; skip until it resolves.
-            let Some(safety) = lookup_function_safety(
-                &self.modules,
-                &module_index,
-                re.imported_module,
-                &re.imported_attr,
-            ) else {
+            let Some(&src_idx) = module_index.get(&re.imported_module) else {
                 continue;
             };
             let Some(&dst_idx) = module_index.get(&re.exported_module) else {
@@ -590,11 +584,35 @@ impl LibraryCache {
             };
 
             // The re-exported symbol inherits the union of its source's concerns.
-            let dest_changed = merge_function_safety_entry(
-                &mut self.modules[dst_idx].function_safety,
-                &re.exported_attr,
-                safety,
-            );
+            // Cross-module edges borrow source and destination disjointly and merge
+            // by reference; a rare self-re-export clones to avoid the aliasing.
+            let dest_changed = if src_idx == dst_idx {
+                let Some(safety) = self.modules[src_idx]
+                    .function_safety
+                    .get(re.imported_attr.as_str())
+                    .cloned()
+                else {
+                    continue;
+                };
+                merge_function_safety_entry_ref(
+                    &mut self.modules[dst_idx].function_safety,
+                    &re.exported_attr,
+                    &safety,
+                )
+            } else {
+                let [src_mod, dst_mod] = self
+                    .modules
+                    .get_disjoint_mut([src_idx, dst_idx])
+                    .expect("src_idx and dst_idx are distinct, in-bounds module indices");
+                let Some(src_info) = src_mod.function_safety.get(re.imported_attr.as_str()) else {
+                    continue;
+                };
+                merge_function_safety_entry_ref(
+                    &mut dst_mod.function_safety,
+                    &re.exported_attr,
+                    src_info,
+                )
+            };
 
             // Only edges reading from this destination can now change; re-queue them.
             if dest_changed
@@ -983,30 +1001,19 @@ pub(crate) fn get_function_safety_mut<'a>(
     map.get_mut(module)?.get_mut(name)
 }
 
-/// The current safety of `module.attr` in the merged modules, if both the module
-/// and the attribute are present. Cloned so the caller can merge it into another
-/// module without holding a borrow on the source.
-fn lookup_function_safety(
-    modules: &[CachedModule],
-    module_index: &AHashMap<ModuleName, usize>,
-    module: ModuleName,
-    attr: &str,
-) -> Option<FunctionSafetyInfo> {
-    let idx = *module_index.get(&module)?;
-    modules[idx].function_safety.get(attr).cloned()
-}
-
-/// Merge `incoming` into `fs[attr]`, inserting it if absent. Returns whether the
-/// entry changed (so callers can decide whether to reprocess dependents).
-fn merge_function_safety_entry(
+/// Merge `incoming` into `fs[attr]`, inserting a clone if absent. Returns whether
+/// the entry changed (so callers can decide whether to reprocess dependents).
+/// Borrows `incoming` so the caller need not clone it before a merge that only
+/// updates an existing entry (the common re-processing case).
+fn merge_function_safety_entry_ref(
     fs: &mut AHashMap<String, FunctionSafetyInfo>,
     attr: &str,
-    incoming: FunctionSafetyInfo,
+    incoming: &FunctionSafetyInfo,
 ) -> bool {
     match fs.get_mut(attr) {
-        Some(existing) => existing.merge(incoming),
+        Some(existing) => existing.merge_ref(incoming),
         None => {
-            fs.insert(attr.to_owned(), incoming);
+            fs.insert(attr.to_owned(), incoming.clone());
             true
         }
     }

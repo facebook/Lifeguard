@@ -138,13 +138,22 @@ impl FunctionSafetyInfo {
     }
 
     /// Fold `other`'s concerns into `self`, returning whether `self` changed.
+    /// Delegates to `merge_ref` so the two paths can't drift; the merged fields are
+    /// trivially copyable (`ModuleName`/`MutatedParam`), so this costs no more than a
+    /// consuming merge would.
     pub fn merge(&mut self, other: Self) -> bool {
+        self.merge_ref(&other)
+    }
+
+    /// `merge`, but borrows `other`, copying only what lands in `self`.
+    pub fn merge_ref(&mut self, other: &Self) -> bool {
         let before_verdict = self.verdict;
         let before_callees = self.missing_dep_callees.len();
         let before_params = self.mutated_params.len();
         self.verdict.insert(other.verdict);
-        self.missing_dep_callees.extend(other.missing_dep_callees);
-        self.extend_mutated_params(other.mutated_params);
+        self.missing_dep_callees
+            .extend(other.missing_dep_callees.iter().copied());
+        self.extend_mutated_params(other.mutated_params.iter().cloned());
         self.verdict != before_verdict
             || self.missing_dep_callees.len() != before_callees
             || self.mutated_params.len() != before_params
