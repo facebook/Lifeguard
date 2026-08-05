@@ -117,6 +117,10 @@ pub struct CachedReExport {
     pub imported_attr: String,
 }
 
+/// Working map used to dedup re-exports during the reduce, keyed by the exported
+/// `(module, attr)`; the value is one representative record per unique key.
+type ReExportDedupMap = AHashMap<ModuleName, AHashMap<String, CachedReExport>>;
+
 /// A module's import edges from the graph, partitioned by resolution status.
 struct GraphEdgeSets {
     imports: AHashSet<ModuleName>,
@@ -260,21 +264,61 @@ impl LibraryCache {
         let extra_modules: usize = dep_caches.iter().map(|d| d.modules.len()).sum();
         self.modules.reserve(extra_modules);
 
-        // Only `re_exports` is read during the reduce (re-export safety
-        // propagation + the lazy-eligible re-export map). `definitions`, `all`,
-        // and `return_types` are never consumed here and account for the bulk of
-        // the accumulated export entries, so skip merging them entirely.
-        let extra_re: usize = dep_caches.iter().map(|d| d.exports.re_exports.len()).sum();
-        self.exports.re_exports.reserve(extra_re);
-
+        // Split each dep cache into its modules (appended serially — cheap) and
+        // its re-export batch (deduped in parallel below).
+        let mut re_export_batches: Vec<Vec<CachedReExport>> =
+            Vec::with_capacity(dep_caches.len() + 1);
+        re_export_batches.push(std::mem::take(&mut self.exports.re_exports));
         for dep in dep_caches {
             self.modules.extend(dep.modules);
-            self.exports.re_exports.extend(dep.exports.re_exports);
+            re_export_batches.push(dep.exports.re_exports);
             self.class_bases.extend(dep.class_bases);
         }
 
+        // A module's re-exports recur across many caches, far outnumbering the
+        // unique set. Dedup by exported `(module, attr)` in parallel: each task
+        // folds a batch into a local map (cloning the attr only on first sight),
+        // then the per-task maps are unioned. Duplicates for a key are identical,
+        // so keeping any one is correct.
+        let deduped_map = re_export_batches
+            .into_par_iter()
+            .fold(ReExportDedupMap::default, |mut map, batch| {
+                for re in batch {
+                    let attrs = map.entry(re.exported_module).or_default();
+                    if !attrs.contains_key(re.exported_attr.as_str()) {
+                        attrs.insert(re.exported_attr.clone(), re);
+                    }
+                }
+                map
+            })
+            .reduce(ReExportDedupMap::default, |a, b| {
+                // Union the smaller map into the larger to minimize rehashing.
+                // Compare by total `(module, attr)` entries, not outer `len()` (the
+                // module count), so a few-modules/many-attrs map isn't mistaken for
+                // the smaller side.
+                let entries =
+                    |m: &ReExportDedupMap| m.values().map(|attrs| attrs.len()).sum::<usize>();
+                let (mut large, small) = if entries(&a) >= entries(&b) {
+                    (a, b)
+                } else {
+                    (b, a)
+                };
+                for (module, attrs) in small {
+                    let dst = large.entry(module).or_default();
+                    for (attr, re) in attrs {
+                        dst.entry(attr).or_insert(re);
+                    }
+                }
+                large
+            });
+        self.exports.re_exports = deduped_map
+            .into_values()
+            .flat_map(|attrs| attrs.into_values())
+            .collect();
+
         self.modules.sort_by_key(|m| m.name);
         self.merge_duplicate_modules();
+        // Sort the (already-deduped, much smaller) set for a stable output order.
         self.exports.sort_and_dedup();
     }
 
