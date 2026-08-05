@@ -846,21 +846,37 @@ impl<'a> SafetyResolver<'a> {
             .any(|info| info.verdict.is_safe())
     }
 
+    /// Whether `module` has an own entry for `local` verified `Safe`.
+    fn own_call_safe(&self, module: &ModuleName, local: &str) -> bool {
+        self.by_module
+            .get(module)
+            .is_some_and(|fs| lookup_in_safety_map(local, fs))
+    }
+
     /// Whether a plain function call is found and verified `Safe`.
     fn is_call_verified_safe(&self, func_name: &str) -> bool {
-        if let Some((module, local)) = self.split_at_module(func_name) {
-            if self
-                .by_module
-                .get(&module)
-                .is_some_and(|fs| lookup_in_safety_map(local, fs))
-            {
-                return true;
+        match self.split_at_module(func_name) {
+            Some((module, local)) => {
+                self.own_call_safe(&module, local)
+                    || self
+                        .mro_method_verdict(&module, local)
+                        .is_some_and(|v| v.is_safe())
             }
-            return self
-                .mro_method_verdict(&module, local)
-                .is_some_and(|v| v.is_safe());
+            None => self.unqualified_safe(func_name),
         }
-        self.unqualified_safe(func_name)
+    }
+
+    /// Like `is_call_verified_safe`, but only an own entry under a
+    /// module-qualified name clears. Both restrictions follow from an `Unknown*`
+    /// call target meaning `func_name` is a best-effort textual name rather than a
+    /// proven callee:
+    /// - an unqualified name must not clear on a same-named safe function in
+    ///   some resolved module (or in the global index);
+    /// - the MRO fallback does not apply, since walking a class hierarchy for a
+    ///   name that was never bound to that class is speculative.
+    fn is_call_verified_safe_no_unqualified(&self, func_name: &str) -> bool {
+        self.split_at_module(func_name)
+            .is_some_and(|(module, local)| self.own_call_safe(&module, local))
     }
 
     /// Whether a parameterized-decorator call is safe: the factory AND every
@@ -896,6 +912,10 @@ impl<'a> SafetyResolver<'a> {
 
     /// Dispatch a cached error to the right verified-safe check by kind. The
     /// callee `metadata` may render with a trailing `()`; strip it once here.
+    ///
+    /// `UnknownFunctionCall` / `UnknownMethodCall` couldn't bind the call target,
+    /// so they additionally skip the unqualified fallback: an unbound short name
+    /// must not clear on a same-named safe function elsewhere.
     fn is_error_verified_safe(&self, error: &CachedError) -> bool {
         let func_name = error.metadata.trim_end_matches("()");
         match error.kind {
@@ -903,6 +923,9 @@ impl<'a> SafetyResolver<'a> {
                 if error.parameterized_decorator =>
             {
                 self.is_decorator_call_verified_safe(func_name)
+            }
+            ErrorKind::UnknownFunctionCall | ErrorKind::UnknownMethodCall => {
+                self.is_call_verified_safe_no_unqualified(func_name)
             }
             _ => self.is_call_verified_safe(func_name),
         }
@@ -1611,6 +1634,8 @@ mod tests {
 
     #[test]
     fn clear_verified_errors_processes_every_module() {
+        // Callees are module-qualified so the conservative `Unknown*` path can
+        // bind them per module; an unqualified short name is never cleared.
         let module_a = ModuleName::from_str("test.module_a");
         let module_b = ModuleName::from_str("test.module_b");
 
@@ -1621,7 +1646,7 @@ mod tests {
                     safety: CachedSafety::Ok(CachedModuleSafety {
                         errors: vec![CachedError {
                             kind: ErrorKind::UnknownFunctionCall,
-                            metadata: "helper()".to_owned(),
+                            metadata: "test.module_a.helper()".to_owned(),
                             parameterized_decorator: false,
                         }],
                         force_imports_eager_overrides: Vec::new(),
@@ -1639,7 +1664,7 @@ mod tests {
                     safety: CachedSafety::Ok(CachedModuleSafety {
                         errors: vec![CachedError {
                             kind: ErrorKind::UnknownFunctionCall,
-                            metadata: "helper()".to_owned(),
+                            metadata: "test.module_b.helper()".to_owned(),
                             parameterized_decorator: false,
                         }],
                         force_imports_eager_overrides: Vec::new(),

@@ -65,6 +65,14 @@ mod tests {
         )
     }
 
+    /// A `(name, Unsafe)` `function_safety` entry.
+    fn unsafe_(name: &str) -> (String, FunctionSafetyInfo) {
+        (
+            name.to_owned(),
+            FunctionSafetyInfo::new(FunctionSafety::Unsafe),
+        )
+    }
+
     /// A `(name, UnsafeMissingDep)` `function_safety` entry blocked on `callee`.
     fn unsafe_missing_dep(name: &str, callee: &str) -> (String, FunctionSafetyInfo) {
         (
@@ -1490,6 +1498,245 @@ mod tests {
                 &func_safety_by_module
             ),
             "a method with no exact verdict no longer falls back to the class verdict",
+        );
+    }
+
+    #[test]
+    fn test_reduce_keeps_unsafe_method_error_with_safe_class_prefix() {
+        let mut cache = LibraryCache {
+            modules: vec![
+                CachedModule {
+                    name: mn("app"),
+                    safety: CachedSafety::Ok(CachedModuleSafety {
+                        errors: vec![CachedError {
+                            kind: ErrorKind::UnsafeMethodCall,
+                            metadata: "dep.Widget.configure".to_owned(),
+                            parameterized_decorator: false,
+                        }],
+                        ..Default::default()
+                    }),
+                    imports: Default::default(),
+                    missing_imports: Default::default(),
+                    ambiguous_imports: Default::default(),
+                    side_effect_imports: Default::default(),
+                    function_safety: [unsafe_missing_dep("wrapper", "dep.safe")]
+                        .into_iter()
+                        .collect(),
+                    mutation_candidates: Vec::new(),
+                },
+                CachedModule {
+                    name: mn("dep"),
+                    safety: CachedSafety::Ok(CachedModuleSafety::default()),
+                    imports: Default::default(),
+                    missing_imports: Default::default(),
+                    ambiguous_imports: Default::default(),
+                    side_effect_imports: Default::default(),
+                    function_safety: [safe("Widget"), unsafe_("Widget.configure"), safe("safe")]
+                        .into_iter()
+                        .collect(),
+                    mutation_candidates: Vec::new(),
+                },
+            ],
+            exports: empty_exports(),
+            class_bases: Vec::new(),
+        };
+
+        cache.resolve_cross_library_errors();
+
+        let app = cache
+            .modules
+            .iter()
+            .find(|x| x.name == mn("app"))
+            .expect("app module should be present");
+        let CachedSafety::Ok(safety) = &app.safety else {
+            panic!("app should have cached module safety");
+        };
+        assert!(
+            safety.errors.iter().any(|e| {
+                e.kind == ErrorKind::UnsafeMethodCall && e.metadata == "dep.Widget.configure"
+            }),
+            "an exact unsafe method verdict must not be cleared by the safe class-level verdict",
+        );
+        assert_eq!(
+            app.function_safety.get("wrapper").map(|i| i.verdict),
+            Some(FunctionSafety::Safe),
+            "the unrelated promotion should still run and trigger global error clearing",
+        );
+    }
+
+    #[test]
+    fn test_reduce_keeps_unknown_method_error_without_exact_method_verdict() {
+        let mut cache = LibraryCache {
+            modules: vec![
+                CachedModule {
+                    name: mn("app"),
+                    safety: CachedSafety::Ok(CachedModuleSafety {
+                        errors: vec![CachedError {
+                            kind: ErrorKind::UnknownFunctionCall,
+                            metadata: "dep.Widget.configure".to_owned(),
+                            parameterized_decorator: false,
+                        }],
+                        ..Default::default()
+                    }),
+                    imports: Default::default(),
+                    missing_imports: Default::default(),
+                    ambiguous_imports: Default::default(),
+                    side_effect_imports: Default::default(),
+                    function_safety: [unsafe_missing_dep("wrapper", "dep.safe")]
+                        .into_iter()
+                        .collect(),
+                    mutation_candidates: Vec::new(),
+                },
+                CachedModule {
+                    name: mn("dep"),
+                    safety: CachedSafety::Ok(CachedModuleSafety::default()),
+                    imports: Default::default(),
+                    missing_imports: Default::default(),
+                    ambiguous_imports: Default::default(),
+                    side_effect_imports: Default::default(),
+                    function_safety: [safe("Widget"), safe("safe")].into_iter().collect(),
+                    mutation_candidates: Vec::new(),
+                },
+            ],
+            exports: empty_exports(),
+            class_bases: Vec::new(),
+        };
+
+        cache.resolve_cross_library_errors();
+
+        let app = cache
+            .modules
+            .iter()
+            .find(|x| x.name == mn("app"))
+            .expect("app module should be present");
+        let CachedSafety::Ok(safety) = &app.safety else {
+            panic!("app should have cached module safety");
+        };
+        assert!(
+            safety.errors.iter().any(|e| {
+                e.kind == ErrorKind::UnknownFunctionCall && e.metadata == "dep.Widget.configure"
+            }),
+            "an unknown method call needs an exact method verdict; class-level safety is insufficient",
+        );
+        assert_eq!(
+            app.function_safety.get("wrapper").map(|i| i.verdict),
+            Some(FunctionSafety::Safe),
+            "the unrelated promotion should still run and trigger global error clearing",
+        );
+    }
+
+    #[test]
+    fn test_reduce_keeps_unqualified_unknown_call_from_resolved_module() {
+        let mut cache = LibraryCache {
+            modules: vec![
+                CachedModule {
+                    name: mn("app"),
+                    safety: CachedSafety::Ok(CachedModuleSafety {
+                        errors: vec![CachedError {
+                            kind: ErrorKind::UnknownFunctionCall,
+                            metadata: "b()".to_owned(),
+                            parameterized_decorator: false,
+                        }],
+                        ..Default::default()
+                    }),
+                    imports: Default::default(),
+                    missing_imports: [mn("dep")].into_iter().collect(),
+                    ambiguous_imports: Default::default(),
+                    side_effect_imports: Default::default(),
+                    function_safety: AHashMap::new(),
+                    mutation_candidates: Vec::new(),
+                },
+                CachedModule {
+                    name: mn("dep"),
+                    safety: CachedSafety::Ok(CachedModuleSafety::default()),
+                    imports: Default::default(),
+                    missing_imports: Default::default(),
+                    ambiguous_imports: Default::default(),
+                    side_effect_imports: Default::default(),
+                    function_safety: fsmap([safe("b")]),
+                    mutation_candidates: Vec::new(),
+                },
+            ],
+            exports: empty_exports(),
+            class_bases: Vec::new(),
+        };
+
+        cache.resolve_cross_library_errors();
+
+        let app = cache
+            .modules
+            .iter()
+            .find(|x| x.name == mn("app"))
+            .expect("app module should be present");
+        let CachedSafety::Ok(safety) = &app.safety else {
+            panic!("app should have cached module safety");
+        };
+        assert!(
+            safety
+                .errors
+                .iter()
+                .any(|e| e.kind == ErrorKind::UnknownFunctionCall && e.metadata == "b()"),
+            "an unqualified unknown call must not clear just because a resolved module has that function name",
+        );
+    }
+
+    #[test]
+    fn test_reduce_keeps_unqualified_unknown_call_despite_global_safe_name() {
+        let mut cache = LibraryCache {
+            modules: vec![
+                CachedModule {
+                    name: mn("app"),
+                    safety: CachedSafety::Ok(CachedModuleSafety {
+                        errors: vec![CachedError {
+                            kind: ErrorKind::UnknownFunctionCall,
+                            metadata: "b()".to_owned(),
+                            parameterized_decorator: false,
+                        }],
+                        ..Default::default()
+                    }),
+                    imports: Default::default(),
+                    missing_imports: Default::default(),
+                    ambiguous_imports: Default::default(),
+                    side_effect_imports: Default::default(),
+                    function_safety: fsmap([unsafe_missing_dep("wrapper", "dep.safe")]),
+                    mutation_candidates: Vec::new(),
+                },
+                CachedModule {
+                    name: mn("dep"),
+                    safety: CachedSafety::Ok(CachedModuleSafety::default()),
+                    imports: Default::default(),
+                    missing_imports: Default::default(),
+                    ambiguous_imports: Default::default(),
+                    side_effect_imports: Default::default(),
+                    function_safety: fsmap([safe("b"), safe("safe")]),
+                    mutation_candidates: Vec::new(),
+                },
+            ],
+            exports: empty_exports(),
+            class_bases: Vec::new(),
+        };
+
+        cache.resolve_cross_library_errors();
+
+        let app = cache
+            .modules
+            .iter()
+            .find(|x| x.name == mn("app"))
+            .expect("app module should be present");
+        let CachedSafety::Ok(safety) = &app.safety else {
+            panic!("app should have cached module safety");
+        };
+        assert!(
+            safety
+                .errors
+                .iter()
+                .any(|e| e.kind == ErrorKind::UnknownFunctionCall && e.metadata == "b()"),
+            "an unqualified unknown call must not clear just because another module has a safe function with the same short name",
+        );
+        assert_eq!(
+            app.function_safety.get("wrapper").map(|i| i.verdict),
+            Some(FunctionSafety::Safe),
+            "the unrelated promotion should still run and trigger global error clearing",
         );
     }
 
