@@ -10,55 +10,16 @@
 #[cfg(test)]
 mod tests {
 
-    use lifeguard::config::AnalysisConfig;
-    use lifeguard::imports::ImportGraph;
     use lifeguard::output::LifeGuardAnalysis;
-    use lifeguard::project;
     use lifeguard::pyrefly::module_name::ModuleName;
-    use lifeguard::runner::Options;
-    use lifeguard::test_lib::TestSources;
-    use lifeguard::test_lib::assert_str_keys;
-
-    fn test_options() -> Options {
-        Options {
-            verbose_output_path: Some(std::path::PathBuf::from("/tmp/test_cycles")),
-            sorted_output: true,
-            ..Options::default()
-        }
-    }
+    use lifeguard::test_lib::assert_failing;
+    use lifeguard::test_lib::assert_passing;
+    use lifeguard::test_lib::has_lazy_eligible_dep;
+    use lifeguard::test_lib::run_lifeguard_analysis_with;
+    use lifeguard::test_lib::verbose_test_options;
 
     fn run_cycle_analysis(modules: &Vec<(&str, &str)>) -> LifeGuardAnalysis {
-        let sources = TestSources::new(modules);
-        let config = AnalysisConfig::default();
-        let (import_graph, exports) = ImportGraph::make_with_exports(&sources, &config);
-        let output = project::run_analysis(
-            &sources,
-            &exports,
-            &import_graph,
-            &config,
-            project::ExecutionMode::WholeProgram,
-        );
-        let mut analysis =
-            LifeGuardAnalysis::new(output.safety_map, import_graph, &exports, &test_options());
-        analysis.propagate_side_effect_imports(&output.side_effect_imports);
-        analysis
-    }
-
-    fn assert_passing(result: &LifeGuardAnalysis, expected: Vec<&str>) {
-        assert_str_keys(&result.passing_modules, expected);
-    }
-
-    fn assert_failing(result: &LifeGuardAnalysis, expected: Vec<&str>) {
-        assert_str_keys(&result.failing_modules, expected);
-    }
-
-    fn has_lazy_eligible_dep(result: &LifeGuardAnalysis, module: &str, dep: &str) -> bool {
-        result
-            .output
-            .lazy_eligible
-            .get(&ModuleName::from_str(module))
-            .map(|deps| deps.contains(&ModuleName::from_str(dep)))
-            .unwrap_or(false)
+        run_lifeguard_analysis_with(modules, &verbose_test_options())
     }
 
     fn has_no_cycle_deps(result: &LifeGuardAnalysis, module: &str) -> bool {

@@ -11,6 +11,7 @@ mod tests {
     use lifeguard::imports::ImportGraph;
     use lifeguard::pyrefly::module_name::ModuleName;
     use lifeguard::test_lib::TestSources;
+    use lifeguard::test_lib::build_import_graph;
     use lifeguard::test_lib::module_names;
 
     fn assert_deps(g: &ImportGraph, module: &str, expected: Vec<&str>) {
@@ -29,12 +30,6 @@ mod tests {
         exp.sort();
         actual.sort();
         assert_eq!(actual, exp);
-    }
-
-    fn build_import_graph(modules: &Vec<(&str, &str)>) -> ImportGraph {
-        let sources = TestSources::new(modules);
-        let config = AnalysisConfig::default();
-        ImportGraph::make(&sources, &config)
     }
 
     #[test]

@@ -7,10 +7,9 @@
 
 #[cfg(test)]
 mod tests {
-    use lifeguard::config::AnalysisConfig;
     use lifeguard::imports::ImportGraph;
     use lifeguard::pyrefly::module_name::ModuleName;
-    use lifeguard::test_lib::TestSources;
+    use lifeguard::test_lib::build_import_graph;
 
     /// Helper to get all imports for a module from the import graph
     fn get_imports(graph: &ImportGraph, module: &str) -> Vec<String> {
@@ -34,9 +33,7 @@ baz = 1
 "#;
         let modules = vec![("__main__", main), ("foo", foo), ("bar", bar)];
 
-        let sources = TestSources::new(&modules);
-        let config = AnalysisConfig::default();
-        let import_graph = ImportGraph::make(&sources, &config);
+        let import_graph = build_import_graph(&modules);
 
         let imports = get_imports(&import_graph, "__main__");
         assert!(
@@ -69,9 +66,7 @@ nested_name = 1
             ("nested_package", nested_package),
         ];
 
-        let sources = TestSources::new(&modules);
-        let config = AnalysisConfig::default();
-        let import_graph = ImportGraph::make(&sources, &config);
+        let import_graph = build_import_graph(&modules);
 
         let imports = get_imports(&import_graph, "__main__");
 
@@ -108,9 +103,7 @@ method_name = 1
             ("method_package", method_package),
         ];
 
-        let sources = TestSources::new(&modules);
-        let config = AnalysisConfig::default();
-        let import_graph = ImportGraph::make(&sources, &config);
+        let import_graph = build_import_graph(&modules);
 
         let imports = get_imports(&import_graph, "__main__");
 
@@ -153,9 +146,7 @@ secret = "value"
             ("hidden_dependency", hidden_dependency),
         ];
 
-        let sources = TestSources::new(&modules);
-        let config = AnalysisConfig::default();
-        let import_graph = ImportGraph::make(&sources, &config);
+        let import_graph = build_import_graph(&modules);
 
         // Check that __main__ imports decorators (module-level, tracked)
         let main_imports = get_imports(&import_graph, "__main__");

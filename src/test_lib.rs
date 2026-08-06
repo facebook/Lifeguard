@@ -12,6 +12,8 @@ use std::process::Command;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 
 use pyrefly_python::module::Module;
 use pyrefly_python::module_name::ModuleName;
@@ -33,10 +35,14 @@ use crate::module_parser::ParsedModule;
 use crate::module_parser::parse_pyi_with_version;
 use crate::module_parser::parse_source_with_version;
 use crate::module_safety::ModuleSafety;
+use crate::module_safety::SafetyResult;
+use crate::output::LifeGuardAnalysis;
 use crate::project;
 use crate::project::AnalysisMap;
+use crate::project::AnalysisOutput;
 use crate::project::SafetyMap;
 use crate::pyrefly::sys_info::PythonVersion;
+use crate::runner::Options;
 use crate::source_map::AstResult;
 use crate::source_map::ModuleProvider;
 use crate::stubs::Stubs;
@@ -667,6 +673,92 @@ pub fn analyze_tree(modules: &Vec<(&str, &str)>) -> AnalysisMap {
     project::analyze_all(&sources, &exports, &import_graph, &config).0
 }
 
+/// Build the import graph for a set of modules.
+pub fn build_import_graph(modules: &Vec<(&str, &str)>) -> ImportGraph {
+    let sources = TestSources::new(modules);
+    ImportGraph::make(&sources, &AnalysisConfig::default())
+}
+
+/// Sorted output keeps assertions on the generated JSON stable.
+pub fn test_options() -> Options {
+    Options {
+        sorted_output: true,
+        ..Options::default()
+    }
+}
+
+/// [`test_options`] plus verbose output, which is what makes
+/// [`LifeGuardAnalysis`] report `import_cycles`.
+pub fn verbose_test_options() -> Options {
+    static NEXT_PATH: AtomicU64 = AtomicU64::new(0);
+    let id = NEXT_PATH.fetch_add(1, Ordering::Relaxed);
+    Options {
+        verbose_output_path: Some(
+            std::env::temp_dir().join(format!("lifeguard_test_{}_{id}", std::process::id())),
+        ),
+        ..test_options()
+    }
+}
+
+/// Run the whole-program pipeline over `sources`, returning the analysis output
+/// alongside the import graph and exports it was computed from. Use this
+/// directly when the test needs to build its own [`TestSources`], for example
+/// to inject parse errors.
+pub fn run_analysis_on(sources: &TestSources) -> (AnalysisOutput, ImportGraph, Exports) {
+    let config = AnalysisConfig::default();
+    let (import_graph, exports) = ImportGraph::make_with_exports(sources, &config);
+    let output = project::run_analysis(
+        sources,
+        &exports,
+        &import_graph,
+        &config,
+        project::ExecutionMode::WholeProgram,
+    );
+    (output, import_graph, exports)
+}
+
+/// Run the whole pipeline and build the final analysis, the way `main` does.
+pub fn run_lifeguard_analysis(modules: &Vec<(&str, &str)>) -> LifeGuardAnalysis {
+    run_lifeguard_analysis_with(modules, &test_options())
+}
+
+pub fn run_lifeguard_analysis_with(
+    modules: &Vec<(&str, &str)>,
+    options: &Options,
+) -> LifeGuardAnalysis {
+    run_lifeguard_analysis_on(&TestSources::new(modules), options)
+}
+
+pub fn run_lifeguard_analysis_on(sources: &TestSources, options: &Options) -> LifeGuardAnalysis {
+    let (output, import_graph, exports) = run_analysis_on(sources);
+    for entry in output.parse_errors.iter() {
+        output.safety_map.insert(
+            *entry.key(),
+            SafetyResult::AnalysisError(anyhow::anyhow!("Parse error: {}", entry.value())),
+        );
+    }
+    let mut analysis = LifeGuardAnalysis::new(output.safety_map, import_graph, &exports, options);
+    analysis.propagate_side_effect_imports(&output.side_effect_imports);
+    analysis
+}
+
+pub fn assert_passing(result: &LifeGuardAnalysis, expected: Vec<&str>) {
+    assert_str_keys(&result.passing_modules, expected);
+}
+
+pub fn assert_failing(result: &LifeGuardAnalysis, expected: Vec<&str>) {
+    assert_str_keys(&result.failing_modules, expected);
+}
+
+/// Whether `module` is lazy-eligible but must load `dep` eagerly.
+pub fn has_lazy_eligible_dep(result: &LifeGuardAnalysis, module: &str, dep: &str) -> bool {
+    result
+        .output
+        .lazy_eligible
+        .get(&ModuleName::from_str(module))
+        .is_some_and(|deps| deps.contains(&ModuleName::from_str(dep)))
+}
+
 pub fn check_buck_availability() -> bool {
     if Command::new("buck2").output().is_err() {
         eprintln!("buck2 not available");
@@ -763,5 +855,24 @@ mod tests {
         assert!(names.contains(&ModuleName::from_str("subprocess")));
         // subprocess.pyi imports types, so the closure must reach it too.
         assert!(names.contains(&ModuleName::from_str("types")));
+    }
+
+    #[test]
+    fn test_verbose_options_use_unique_paths() {
+        assert_ne!(
+            verbose_test_options().verbose_output_path,
+            verbose_test_options().verbose_output_path
+        );
+    }
+
+    #[test]
+    fn test_final_analysis_includes_parse_errors() {
+        let sources = TestSources::new(&[("a", "import broken")]).with_parse_errors(&["broken"]);
+        let analysis = run_lifeguard_analysis_on(&sources, &test_options());
+        assert!(
+            analysis
+                .failing_modules
+                .contains(&ModuleName::from_str("broken"))
+        );
     }
 }

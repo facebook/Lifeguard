@@ -7,7 +7,6 @@
 
 #[cfg(test)]
 mod tests {
-    use lifeguard::config::AnalysisConfig;
     use lifeguard::errors::ErrorKind;
     use lifeguard::errors::ErrorMetadata;
     use lifeguard::errors::SafetyError;
@@ -18,21 +17,19 @@ mod tests {
     use lifeguard::module_safety::SafetyResult;
     use lifeguard::output::LifeGuardAnalysis;
     use lifeguard::output::LifeGuardOutput;
-    use lifeguard::project;
     use lifeguard::project::SafetyMap;
     use lifeguard::pyrefly::module_name::ModuleName;
-    use lifeguard::runner::Options;
     use lifeguard::test_lib::TestSources;
-    use lifeguard::test_lib::assert_str_keys;
+    use lifeguard::test_lib::assert_failing;
+    use lifeguard::test_lib::assert_passing;
+    use lifeguard::test_lib::has_lazy_eligible_dep;
+    use lifeguard::test_lib::run_analysis_on;
+    use lifeguard::test_lib::run_lifeguard_analysis;
+    use lifeguard::test_lib::run_lifeguard_analysis_with;
+    use lifeguard::test_lib::test_options;
+    use lifeguard::test_lib::verbose_test_options;
     use ruff_text_size::TextRange;
     use starlark_map::small_set::SmallSet;
-
-    fn test_options() -> Options {
-        Options {
-            sorted_output: true,
-            ..Options::default()
-        }
-    }
 
     fn make_module_safety(
         errors: &[ErrorKind],
@@ -68,14 +65,6 @@ mod tests {
         safety_map
     }
 
-    fn assert_passing(result: &LifeGuardAnalysis, expected: Vec<&str>) {
-        assert_str_keys(&result.passing_modules, expected);
-    }
-
-    fn assert_failing(result: &LifeGuardAnalysis, expected: Vec<&str>) {
-        assert_str_keys(&result.failing_modules, expected);
-    }
-
     fn assert_error_counts(
         result: &LifeGuardAnalysis,
         error_counts: Vec<((ErrorKind, ErrorMetadata), usize)>,
@@ -87,32 +76,6 @@ mod tests {
 
     fn make_error_key(kind: ErrorKind, metadata: &str) -> (ErrorKind, ErrorMetadata) {
         (kind, metadata.parse().unwrap())
-    }
-
-    fn has_lazy_eligible_dep(result: &LifeGuardAnalysis, module: &str, dep: &str) -> bool {
-        result
-            .output
-            .lazy_eligible
-            .get(&ModuleName::from_str(module))
-            .map(|deps| deps.contains(&ModuleName::from_str(dep)))
-            .unwrap_or(false)
-    }
-
-    fn run_lifeguard_analysis(modules: &Vec<(&str, &str)>) -> LifeGuardAnalysis {
-        let sources = TestSources::new(modules);
-        let config = AnalysisConfig::default();
-        let (import_graph, exports) = ImportGraph::make_with_exports(&sources, &config);
-        let output = project::run_analysis(
-            &sources,
-            &exports,
-            &import_graph,
-            &config,
-            project::ExecutionMode::WholeProgram,
-        );
-        let mut analysis =
-            LifeGuardAnalysis::new(output.safety_map, import_graph, &exports, &test_options());
-        analysis.propagate_side_effect_imports(&output.side_effect_imports);
-        analysis
     }
 
     #[test]
@@ -798,33 +761,8 @@ mod tests {
         }
     }
 
-    fn verbose_test_options() -> Options {
-        Options {
-            verbose_output_path: Some(std::path::PathBuf::from("/tmp/test_verbose")),
-            sorted_output: true,
-            ..Options::default()
-        }
-    }
-
     fn run_lifeguard_analysis_verbose(modules: &Vec<(&str, &str)>) -> LifeGuardAnalysis {
-        let sources = TestSources::new(modules);
-        let config = AnalysisConfig::default();
-        let (import_graph, exports) = ImportGraph::make_with_exports(&sources, &config);
-        let output = project::run_analysis(
-            &sources,
-            &exports,
-            &import_graph,
-            &config,
-            project::ExecutionMode::WholeProgram,
-        );
-        let mut analysis = LifeGuardAnalysis::new(
-            output.safety_map,
-            import_graph,
-            &exports,
-            &verbose_test_options(),
-        );
-        analysis.propagate_side_effect_imports(&output.side_effect_imports);
-        analysis
+        run_lifeguard_analysis_with(modules, &verbose_test_options())
     }
 
     #[test]
@@ -1022,16 +960,7 @@ mod tests {
             x[0] = 2
         "#;
         let modules = vec![("a", code_a), ("b", code_b), ("c", code_c)];
-        let sources = TestSources::new(&modules);
-        let config = AnalysisConfig::default();
-        let (import_graph, exports) = ImportGraph::make_with_exports(&sources, &config);
-        let output = project::run_analysis(
-            &sources,
-            &exports,
-            &import_graph,
-            &config,
-            project::ExecutionMode::WholeProgram,
-        );
+        let (output, _import_graph, _exports) = run_analysis_on(&TestSources::new(&modules));
         for module_name in ["a", "b", "c"] {
             let name = ModuleName::from_str(module_name);
             let entry = output.safety_map.get(&name).unwrap_or_else(|| {
@@ -1113,15 +1042,7 @@ mod tests {
 
         let modules = vec![("a", a_code)];
         let sources = TestSources::new(&modules).with_parse_errors(&["broken"]);
-        let config = AnalysisConfig::default();
-        let (import_graph, exports) = ImportGraph::make_with_exports(&sources, &config);
-        let output = project::run_analysis(
-            &sources,
-            &exports,
-            &import_graph,
-            &config,
-            project::ExecutionMode::WholeProgram,
-        );
+        let (output, import_graph, exports) = run_analysis_on(&sources);
 
         for entry in output.parse_errors.iter() {
             output.safety_map.insert(
