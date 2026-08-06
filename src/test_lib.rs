@@ -9,6 +9,9 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs;
 use std::process::Command;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::OnceLock;
 
 use pyrefly_python::module::Module;
 use pyrefly_python::module_name::ModuleName;
@@ -41,6 +44,153 @@ use crate::traits::AsStr;
 use crate::traits::ModuleExt;
 
 // ---------------------------------------------------------------------------
+// Shared stub state
+// ---------------------------------------------------------------------------
+
+/// The bundled stubs, decompressed once per process and shared by every
+/// [`TestSources`]. `Stubs` memoizes each stub's analysis internally, so
+/// sharing one instance also shares that work across tests.
+pub fn shared_stubs() -> &'static Stubs {
+    static STUBS: OnceLock<Stubs> = OnceLock::new();
+    STUBS.get_or_init(Stubs::new)
+}
+
+/// A [`ModuleProvider`] over the bundled stubs alone, used to precompute the
+/// stub import graph.
+struct StubSources {
+    names: Vec<ModuleName>,
+    python_version: PythonVersion,
+}
+
+impl ModuleProvider for StubSources {
+    fn module_names_iter(&self) -> impl Iterator<Item = &ModuleName> {
+        self.names.iter()
+    }
+
+    fn module_names_par_iter(&self) -> impl ParallelIterator<Item = &ModuleName> {
+        self.names.par_iter()
+    }
+
+    fn len(&self) -> usize {
+        self.names.len()
+    }
+
+    fn parse(&self, name: &ModuleName) -> Option<AstResult> {
+        let src = shared_stubs().get_raw_source(name)?;
+        Some(AstResult::Ok(parse_pyi_with_version(
+            src,
+            *name,
+            false,
+            self.python_version,
+        )))
+    }
+
+    fn is_stub(&self, _name: &ModuleName) -> bool {
+        true
+    }
+
+    fn overrides_source(&self, _name: &ModuleName) -> bool {
+        false
+    }
+
+    fn stubs(&self) -> &Stubs {
+        shared_stubs()
+    }
+}
+
+/// The import graph over the bundled stubs, built once per Python version.
+///
+/// Keyed on the version because stubs guard imports on `sys.version_info`, so
+/// the edges genuinely differ: at 3.15 `typing` imports `annotationlib` and
+/// `tarfile` imports `compression.zstd`, neither of which exist at 3.13.
+/// Sharing one default-version graph would hide those edges from a test built
+/// with [`TestSources::new_with_version`], and the stub would be treated as a
+/// missing import rather than resolved.
+fn stub_import_graph(python_version: PythonVersion) -> Arc<ImportGraph> {
+    type Cell = Arc<OnceLock<Arc<ImportGraph>>>;
+    static GRAPHS: OnceLock<Mutex<HashMap<PythonVersion, Cell>>> = OnceLock::new();
+
+    // The map lock only guards the lookup. Building under it would block a
+    // thread wanting a different version, and a panic mid-build would poison
+    // the cache for every later test in the process.
+    let cell: Cell = {
+        let graphs = GRAPHS.get_or_init(|| Mutex::new(HashMap::new()));
+        let mut graphs = graphs.lock().unwrap_or_else(|e| e.into_inner());
+        Arc::clone(graphs.entry(python_version).or_default())
+    };
+
+    // Threads racing for the same version block here rather than each building
+    // a graph and discarding all but one.
+    cell.get_or_init(|| {
+        let sources = StubSources {
+            names: shared_stubs()
+                .raw_sources_iter()
+                .map(|(name, _)| *name)
+                .collect(),
+            python_version,
+        };
+        Arc::new(ImportGraph::make(
+            &sources,
+            &AnalysisConfig::with_python_version(python_version, None),
+        ))
+    })
+    .clone()
+}
+
+/// Every stub reachable from `roots`, following stub-to-stub imports and
+/// including the ancestor packages that missing-import resolution walks up to.
+/// `leaves` are admitted without following their imports.
+///
+/// Tests only need the stubs their own modules can actually reach. Admitting
+/// all ~950 bundled stubs instead makes every test parse, build exports for,
+/// and analyze the whole of typeshed before discarding the results.
+fn reachable_stubs(
+    roots: impl Iterator<Item = ModuleName>,
+    leaves: impl Iterator<Item = ModuleName>,
+    python_version: PythonVersion,
+) -> AHashSet<ModuleName> {
+    fn admit(name: ModuleName, seen: &mut AHashSet<ModuleName>, queue: &mut Vec<ModuleName>) {
+        if shared_stubs().get_raw_source(&name).is_some() && seen.insert(name) {
+            queue.push(name);
+        }
+    }
+
+    /// A dotted import can name a submodule, but resolution may fall back to
+    /// any of its ancestor packages, so admit the whole prefix chain.
+    fn admit_with_ancestors(
+        name: ModuleName,
+        seen: &mut AHashSet<ModuleName>,
+        queue: &mut Vec<ModuleName>,
+    ) {
+        let parts: Vec<&str> = name.as_str().split('.').collect();
+        for i in 1..=parts.len() {
+            admit(ModuleName::from_str(&parts[..i].join(".")), seen, queue);
+        }
+    }
+
+    let mut seen = AHashSet::new();
+    let mut queue: Vec<ModuleName> = Vec::new();
+
+    for root in roots {
+        admit_with_ancestors(root, &mut seen, &mut queue);
+    }
+
+    let graph = stub_import_graph(python_version);
+    while let Some(name) = queue.pop() {
+        for import in graph.get_imports(&name) {
+            admit(*import, &mut seen, &mut queue);
+        }
+    }
+
+    // Discarding the queue is what keeps a leaf's imports out of the result.
+    let mut unvisited = Vec::new();
+    for leaf in leaves {
+        admit_with_ancestors(leaf, &mut seen, &mut unvisited);
+    }
+    seen
+}
+
+// ---------------------------------------------------------------------------
 // TestSources: in-memory ModuleProvider for tests
 // ---------------------------------------------------------------------------
 
@@ -50,7 +200,6 @@ pub struct TestSources {
     modules: HashMap<ModuleName, String, ahash::RandomState>,
     stub_modules: AHashSet<ModuleName>,
     parse_errors: AHashSet<ModuleName>,
-    stubs: Stubs,
     names: Vec<ModuleName>,
     python_version: PythonVersion,
 }
@@ -73,32 +222,45 @@ impl TestSources {
         stub_names: &[&str],
         python_version: PythonVersion,
     ) -> Self {
-        let stubs = Stubs::new();
-
-        // Collect all names: stubs first, then test modules (test modules override stubs)
-        let mut name_set: AHashSet<ModuleName> =
-            stubs.raw_sources_iter().map(|(name, _)| *name).collect();
-
         let mut module_map = HashMap::<ModuleName, String, ahash::RandomState>::default();
+        let mut names = Vec::new();
         for (name, code) in modules {
             let mod_name = ModuleName::from_str(name);
-            name_set.insert(mod_name);
-            module_map.insert(mod_name, code.to_string());
+            if module_map.insert(mod_name, code.to_string()).is_none() {
+                names.push(mod_name);
+            }
         }
 
         let stub_modules: AHashSet<ModuleName> =
             stub_names.iter().map(|n| ModuleName::from_str(n)).collect();
 
-        let names: Vec<ModuleName> = name_set.into_iter().collect();
-
-        Self {
+        let mut sources = Self {
             modules: module_map,
             stub_modules,
             parse_errors: AHashSet::new(),
-            stubs,
             names,
             python_version,
-        }
+        };
+        sources.names.extend(sources.referenced_stubs());
+        sources
+    }
+
+    /// The stubs the test modules can reach. Resolved by graphing the test
+    /// modules on their own: every import that fails to resolve against them is
+    /// a candidate stub name.
+    fn referenced_stubs(&self) -> AHashSet<ModuleName> {
+        let config = AnalysisConfig::with_python_version(self.python_version, None);
+        let graph = ImportGraph::make(self, &config);
+        let unresolved = self.names.iter().flat_map(|name| {
+            let missing = graph.get_missing_imports(name).into_iter();
+            let ambiguous = graph.get_ambiguous_imports(name).into_iter();
+            missing.chain(ambiguous).flatten().copied()
+        });
+        // `builtins` is in scope for every module without being imported, but
+        // its own imports are served by `Stubs`, which resolves independently
+        // of the module graph.
+        let implicit = std::iter::once(ModuleName::builtins());
+        reachable_stubs(unresolved, implicit, self.python_version)
     }
 
     pub fn with_parse_errors(mut self, error_modules: &[&str]) -> Self {
@@ -160,7 +322,7 @@ impl ModuleProvider for TestSources {
         }
 
         // Fall back to stubs
-        if let Some(src) = self.stubs.get_raw_source(name) {
+        if let Some(src) = shared_stubs().get_raw_source(name) {
             return Some(AstResult::Ok(parse_pyi_with_version(
                 src,
                 *name,
@@ -177,7 +339,7 @@ impl ModuleProvider for TestSources {
             return true;
         }
         // A module is a stub only if it comes from stubs and is NOT overridden by a test module
-        !self.modules.contains_key(name) && self.stubs.get_raw_source(name).is_some()
+        !self.modules.contains_key(name) && shared_stubs().get_raw_source(name).is_some()
     }
 
     fn overrides_source(&self, name: &ModuleName) -> bool {
@@ -185,7 +347,7 @@ impl ModuleProvider for TestSources {
     }
 
     fn stubs(&self) -> &Stubs {
-        &self.stubs
+        shared_stubs()
     }
 }
 
@@ -535,4 +697,71 @@ pub fn populate_temp_dir(files: &[(&str, &str)]) -> TempDir {
         fs::write(&path, contents).expect("write file");
     }
     tmp
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_stubs_are_shared_across_sources() {
+        let a = TestSources::new(&[("a", "x = 1")]);
+        let b = TestSources::new(&[("b", "y = 2")]);
+        assert!(
+            std::ptr::eq(a.stubs(), b.stubs()),
+            "every TestSources should borrow the same process-wide Stubs; \
+             constructing one per instance re-decompresses the whole bundle"
+        );
+    }
+
+    #[test]
+    fn test_only_reachable_stubs_are_admitted() {
+        let bundled = shared_stubs().raw_sources_iter().count();
+        let sources = TestSources::new(&[("a", "x = 1")]);
+        assert!(
+            sources.len() < bundled / 10,
+            "a module that imports nothing pulled in {} of {} bundled stubs",
+            sources.len(),
+            bundled
+        );
+    }
+
+    #[test]
+    fn test_duplicate_module_names_are_admitted_once() {
+        let sources = TestSources::new(&[("a", "x = 1"), ("a", "x = 2")]);
+        assert_eq!(
+            sources
+                .module_names_iter()
+                .filter(|name| name.as_str() == "a")
+                .count(),
+            1
+        );
+        assert_eq!(sources.get_code(&ModuleName::from_str("a")), Some("x = 2"));
+    }
+
+    #[test]
+    fn test_closure_follows_version_guarded_stub_imports() {
+        // `typing` imports `annotationlib` only under `sys.version_info >= 3.14`.
+        // A version-blind stub graph would drop that edge and leave the test
+        // resolving `annotationlib` as a missing import.
+        let names = |version| {
+            let sources = TestSources::new_with_version(&[("a", "import typing")], version);
+            sources
+                .module_names_iter()
+                .copied()
+                .collect::<AHashSet<ModuleName>>()
+        };
+        let annotationlib = ModuleName::from_str("annotationlib");
+        assert!(names(PythonVersion::new(3, 15, 0)).contains(&annotationlib));
+        assert!(!names(PythonVersion::new(3, 13, 0)).contains(&annotationlib));
+    }
+
+    #[test]
+    fn test_imported_stub_and_its_dependencies_are_admitted() {
+        let sources = TestSources::new(&[("a", "import subprocess")]);
+        let names: AHashSet<ModuleName> = sources.module_names_iter().copied().collect();
+        assert!(names.contains(&ModuleName::from_str("subprocess")));
+        // subprocess.pyi imports types, so the closure must reach it too.
+        assert!(names.contains(&ModuleName::from_str("types")));
+    }
 }
