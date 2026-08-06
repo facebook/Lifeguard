@@ -6,6 +6,8 @@
  */
 
 // Port of safer_lazy_imports/analyzer/tests/test_catch_import_cycles.py
+// Kept as a conformance corpus against the original analyzer, so overlap
+// with the topical test files is deliberate.
 
 #[cfg(test)]
 mod tests {

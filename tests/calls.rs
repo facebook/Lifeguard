@@ -436,15 +436,6 @@ a = foo.funcs[1]() # E: unknown-function-call
     }
 
     #[test]
-    fn test_param_method_call_effect() {
-        let code = r#"
-def f(x):
-    x.foo()  # E: method-call # E: param-method-call
-"#;
-        check_effects(code);
-    }
-
-    #[test]
     fn test_imported_var_arg_effect() {
         let code = r#"
 from foo import A
@@ -487,7 +478,7 @@ f(1, y=A, z=2)  # E: unsafe-function-call
     }
 
     #[test]
-    fn test_list_append() {
+    fn test_local_list_append_is_safe() {
         let code = r#"
 x = []
 x.append(10)

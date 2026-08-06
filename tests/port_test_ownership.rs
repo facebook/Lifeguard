@@ -9,6 +9,8 @@
 mod tests {
     use lifeguard::test_lib::*;
     // Port over tests from safer_lazy_imports/analyzer/tests/test_ownership.py
+    // Kept as a conformance corpus against the original analyzer, so overlap
+    // with the topical test files is deliberate.
 
     #[test]
     fn test_list_modify() {
@@ -23,7 +25,7 @@ mod tests {
     }
 
     #[test]
-    fn test_list_append() {
+    fn test_imported_list_append_is_unsafe() {
         // This call mutates the imported value and should therefore be unsafe
         let code1 = r#"
             l1 = [1, 2, 3]

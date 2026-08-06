@@ -10,6 +10,8 @@ mod tests {
     use lifeguard::test_lib::*;
     // Port over tests from safer_lazy_imports/analyzer/tests/test_analyzer.py
     // Omitted *imported_modules* and *import_attribute* tests
+    // Kept as a conformance corpus against the original analyzer, so overlap
+    // with the topical test files is deliberate.
 
     #[test]
     fn test_analyzer() {

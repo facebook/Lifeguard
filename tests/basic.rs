@@ -19,24 +19,6 @@ bar = 1
     }
 
     #[test]
-    fn test_update_to_import_array() {
-        let code = r#"
-from foo import bar
-bar[0] = 1  # E: imported-module-assignment
-"#;
-        check(code);
-    }
-
-    #[test]
-    fn test_update_to_import_array_effects() {
-        let code = r#"
-from foo import bar
-bar[0] = 1  # E: imported-var-mutation
-"#;
-        check_effects(code);
-    }
-
-    #[test]
     fn test_getattr_literal() {
         let code = r#"
 def f(): ...

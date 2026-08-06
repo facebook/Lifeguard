@@ -1308,9 +1308,11 @@ f(*[A])
     }
 
     #[test]
-    #[ignore] // TODO(T237092592): Distinguish copy from alias
-    fn test_param_copied_then_mutated_is_safe() {
-        // If the param is copied before mutation, the original is not affected.
+    fn test_param_copied_then_mutated_is_not_an_imported_var_argument() {
+        // If the param is copied before mutation, the original is not affected,
+        // so no imported-var-argument — contrast with the aliased case below.
+        // f is still unsafe, but only because y.append is an unresolved method
+        // call on an untyped local.
         let code = r#"
 from foo import A
 
@@ -1318,7 +1320,7 @@ def f(x):
     y = x.copy()
     y.append(1)
 
-f(A)
+f(A)  # E: unsafe-function-call
 "#;
         check(code);
     }

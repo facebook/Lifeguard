@@ -9,6 +9,8 @@
 mod tests {
     use lifeguard::test_lib::*;
     // Port over tests from safer_lazy_imports/analyzer/tests/test_finalization.py
+    // Kept as a conformance corpus against the original analyzer, so overlap
+    // with the topical test files is deliberate.
 
     #[test]
     fn test_dunder_del_at_module_level() {

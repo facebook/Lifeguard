@@ -31,6 +31,22 @@ mod tests {
     use ruff_text_size::TextRange;
     use starlark_map::small_set::SmallSet;
 
+    /// A minimal two-module import cycle, for tests that need a cycle to exist
+    /// but do not assert anything about its contents.
+    fn import_cycle_modules() -> Vec<(&'static str, &'static str)> {
+        let cycle_a = r#"
+            import cycle_b
+            def func_a():
+                pass
+        "#;
+        let cycle_b = r#"
+            import cycle_a
+            def func_b():
+                pass
+        "#;
+        vec![("cycle_a", cycle_a), ("cycle_b", cycle_b)]
+    }
+
     fn make_module_safety(
         errors: &[ErrorKind],
         excludes: &[ErrorKind],
@@ -556,30 +572,14 @@ mod tests {
     fn test_cycle_deps_propagate_to_subpackages() {
         // Test that cycle dependencies propagate to child modules.
 
-        // cycle_a and cycle_b form a cycle
-        let cycle_a = r#"
-            import cycle_b
-            def func_a():
-                pass
-        "#;
-
-        let cycle_b = r#"
-            import cycle_a
-            def func_b():
-                pass
-        "#;
-
         // cycle_a.sub is a subpackage of cycle_a
         let cycle_a_sub = r#"
             def sub_func():
                 pass
         "#;
 
-        let modules = vec![
-            ("cycle_a", cycle_a),
-            ("cycle_b", cycle_b),
-            ("cycle_a.sub", cycle_a_sub),
-        ];
+        let mut modules = import_cycle_modules();
+        modules.push(("cycle_a.sub", cycle_a_sub));
 
         let result = run_lifeguard_analysis(&modules);
 
@@ -785,17 +785,7 @@ mod tests {
 
     #[test]
     fn test_verbose_output_includes_import_cycles() {
-        let cycle_a = r#"
-            import cycle_b
-            def func_a():
-                pass
-        "#;
-        let cycle_b = r#"
-            import cycle_a
-            def func_b():
-                pass
-        "#;
-        let modules = vec![("cycle_a", cycle_a), ("cycle_b", cycle_b)];
+        let modules = import_cycle_modules();
 
         let result = run_lifeguard_analysis_verbose(&modules);
         assert!(
@@ -811,17 +801,7 @@ mod tests {
 
     #[test]
     fn test_verbose_output_json_format() {
-        let cycle_a = r#"
-            import cycle_b
-            def func_a():
-                pass
-        "#;
-        let cycle_b = r#"
-            import cycle_a
-            def func_b():
-                pass
-        "#;
-        let modules = vec![("cycle_a", cycle_a), ("cycle_b", cycle_b)];
+        let modules = import_cycle_modules();
 
         let result = run_lifeguard_analysis_verbose(&modules);
         let json_value = serde_json::to_value(&result.output).unwrap();
@@ -838,17 +818,7 @@ mod tests {
 
     #[test]
     fn test_non_verbose_output_excludes_verbose_fields() {
-        let cycle_a = r#"
-            import cycle_b
-            def func_a():
-                pass
-        "#;
-        let cycle_b = r#"
-            import cycle_a
-            def func_b():
-                pass
-        "#;
-        let modules = vec![("cycle_a", cycle_a), ("cycle_b", cycle_b)];
+        let modules = import_cycle_modules();
 
         let result = run_lifeguard_analysis(&modules);
         let json_value = serde_json::to_value(&result.output).unwrap();
