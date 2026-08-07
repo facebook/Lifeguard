@@ -93,7 +93,7 @@ pub struct CachedModuleSafety {
 }
 
 /// A serializable safety error (without source location).
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CachedError {
     pub kind: ErrorKind,
     pub metadata: String,
@@ -220,39 +220,14 @@ impl LibraryCache {
         self.class_bases = class_bases;
     }
 
-    /// Write the cache to a binary file using postcard. Modules are serialized
-    /// into independent per-module blobs so the read side can decode them in
-    /// parallel (the per-module structs dominate (de)serialization cost).
+    /// Write the cache using the indexed wire format.
     pub fn write_to_file(&self, path: &Path) -> anyhow::Result<()> {
-        let module_blobs: Vec<Vec<u8>> = self
-            .modules
-            .par_iter()
-            .map(postcard::to_allocvec)
-            .collect::<Result<_, _>>()?;
-        let bytes = postcard::to_allocvec(&(&self.exports, &self.class_bases, &module_blobs))?;
-        std::fs::write(path, bytes)?;
-        Ok(())
+        crate::cache_wire::write(self, path)
     }
 
-    /// Read a cache from a binary file using postcard. The outer decode just
-    /// splits the file into per-module byte blobs; the expensive per-module
-    /// struct deserialization then runs in parallel.
+    /// Read a cache using the indexed wire format.
     pub fn read_from_file(path: &Path) -> anyhow::Result<Self> {
-        let bytes = std::fs::read(path)?;
-        let (exports, class_bases, module_blobs): (
-            CachedExports,
-            Vec<(ModuleName, Vec<ModuleName>)>,
-            Vec<Vec<u8>>,
-        ) = postcard::from_bytes(&bytes)?;
-        let modules = module_blobs
-            .par_iter()
-            .map(|blob| postcard::from_bytes(blob))
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(LibraryCache {
-            modules,
-            exports,
-            class_bases,
-        })
+        crate::cache_wire::read(path)
     }
 
     /// Merge dependency caches into this cache.

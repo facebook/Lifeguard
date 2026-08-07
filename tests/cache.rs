@@ -32,6 +32,7 @@ mod tests {
     use lifeguard::module_safety::FunctionSafety;
     use lifeguard::module_safety::FunctionSafetyInfo;
     use lifeguard::module_safety::ModuleSafety;
+    use lifeguard::module_safety::MutatedParam;
     use lifeguard::module_safety::MutationCandidate;
     use lifeguard::module_safety::MutationCandidateSite;
     use lifeguard::module_safety::ParamPosition;
@@ -244,6 +245,133 @@ mod tests {
 
         assert_eq!(loaded.modules.len(), 1);
         assert_eq!(loaded.modules[0].name, mn("test"));
+    }
+
+    #[test]
+    fn test_cache_round_trip_preserves_re_exports() {
+        let cache = LibraryCache {
+            modules: vec![safe_cached_module("package", &[], &[])],
+            exports: CachedExports {
+                re_exports: vec![CachedReExport {
+                    exported_module: mn("package"),
+                    exported_attr: "public_name".to_owned(),
+                    imported_module: mn("implementation"),
+                    imported_attr: "private_name".to_owned(),
+                }],
+            },
+            class_bases: vec![(mn("package.Derived"), vec![mn("package.Base")])],
+        };
+
+        let loaded = round_trip(&cache);
+        assert_eq!(loaded.exports.re_exports.len(), 1);
+        let re_export = &loaded.exports.re_exports[0];
+        assert_eq!(re_export.exported_module, mn("package"));
+        assert_eq!(re_export.exported_attr, "public_name");
+        assert_eq!(re_export.imported_module, mn("implementation"));
+        assert_eq!(re_export.imported_attr, "private_name");
+        assert_eq!(
+            loaded.class_bases,
+            vec![(mn("package.Derived"), vec![mn("package.Base")])],
+        );
+    }
+
+    #[test]
+    fn test_cache_round_trip_function_safety_and_mutations() {
+        let mut info = FunctionSafetyInfo::new(FunctionSafety::UnsafeMissingDep);
+        info.missing_dep_callees = [mn("dep.callee")].into_iter().collect();
+        info.mutated_params = vec![MutatedParam {
+            name: mn("pkg.param"),
+            position: ParamPosition::Positional(2),
+        }];
+        let mut function_safety = AHashMap::new();
+        function_safety.insert("helper".to_owned(), info.clone());
+
+        let candidate = MutationCandidate {
+            callee: mn("dep.configure"),
+            site: MutationCandidateSite::ModuleScope {
+                call: mn("pkg.call"),
+            },
+            arg_offset: 3,
+            imported_args: ImportedArgs {
+                unsafe_arg_indices: 0b101,
+                unsafe_keyword_names: vec![mn("pkg.kw")],
+                has_unsafe_kwargs_expansion: true,
+                unsafe_args_expansion_min: Some(4),
+            },
+        };
+
+        let cache = LibraryCache {
+            modules: vec![CachedModule {
+                name: mn("m"),
+                safety: CachedSafety::Ok(CachedModuleSafety::default()),
+                imports: Default::default(),
+                missing_imports: Default::default(),
+                ambiguous_imports: Default::default(),
+                side_effect_imports: Default::default(),
+                function_safety,
+                mutation_candidates: vec![candidate.clone()],
+            }],
+            exports: CachedExports {
+                re_exports: Vec::new(),
+            },
+            class_bases: Vec::new(),
+        };
+
+        let loaded = round_trip(&cache);
+        let module = &loaded.modules[0];
+        assert_eq!(
+            module.function_safety.get("helper"),
+            Some(&info),
+            "function safety (verdict, missing_dep_callees, mutated_params) should round-trip",
+        );
+        assert_eq!(
+            module.mutation_candidates,
+            vec![candidate],
+            "mutation candidates (incl. imported_args details) should round-trip",
+        );
+    }
+
+    #[test]
+    fn test_cache_read_rejects_corrupt_bytes() {
+        let cache = LibraryCache {
+            modules: vec![safe_cached_module("m", &["dep"], &[])],
+            exports: CachedExports {
+                re_exports: Vec::new(),
+            },
+            class_bases: Vec::new(),
+        };
+        let path = temp_cache_path("corrupt");
+        cache
+            .write_to_file(&path)
+            .expect("cache write should succeed");
+        let bytes = std::fs::read(&path).expect("reading cache bytes should succeed");
+
+        // A wrong-format file (bad magic header) is rejected with a clear error.
+        let mut wrong_magic = bytes.clone();
+        wrong_magic[0] ^= 0xFF;
+        std::fs::write(&path, &wrong_magic).expect("writing should succeed");
+        assert!(
+            LibraryCache::read_from_file(&path).is_err(),
+            "a file with the wrong magic header should fail to read"
+        );
+
+        // A truncated cache is rejected rather than silently decoded or panicking.
+        std::fs::write(&path, &bytes[..bytes.len() - 1]).expect("truncating should succeed");
+        assert!(
+            LibraryCache::read_from_file(&path).is_err(),
+            "a truncated cache should fail to read"
+        );
+
+        // Trailing bytes past the last module are rejected.
+        let mut trailing = bytes.clone();
+        trailing.extend_from_slice(b"extra");
+        std::fs::write(&path, &trailing).expect("appending should succeed");
+        assert!(
+            LibraryCache::read_from_file(&path).is_err(),
+            "a cache with trailing data should fail to read"
+        );
+
+        std::fs::remove_file(&path).expect("temporary cache file should be removable");
     }
 
     #[test]
