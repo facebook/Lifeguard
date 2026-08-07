@@ -67,17 +67,12 @@ pub fn dedent(code: &str) -> String {
     if indent == 0 {
         return code.to_owned();
     }
-    code.lines()
-        .map(|line| line.get(indent..).unwrap_or(""))
-        .enumerate()
-        .flat_map(|(index, line)| {
-            (index > 0)
-                .then_some("\n")
-                .into_iter()
-                .chain(std::iter::once(line))
-        })
-        .chain(code.ends_with('\n').then_some("\n"))
-        .collect()
+    itertools::Itertools::intersperse(
+        code.lines().map(|line| line.get(indent..).unwrap_or("")),
+        "\n",
+    )
+    .chain(code.ends_with('\n').then_some("\n"))
+    .collect()
 }
 
 /// The bundled stubs, decompressed once per process and shared by every

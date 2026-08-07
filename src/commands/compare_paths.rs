@@ -26,6 +26,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::Parser;
+use itertools::Itertools;
 use pyrefly_python::module_name::ModuleName;
 
 use crate::cache::CachedSafety;
@@ -126,9 +127,10 @@ fn post_resolution_errors(mut cache: LibraryCache, options: &Options) -> ErrorMa
 }
 
 fn sorted(names: impl IntoIterator<Item = ModuleName>) -> Vec<ModuleName> {
-    let mut v: Vec<ModuleName> = names.into_iter().collect();
-    v.sort_by(|a, b| a.as_str().cmp(b.as_str()));
-    v
+    names
+        .into_iter()
+        .sorted_by(|a, b| a.as_str().cmp(b.as_str()))
+        .collect()
 }
 
 fn print_module_names(indent: &str, label: &str, names: &[ModuleName], limit: usize) {

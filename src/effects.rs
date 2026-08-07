@@ -8,6 +8,7 @@
 use std::str::FromStr;
 
 use anyhow::Result;
+use itertools::Itertools;
 use pyrefly_python::module_name::ModuleName;
 use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::ParallelIterator;
@@ -509,16 +510,9 @@ impl EffectTable {
         // up first.  Following modules will _generally_ follow in order of scope depth, but for
         // names like "current_scope.foo.bar" and "current_scope.foot" you might not get the exact
         // order that you want.  That's okay, it's close enough.
-        let mut tuples: Vec<_> = self.table.iter().collect();
-        tuples.sort_by_key(|(scope, _)| scope.as_str());
-
-        for (scope, eff_set) in tuples {
-            // Sort effects by the start of their text range.
-            let mut effs: Vec<_> = eff_set.iter().collect();
-            effs.sort_by_key(|eff| eff.range.start());
-
+        for (scope, eff_set) in self.table.iter().sorted_by_key(|(scope, _)| scope.as_str()) {
             println!("Scope: {}", scope.as_str());
-            for eff in effs {
+            for eff in eff_set.iter().sorted_by_key(|eff| eff.range.start()) {
                 println!(
                     "    Line {}:",
                     module.byte_to_line_number(eff.range.start().into())

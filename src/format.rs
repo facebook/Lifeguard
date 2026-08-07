@@ -7,6 +7,7 @@
 
 // Output formatting utilities
 
+use itertools::Itertools;
 use ruff_python_ast::BoolOp;
 use ruff_python_ast::CmpOp;
 use ruff_python_ast::Expr;
@@ -34,11 +35,7 @@ pub fn format_expr(expr: &Expr) -> String {
                 BoolOp::And => " and ",
                 BoolOp::Or => " or ",
             };
-            x.values
-                .iter()
-                .map(format_expr)
-                .collect::<Vec<_>>()
-                .join(op)
+            x.values.iter().map(format_expr).join(op)
         }
         Expr::Named(x) => {
             format!("{} := {}", format_expr(&x.target), format_expr(&x.value))
@@ -185,7 +182,6 @@ pub fn format_expr(expr: &Expr) -> String {
                         format!("**{}", format_expr(&kw.value))
                     }
                 }))
-                .collect::<Vec<_>>()
                 .join(", ");
             format!("{}({})", func, args)
         }
@@ -225,7 +221,7 @@ pub fn format_expr(expr: &Expr) -> String {
                 .unwrap_or_default();
             format!("{}:{}{}", lower, upper, step)
         }
-        Expr::IpyEscapeCommand(x) => format!("!{}", &x.value),
+        Expr::IpyEscapeCommand(x) => format!("!{}", x.value),
     }
 }
 
@@ -236,7 +232,7 @@ where
     M: Fn(&T) -> String,
     F: FnOnce(&str, usize) -> String,
 {
-    let formatted_items = items.iter().map(mapper).collect::<Vec<_>>().join(", ");
+    let formatted_items = items.iter().map(mapper).join(", ");
     wrapper(&formatted_items, items.len())
 }
 
@@ -288,7 +284,6 @@ fn format_comprehensions(generators: &[ruff_python_ast::Comprehension]) -> Strin
 
             result
         })
-        .collect::<Vec<_>>()
         .join(" ")
 }
 

@@ -5,6 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use itertools::Itertools;
 use tracing::debug;
 
 use crate::exports::ExportType;
@@ -16,26 +17,19 @@ use crate::module_effects::ModuleImportsMap;
 /// Outputs one line per export in format:
 ///   class | global | re_export: <module_name>
 pub fn print_exports(exports: &Exports) {
-    let mut lines = Vec::new();
-
-    // Collect exports
-    for (name, export) in exports.get_exports() {
+    let formatted_exports = exports.get_exports().map(|(name, export)| {
         let prefix = match export {
             ExportType::Class => "class",
             ExportType::Function => "function",
             ExportType::Global => "global",
         };
-        lines.push(format!("{}: {}", prefix, name.as_str()));
-    }
+        format!("{}: {}", prefix, name.as_str())
+    });
+    let formatted_re_exports = exports
+        .get_re_exports()
+        .map(|(name, _)| format!("re-export: {}", name.as_module_name().as_str()));
 
-    // Collect re-exports
-    for (name, _) in exports.get_re_exports() {
-        lines.push(format!("re-export: {}", name.as_module_name().as_str()));
-    }
-
-    // Sort and print
-    lines.sort();
-    for line in lines {
+    for line in formatted_exports.chain(formatted_re_exports).sorted() {
         println!("{}", line);
     }
 }
@@ -53,13 +47,9 @@ pub fn print_import_cycles(imports: &ImportGraph) {
 
 /// Print the called_imports / pending_imports map from the ModuleEffects struct
 pub fn print_module_imports_map(imports_map: &ModuleImportsMap) {
-    let mut scopes: Vec<_> = imports_map.iter().collect();
-    scopes.sort_by_key(|(s, _)| s.as_str());
-    for (scope, imports) in scopes {
-        let mut imports: Vec<_> = imports.iter().collect();
-        imports.sort_by_key(|i| i.as_str());
+    for (scope, imports) in imports_map.iter().sorted_by_key(|(s, _)| s.as_str()) {
         println!("  {}:", scope.as_str());
-        for import in imports {
+        for import in imports.iter().sorted_by_key(|i| i.as_str()) {
             println!("    - {}", import.as_str());
         }
     }

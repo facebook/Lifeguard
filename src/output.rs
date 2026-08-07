@@ -8,6 +8,7 @@
 use std::io::Write;
 
 use dashmap::DashMap;
+use itertools::Itertools;
 use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
 use serde::Serialize;
@@ -715,7 +716,6 @@ impl LifeGuardAnalysis {
             .map(|((kind, metadata), prevalence)| {
                 format!("{}, ({:?}, \"{}\")", prevalence, kind, metadata)
             })
-            .collect::<Vec<_>>()
             .join("\n");
 
         let total_modules = self.failing_modules.len() + self.passing_modules.len();
