@@ -148,11 +148,17 @@ impl ErrorMetadata {
     }
 }
 
+impl From<&str> for ErrorMetadata {
+    fn from(s: &str) -> Self {
+        Self(METADATA_INTERNER.intern(StrRef(s)))
+    }
+}
+
 impl FromStr for ErrorMetadata {
     type Err = std::convert::Infallible;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Self(METADATA_INTERNER.intern(StrRef(s))))
+        Ok(Self::from(s))
     }
 }
 

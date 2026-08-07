@@ -16,7 +16,9 @@ use serde::ser::SerializeMap;
 use serde::ser::SerializeStruct;
 use starlark_map::small_set::SmallSet;
 
+use crate::cache::CachedModule;
 use crate::cache::CachedReExport;
+use crate::cache::CachedSafety;
 use crate::cache::LibraryCache;
 use crate::errors::ErrorKind;
 use crate::errors::ErrorMetadata;
@@ -166,6 +168,7 @@ impl LifeGuardOutput {
 }
 
 /// Result of classifying modules from the safety map into passing/failing.
+#[derive(Default)]
 struct ClassifiedModules {
     failing_modules: SmallSet<ModuleName>,
     passing_modules: SmallSet<ModuleName>,
@@ -177,13 +180,7 @@ struct ClassifiedModules {
 /// Iterate the safety map and classify each module as passing or failing.
 /// Also collects load_imports_eagerly, implicit imports, and aggregated error counts.
 fn classify_modules(safety_map: SafetyMap) -> ClassifiedModules {
-    let mut result = ClassifiedModules {
-        failing_modules: SmallSet::new(),
-        passing_modules: SmallSet::new(),
-        load_imports_eagerly: SmallSet::new(),
-        implicit_imports: AHashMap::<ModuleName, Vec<ModuleName>>::new(),
-        aggregated_errors: AHashMap::new(),
-    };
+    let mut result = ClassifiedModules::default();
 
     for (module_name, safety_result) in safety_map {
         // Skip modules that failed analysis
@@ -223,6 +220,55 @@ fn classify_modules(safety_map: SafetyMap) -> ClassifiedModules {
         }
         for k in module_errors.drain() {
             *result.aggregated_errors.entry(k).or_insert(0) += 1;
+        }
+    }
+
+    result
+}
+
+fn classify_cached_modules(
+    modules: &[CachedModule],
+    graph_only_stubs: &AHashSet<ModuleName>,
+) -> ClassifiedModules {
+    let mut result = ClassifiedModules::default();
+
+    for module in modules {
+        if graph_only_stubs.contains(&module.name) {
+            continue;
+        }
+        let safety = match &module.safety {
+            CachedSafety::Ok(safety) => safety,
+            CachedSafety::AnalysisError { .. } => {
+                result.failing_modules.insert(module.name);
+                continue;
+            }
+        };
+
+        if safety.errors.is_empty() {
+            result.passing_modules.insert(module.name);
+        } else {
+            result.failing_modules.insert(module.name);
+        }
+        if !safety.force_imports_eager_overrides.is_empty() {
+            result.load_imports_eagerly.insert(module.name);
+        }
+        if !safety.implicit_imports.is_empty() {
+            result
+                .implicit_imports
+                .insert(module.name, safety.implicit_imports.clone());
+        }
+
+        let mut module_errors = AHashSet::new();
+        for error in safety
+            .errors
+            .iter()
+            .chain(&safety.force_imports_eager_overrides)
+        {
+            let metadata = ErrorMetadata::from(error.metadata.as_str());
+            module_errors.insert((error.kind, metadata));
+        }
+        for error in module_errors {
+            *result.aggregated_errors.entry(error).or_insert(0) += 1;
         }
     }
 
@@ -517,21 +563,19 @@ impl LifeGuardAnalysis {
             cache.resolve_cross_library_errors()
         });
 
-        let safety_map = cache.to_safety_map();
-        // Graph-only stubs stay in the import graph but are never output keys.
-        for name in graph_only_stubs {
-            safety_map.remove(name);
-        }
-        let import_graph = cache.to_import_graph();
-        let side_effect_imports = cache.to_side_effect_map();
+        let (classified, import_graph) = rayon::join(
+            || classify_cached_modules(&cache.modules, graph_only_stubs),
+            || cache.to_import_graph(),
+        );
 
         let cached_re_exports = &cache.exports.re_exports;
         let re_export_map_builder = |failing: &SmallSet<ModuleName>| {
             build_re_export_map_from_cache(cached_re_exports, failing)
         };
 
-        let mut analysis = Self::build(safety_map, import_graph, options, re_export_map_builder);
-        analysis.propagate_side_effect_imports(&side_effect_imports);
+        let mut analysis =
+            Self::build_classified(classified, import_graph, options, re_export_map_builder);
+        analysis.propagate_cached_side_effect_imports(&cache.modules);
         analysis
     }
 
@@ -541,15 +585,32 @@ impl LifeGuardAnalysis {
         options: &Options,
         re_export_map_builder: impl FnOnce(
             &SmallSet<ModuleName>,
-        ) -> AHashMap<ModuleName, AHashSet<ModuleName>>,
+        ) -> AHashMap<ModuleName, AHashSet<ModuleName>>
+        + Send,
     ) -> Self {
-        // Collect all modules in the safety map for filtering cycles later.
-        let source_modules: AHashSet<ModuleName> =
-            safety_map.iter().map(|entry| *entry.key()).collect();
-
         let classified = classify_modules(safety_map);
-        let all_cycles = collect_cycles(&import_graph, &source_modules);
-        let re_export_map = re_export_map_builder(&classified.failing_modules);
+        Self::build_classified(classified, import_graph, options, re_export_map_builder)
+    }
+
+    fn build_classified(
+        classified: ClassifiedModules,
+        import_graph: ImportGraph,
+        options: &Options,
+        re_export_map_builder: impl FnOnce(
+            &SmallSet<ModuleName>,
+        ) -> AHashMap<ModuleName, AHashSet<ModuleName>>
+        + Send,
+    ) -> Self {
+        let source_modules: AHashSet<ModuleName> = classified
+            .passing_modules
+            .iter()
+            .chain(&classified.failing_modules)
+            .copied()
+            .collect();
+        let (all_cycles, re_export_map) = rayon::join(
+            || collect_cycles(&import_graph, &source_modules),
+            || re_export_map_builder(&classified.failing_modules),
+        );
         let lazy_eligible =
             build_lazy_eligible(&import_graph, &classified, &re_export_map, &all_cycles);
 
@@ -588,8 +649,7 @@ impl LifeGuardAnalysis {
             .output
             .lazy_eligible
             .iter()
-            .filter(|entry| !entry.value().is_empty())
-            .map(|entry| *entry.key())
+            .filter_map(|entry| (!entry.value().is_empty()).then(|| *entry.key()))
             .collect();
 
         side_effect_imports
@@ -609,6 +669,36 @@ impl LifeGuardAnalysis {
                             .copied(),
                     );
             });
+    }
+
+    fn propagate_cached_side_effect_imports(&mut self, modules: &[CachedModule]) {
+        let has_failing_deps: AHashSet<ModuleName> = self
+            .output
+            .lazy_eligible
+            .iter()
+            .filter_map(|entry| (!entry.value().is_empty()).then(|| *entry.key()))
+            .collect();
+
+        modules.par_iter().for_each(|module| {
+            // Only passing modules with side-effect imports can contribute; skip the
+            // rest before taking a `lazy_eligible` shard lock (the majority have no
+            // side-effect imports, so this avoids needless shard contention).
+            if module.side_effect_imports.is_empty() || !self.passing_modules.contains(&module.name)
+            {
+                return;
+            }
+            self.output
+                .lazy_eligible
+                .entry(module.name)
+                .or_default()
+                .extend(
+                    module
+                        .side_effect_imports
+                        .iter()
+                        .filter(|import| has_failing_deps.contains(*import))
+                        .copied(),
+                );
+        });
     }
 
     pub fn get_report(&self) -> String {

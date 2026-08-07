@@ -607,15 +607,6 @@ impl LibraryCache {
         self.exports.re_exports = re_exports;
     }
 
-    /// Reconstruct a SafetyMap from cached module data.
-    pub fn to_safety_map(&self) -> SafetyMap {
-        let map = SafetyMap::with_capacity(self.modules.len());
-        for module in &self.modules {
-            map.insert(module.name, module.safety.to_safety_result());
-        }
-        map
-    }
-
     /// Inject the bundled stdlib stubs as graph-only nodes so the merged graph
     /// matches the e2e graph: per-library caches drop stub-only modules, losing
     /// the typeshed import cycle. Skips names a real library already provides.
@@ -668,17 +659,6 @@ impl LibraryCache {
             }
         }
         graph
-    }
-
-    /// Reconstruct a SideEffectMap from cached module data.
-    pub fn to_side_effect_map(&self) -> SideEffectMap {
-        let mut map = SideEffectMap::with_capacity(self.modules.len());
-        for m in &self.modules {
-            if !m.side_effect_imports.is_empty() {
-                map.insert(m.name, m.side_effect_imports.iter().copied().collect());
-            }
-        }
-        map
     }
 }
 
