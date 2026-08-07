@@ -12,7 +12,7 @@ mod tests {
     #[test]
     fn test_unsafe_init_called() {
         let code = r#"
- import foo
+import foo
 
 class A:
     def __init__(self):
@@ -26,7 +26,7 @@ a = A()  # E: unsafe-function-call
     #[test]
     fn test_unsafe_init_not_called() {
         let code = r#"
- import foo
+import foo
 
 class A:
     def __init__(self):
@@ -38,7 +38,7 @@ class A:
     #[test]
     fn test_safe_init_unsafe_body() {
         let code = r#"
- import foo
+import foo
 
 class A:
     foo.x = 42  # E: imported-module-assignment
@@ -87,7 +87,7 @@ class A(metaclass=Meta):
     fn test_unsafe_post_init_called() {
         // __post_init__ is called by dataclass-generated __init__
         let code = r#"
- import foo
+import foo
 
 class A:
     def __post_init__(self):
@@ -101,7 +101,7 @@ a = A()  # E: unsafe-function-call
     #[test]
     fn test_unsafe_post_init_not_called() {
         let code = r#"
- import foo
+import foo
 
 class A:
     def __post_init__(self):

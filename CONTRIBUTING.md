@@ -37,13 +37,56 @@ We follow the [Buck2 coding conventions](https://github.com/facebook/buck2/blob/
 
 You can use `cargo test` to run the tests, or `python3 test.py` from this directory.
 
-Take a look at the existing tests for examples of how to write tests.
+Tests live in `tests/`, and the harness is `src/test_lib.rs`. Most tests are a
+`#[test]` function holding inline Python, where the expected results are written
+as `# E:` comments on the line that should produce them:
 
-The test suite uses inline Python code with expected error annotations:
-- See `test_lib.rs` for the test harness
-- Tests live in `tests/` directory
-- Use `#[test]` functions that call `check()` with Python code strings
-- Expected errors are parsed from comments in the Python code
+```rust
+#[test]
+fn test_module_scope_call() {
+    let code = r#"
+import os
+os.chdir("/home/")  # E: unsafe-function-call
+"#;
+    check(code);
+}
+```
+
+The assertion is two-way: an expected error that is not raised fails, and so
+does a raised error that was not expected. Put several on one line by repeating
+the comment: `# E: imported-var-argument  # E: unsafe-function-call`.
+
+### Which helper to use
+
+| Helper | Use it for |
+| --- | --- |
+| `check` | Safety errors in a single module named `test`. The common case. |
+| `check_all` | Safety errors across several modules, as `(name, code)` pairs. |
+| `check_effects` | The effects a single module produces, rather than its verdict. |
+| `check_all_effects` | Effects across several modules. |
+| `check_effects_as_main` / `check_effects_not_main` / `check_effects_no_main` | Effects under each `__main__` setting, for `if __name__ == "__main__"` handling. |
+| `check_errors_and_implicit_imports` | Safety errors plus the implicit imports a module pulls in. |
+| `analyze_tree` | The raw per-module `AnalysisMap`, when you need to assert on effects or pending imports directly. |
+| `build_import_graph` | Just the import graph, for resolution and cycle questions. |
+| `run_lifeguard_analysis` / `run_lifeguard_analysis_with` | The final `LifeGuardAnalysis`, for `lazy_eligible`, `load_imports_eagerly`, and output formatting. Pass `verbose_test_options()` when you need `import_cycles`. |
+| `run_analysis_on` | The pipeline over a `TestSources` you built yourself, e.g. one with injected parse errors. |
+| `TestSources::with_parse_errors` | Modules that should be treated as unparseable. |
+
+### Writing the Python
+
+Snippets must be valid Python. The harness strips the indentation common to
+every line, so you can indent a snippet to match the surrounding Rust, but it
+will reject anything that still fails to parse. This matters because the parser
+recovers from syntax errors and returns a best-effort AST, so a malformed
+snippet would otherwise assert against behaviour that real code never reaches.
+
+Watch for a stray leading space on the first line: it makes the minimum
+indentation zero, so nothing is stripped and the rest of the snippet is left
+over-indented.
+
+The bundled type stubs are shared across the whole test binary, and a
+`TestSources` only admits the stubs its modules can actually reach. Adding an
+`import` to a snippet is enough to pull the corresponding stub in.
 
 ## Making a Pull Request
 

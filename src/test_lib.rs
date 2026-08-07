@@ -53,6 +53,33 @@ use crate::traits::ModuleExt;
 // Shared stub state
 // ---------------------------------------------------------------------------
 
+/// Strip the indentation common to every line, so a snippet can be indented to
+/// line up with the surrounding Rust without being a Python `IndentationError`.
+///
+/// Line count is preserved, so error line numbers are unaffected.
+pub fn dedent(code: &str) -> String {
+    let indent = code
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.len() - line.trim_start().len())
+        .min()
+        .unwrap_or(0);
+    if indent == 0 {
+        return code.to_owned();
+    }
+    code.lines()
+        .map(|line| line.get(indent..).unwrap_or(""))
+        .enumerate()
+        .flat_map(|(index, line)| {
+            (index > 0)
+                .then_some("\n")
+                .into_iter()
+                .chain(std::iter::once(line))
+        })
+        .chain(code.ends_with('\n').then_some("\n"))
+        .collect()
+}
+
 /// The bundled stubs, decompressed once per process and shared by every
 /// [`TestSources`]. `Stubs` memoizes each stub's analysis internally, so
 /// sharing one instance also shares that work across tests.
@@ -232,7 +259,7 @@ impl TestSources {
         let mut names = Vec::new();
         for (name, code) in modules {
             let mod_name = ModuleName::from_str(name);
-            if module_map.insert(mod_name, code.to_string()).is_none() {
+            if module_map.insert(mod_name, dedent(code)).is_none() {
                 names.push(mod_name);
             }
         }
@@ -319,12 +346,19 @@ impl ModuleProvider for TestSources {
                 .names
                 .iter()
                 .any(|n| n.as_str().starts_with(&name_prefix));
-            return Some(AstResult::Ok(parse_source_with_version(
-                code,
-                *name,
-                is_init,
-                self.python_version,
-            )));
+            let parsed = parse_source_with_version(code, *name, is_init, self.python_version);
+            // Ruff recovers from syntax errors and the production read path
+            // treats a broken file as missing, so a malformed snippet would
+            // otherwise be analyzed as a best-effort AST and quietly assert
+            // against behaviour real code never reaches. Use `with_parse_errors`
+            // to exercise unparseable modules on purpose.
+            assert!(
+                parsed.first_syntax_error().is_none(),
+                "test snippet for module `{}` does not parse: {}",
+                name.as_str(),
+                parsed.first_syntax_error().unwrap_or_default(),
+            );
+            return Some(AstResult::Ok(parsed));
         }
 
         // Fall back to stubs
@@ -458,6 +492,9 @@ fn check_output_with_config(
 
     for (module_name_str, code) in &modules {
         let module_name = ModuleName::from_str(module_name_str);
+        // Must match what TestSources analyzed, or the reported byte offsets
+        // resolve against the wrong text.
+        let code = &dedent(code);
         let module_info = Module::make(module_name_str, code);
 
         let exp = Expectation::parse(code);
@@ -794,6 +831,34 @@ pub fn populate_temp_dir(files: &[(&str, &str)]) -> TempDir {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_dedent_strips_common_indentation() {
+        assert_eq!(
+            dedent("\n    import os\n    x = 1\n"),
+            "\nimport os\nx = 1\n"
+        );
+    }
+
+    #[test]
+    fn test_dedent_keeps_relative_indentation() {
+        assert_eq!(
+            dedent("\n    def f():\n        return 1\n"),
+            "\ndef f():\n    return 1\n"
+        );
+    }
+
+    #[test]
+    fn test_dedent_preserves_line_count() {
+        let code = "\n    import os\n\n    x = 1\n";
+        assert_eq!(dedent(code).lines().count(), code.lines().count());
+    }
+
+    #[test]
+    fn test_dedent_leaves_flush_left_code_alone() {
+        let code = "import os\nx = 1\n";
+        assert_eq!(dedent(code), code);
+    }
 
     #[test]
     fn test_stubs_are_shared_across_sources() {
