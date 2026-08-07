@@ -27,3 +27,10 @@ pub fn write_json_pretty<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     serde_json::to_writer_pretty(&mut writer, value)?;
     Ok(writer.flush()?)
 }
+
+/// Serialize `value` as compact JSON to `path` through a buffered writer.
+pub fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    let mut writer = BufWriter::new(File::create(path)?);
+    serde_json::to_writer(&mut writer, value)?;
+    Ok(writer.flush()?)
+}

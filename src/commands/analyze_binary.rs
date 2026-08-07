@@ -15,7 +15,8 @@ use rayon::prelude::*;
 use tracing::info;
 
 use crate::cache::LibraryCache;
-use crate::commands::write_json_pretty;
+use crate::commands::write_json;
+use crate::hasher::AHashSet;
 use crate::output::LifeGuardAnalysis;
 use crate::runner::DEFAULT_PYTHON_VERSION;
 use crate::runner::Options;
@@ -48,11 +49,13 @@ pub struct AnalyzeBinaryArgs {
 pub fn run(args: AnalyzeBinaryArgs) -> Result<()> {
     let timer = ProcessTimer::new();
 
-    let cache_paths: Vec<PathBuf> = std::fs::read_to_string(&args.cache_manifest)?
+    let mut cache_paths: Vec<PathBuf> = std::fs::read_to_string(&args.cache_manifest)?
         .lines()
         .filter(|l| !l.is_empty())
         .map(PathBuf::from)
         .collect();
+    let mut seen = AHashSet::default();
+    cache_paths.retain(|path| seen.insert(path.clone()));
 
     anyhow::ensure!(!cache_paths.is_empty(), "no cache paths provided");
 
@@ -93,7 +96,7 @@ pub fn run(args: AnalyzeBinaryArgs) -> Result<()> {
 
     info!("{}", time("Generating report", || analysis.get_report()));
 
-    write_json_pretty(&args.output_path, &analysis.output)?;
+    write_json(&args.output_path, &analysis.output)?;
 
     info!("Output written to {}", args.output_path.display());
     timer.report_finish();
