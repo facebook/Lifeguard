@@ -363,7 +363,9 @@ impl LibraryCache {
         clear_errors: bool,
         class_bases: &HashMap<ModuleName, Vec<ModuleName>>,
     ) {
-        let (promoted, globally_safe_funcs) = promote_fixpoint(module_names, func_safety_by_module);
+        let needed_unqualified = self.unqualified_error_names();
+        let (promoted, globally_safe_funcs) =
+            promote_fixpoint(module_names, func_safety_by_module, needed_unqualified);
         let decorator_scan_cache: DashMap<String, bool, FixedState> = DashMap::default();
         if !promoted.is_empty() || clear_errors {
             // With positive evidence (a promotion or a mutation candidate now
@@ -388,6 +390,27 @@ impl LibraryCache {
             self.clear_errors_where(&resolver, |kind| kind == ErrorKind::UnsafeDecoratorCall);
         }
         debug!("{} functions promoted", promoted.len());
+    }
+
+    /// Collect error names that can use the global unqualified fallback; qualified
+    /// names resolve through module-specific safety maps instead.
+    fn unqualified_error_names(&self) -> AHashSet<String> {
+        self.modules
+            .par_iter()
+            .filter_map(|module| match &module.safety {
+                CachedSafety::Ok(safety) => Some(safety),
+                CachedSafety::AnalysisError { .. } => None,
+            })
+            .fold(AHashSet::new, |mut names, safety| {
+                for error in &safety.errors {
+                    let name = error.metadata.trim_end_matches("()");
+                    if !name.contains('.') && !names.contains(name) {
+                        names.insert(name.to_owned());
+                    }
+                }
+                names
+            })
+            .reduce(AHashSet::new, union_larger)
     }
 
     /// Drop every error whose kind `should_clear` selects and that `resolver`
@@ -875,7 +898,7 @@ impl<'a> SafetyResolver<'a> {
     }
 
     /// Dispatch a cached error to the right verified-safe check by kind. The
-    /// callee `metadata` may render with a trailing `()`; strip it once here.
+    /// callee `metadata` may render with trailing `()` suffixes; strip them here.
     ///
     /// `UnknownFunctionCall` / `UnknownMethodCall` couldn't bind the call target,
     /// so they additionally skip the unqualified fallback: an unbound short name
@@ -1170,56 +1193,15 @@ fn resolve_callee_verdict(
     }
 }
 
-/// Promote every `UnsafeMissingDep` function whose missing-dep callees now all resolve to `Safe`,
-/// iterating to a fixpoint (one promotion can unblock a caller the next round).
-///
-/// Returns the promoted functions as `(module, local-name)` pairs, as well as the
-/// globally-safe-name index.
+/// Promote every `UnsafeMissingDep` function whose missing-dep callees now all
+/// resolve to `Safe`, iterating to a fixpoint (one promotion can unblock a caller
+/// the next round). Returns the promoted `(module, local-name)` pairs and the
+/// demanded-name safe index.
 pub(crate) fn promote_fixpoint(
     module_names: &AHashSet<ModuleName>,
     func_safety_by_module: &mut AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
+    mut needed_unqualified: AHashSet<String>,
 ) -> (Vec<(ModuleName, String)>, AHashSet<String>) {
-    // Globally-safe / -`UnsafeIfImported` function-name indices, for the
-    // unqualified-callee fallback in `resolve_callee_verdict`. Built in parallel
-    // (collect the per-module maps to a Vec first — `HashMap::par_iter` splits
-    // poorly), cloning a name only on first sight.
-    let module_fs: Vec<&AHashMap<String, FunctionSafetyInfo>> = func_safety_by_module
-        .iter()
-        .filter(|(module, _)| module_names.contains(module))
-        .map(|(_, fs)| fs)
-        .collect();
-    let (mut globally_safe_funcs, mut globally_if_imported_funcs): (
-        AHashSet<String>,
-        AHashSet<String>,
-    ) = module_fs
-        .par_iter()
-        .fold(
-            || (AHashSet::new(), AHashSet::new()),
-            |(mut safe, mut if_imported), fs| {
-                for (name, info) in *fs {
-                    match info.verdict {
-                        FunctionSafety::Safe if !safe.contains(name.as_str()) => {
-                            safe.insert(name.clone());
-                        }
-                        FunctionSafety::UnsafeIfImported
-                            if !if_imported.contains(name.as_str()) =>
-                        {
-                            if_imported.insert(name.clone());
-                        }
-                        _ => {}
-                    }
-                }
-                (safe, if_imported)
-            },
-        )
-        .reduce(
-            || (AHashSet::new(), AHashSet::new()),
-            |(safe_a, if_a), (safe_b, if_b)| {
-                (union_larger(safe_a, safe_b), union_larger(if_a, if_b))
-            },
-        );
-    drop(module_fs);
-
     // Collect the promotion guard-passers once — the guard is stable across rounds
     // (promotion only clears the missing-dep bit) — resolving each callee FQN here
     // so the fixpoint never re-splits it.
@@ -1249,6 +1231,58 @@ pub(crate) fn promote_fixpoint(
         })
         .collect();
     let n = candidates.len();
+
+    // Only names referenced by an unqualified callee or a cached error need the
+    // global index; indexing every function name would hash strings that never
+    // affect this reduce.
+    for candidate in &candidates {
+        for callee in &candidate.callees {
+            if let ResolvedCallee::Unqualified { name } = callee
+                && !needed_unqualified.contains(name.as_str())
+            {
+                needed_unqualified.insert(name.clone());
+            }
+        }
+    }
+    let module_fs: Vec<&AHashMap<String, FunctionSafetyInfo>> = func_safety_by_module
+        .iter()
+        .filter(|(module, _)| module_names.contains(module))
+        .map(|(_, fs)| fs)
+        .collect();
+    let (mut globally_safe_funcs, mut globally_if_imported_funcs): (
+        AHashSet<String>,
+        AHashSet<String>,
+    ) = module_fs
+        .par_iter()
+        .fold(
+            || (AHashSet::new(), AHashSet::new()),
+            |(mut safe, mut if_imported), fs| {
+                for (name, info) in *fs {
+                    if !needed_unqualified.contains(name.as_str()) {
+                        continue;
+                    }
+                    match info.verdict {
+                        FunctionSafety::Safe if !safe.contains(name.as_str()) => {
+                            safe.insert(name.clone());
+                        }
+                        FunctionSafety::UnsafeIfImported
+                            if !if_imported.contains(name.as_str()) =>
+                        {
+                            if_imported.insert(name.clone());
+                        }
+                        _ => {}
+                    }
+                }
+                (safe, if_imported)
+            },
+        )
+        .reduce(
+            || (AHashSet::new(), AHashSet::new()),
+            |(safe_a, if_a), (safe_b, if_b)| {
+                (union_larger(safe_a, safe_b), union_larger(if_a, if_b))
+            },
+        );
+    drop(module_fs);
 
     // Reverse index (source symbol -> dependent candidates) so a round re-checks
     // only the previous round's promotions' dependents. A qualified callee is
@@ -1324,11 +1358,13 @@ pub(crate) fn promote_fixpoint(
                 get_function_safety_mut(func_safety_by_module, &cand.module, &cand.name)
             {
                 info.verdict = target;
-                if target.is_safe() {
-                    globally_safe_funcs.insert(cand.name.clone());
-                } else if target == FunctionSafety::UnsafeIfImported {
-                    // Not globally safe; must not seed the safe index.
-                    globally_if_imported_funcs.insert(cand.name.clone());
+                if needed_unqualified.contains(cand.name.as_str()) {
+                    if target.is_safe() {
+                        globally_safe_funcs.insert(cand.name.clone());
+                    } else if target == FunctionSafety::UnsafeIfImported {
+                        // Not globally safe; must not seed the safe index.
+                        globally_if_imported_funcs.insert(cand.name.clone());
+                    }
                 }
                 all_promoted.push((cand.module, cand.name.clone()));
             }

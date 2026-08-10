@@ -1365,7 +1365,8 @@ impl ProjectInfo {
         );
 
         // Promotion fixpoint: a callee promoted to Safe can unblock its callers.
-        let (promoted, _globally_safe_funcs) = promote_fixpoint(&module_names, &mut view);
+        let (promoted, _globally_safe_funcs) =
+            promote_fixpoint(&module_names, &mut view, AHashSet::new());
         changed.extend(promoted);
 
         // Write back only changed verdicts so the module-scope pass reads them.

@@ -1932,6 +1932,83 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_reduce_indexes_unqualified_candidate_name_on_demand() {
+        let mut app = safe_cached_module("app", &[], &[]);
+        app.function_safety = fsmap([unsafe_missing_dep("wrapper", "needed")]);
+        let mut dep = safe_cached_module("dep", &[], &[]);
+        dep.function_safety = fsmap([safe("needed"), safe("unused")]);
+        let mut cache = LibraryCache::empty();
+        cache.modules = vec![app, dep];
+
+        cache.resolve_cross_library_errors();
+
+        assert_eq!(
+            cache.modules[0]
+                .function_safety
+                .get("wrapper")
+                .map(|info| info.verdict),
+            Some(FunctionSafety::Safe),
+        );
+    }
+
+    #[test]
+    fn test_reduce_indexes_unqualified_error_name_on_demand() {
+        let mut app = safe_cached_module("app", &[], &[]);
+        app.safety = CachedSafety::Ok(CachedModuleSafety {
+            errors: vec![CachedError {
+                kind: ErrorKind::UnsafeFunctionCall,
+                metadata: "needed()".to_owned(),
+                parameterized_decorator: false,
+            }],
+            ..Default::default()
+        });
+        app.function_safety = fsmap([unsafe_missing_dep("wrapper", "dep.safe")]);
+        let mut dep = safe_cached_module("dep", &[], &[]);
+        dep.function_safety = fsmap([safe("needed"), safe("safe"), safe("unused")]);
+        let mut cache = LibraryCache::empty();
+        cache.modules = vec![app, dep];
+
+        cache.resolve_cross_library_errors();
+
+        let CachedSafety::Ok(safety) = &cache.modules[0].safety else {
+            panic!("app should have cached module safety");
+        };
+        assert!(safety.errors.is_empty());
+        assert_eq!(
+            cache.modules[0]
+                .function_safety
+                .get("wrapper")
+                .map(|info| info.verdict),
+            Some(FunctionSafety::Safe),
+        );
+    }
+
+    #[test]
+    fn test_reduce_strips_repeated_call_suffixes_from_error_metadata() {
+        let mut app = safe_cached_module("app", &[], &[]);
+        app.safety = CachedSafety::Ok(CachedModuleSafety {
+            errors: vec![CachedError {
+                kind: ErrorKind::UnsafeFunctionCall,
+                metadata: "needed()()".to_owned(),
+                parameterized_decorator: false,
+            }],
+            ..Default::default()
+        });
+        app.function_safety = fsmap([unsafe_missing_dep("wrapper", "dep.safe")]);
+        let mut dep = safe_cached_module("dep", &[], &[]);
+        dep.function_safety = fsmap([safe("needed"), safe("safe")]);
+        let mut cache = LibraryCache::empty();
+        cache.modules = vec![app, dep];
+
+        cache.resolve_cross_library_errors();
+
+        let CachedSafety::Ok(safety) = &cache.modules[0].safety else {
+            panic!("app should have cached module safety");
+        };
+        assert!(safety.errors.is_empty());
+    }
+
     /// Injecting the bundled stubs rebuilds the `typing` <-> `typing_extensions`
     /// cycle, so an implicit `typing` import propagates onto `typing_extensions`.
     /// Without injection that propagation is lost.
