@@ -6,6 +6,7 @@
  */
 
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -298,7 +299,7 @@ impl LibraryCache {
         let exports = &mut self.exports;
         rayon::join(
             || {
-                modules.sort_by_key(|m| m.name);
+                modules.par_sort_by_key(|m| m.name);
                 Self::merge_duplicate_modules(modules);
             },
             // Sort the (already-deduped, much smaller) set for a stable output order.
@@ -335,17 +336,20 @@ impl LibraryCache {
     fn resolve_ambiguous_imports(
         &mut self,
         module_names: &AHashSet<ModuleName>,
-    ) -> HashMap<ModuleName, AHashSet<ModuleName>> {
-        let mut resolved: HashMap<ModuleName, AHashSet<ModuleName>> = HashMap::new();
-        for module in &mut self.modules {
-            for ambiguous in module.ambiguous_imports.drain() {
-                if let Some(target) = resolve_to_known_module(&ambiguous, module_names) {
-                    module.imports.insert(target);
-                    resolved.entry(module.name).or_default().insert(target);
+    ) -> AHashMap<ModuleName, AHashSet<ModuleName>> {
+        self.modules
+            .par_iter_mut()
+            .filter_map(|module| {
+                let mut resolved = AHashSet::new();
+                for ambiguous in module.ambiguous_imports.drain() {
+                    if let Some(target) = resolve_to_known_module(&ambiguous, module_names) {
+                        module.imports.insert(target);
+                        resolved.insert(target);
+                    }
                 }
-            }
-        }
-        resolved
+                (!resolved.is_empty()).then_some((module.name, resolved))
+            })
+            .collect()
     }
 
     /// Iteratively clear false errors: promoting the functions of a module
@@ -1399,15 +1403,30 @@ impl CachedModule {
         self.side_effect_imports.extend(other.side_effect_imports);
         self.safety.merge(other.safety);
         for (name, info) in other.function_safety {
-            self.function_safety
-                .entry(name)
-                .and_modify(|existing| {
-                    existing.merge(info.clone());
-                })
-                .or_insert(info);
+            match self.function_safety.entry(name) {
+                Entry::Occupied(mut entry) => {
+                    entry.get_mut().merge(info);
+                }
+                Entry::Vacant(entry) => {
+                    entry.insert(info);
+                }
+            }
         }
-        // Keep mutation candidates from every duplicate
-        self.mutation_candidates.extend(other.mutation_candidates);
+        let mut seen: AHashSet<&MutationCandidate> = self.mutation_candidates.iter().collect();
+        let keep: Vec<bool> = other
+            .mutation_candidates
+            .iter()
+            .map(|candidate| seen.insert(candidate))
+            .collect();
+        // Release the borrowed candidates before moving the retained values.
+        drop(seen);
+        self.mutation_candidates.extend(
+            other
+                .mutation_candidates
+                .into_iter()
+                .zip(keep)
+                .filter_map(|(candidate, keep)| keep.then_some(candidate)),
+        );
     }
 }
 

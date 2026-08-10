@@ -593,6 +593,44 @@ mod tests {
     }
 
     #[test]
+    fn test_merge_deduplicates_repeated_mutation_candidates() {
+        let candidate = MutationCandidate {
+            callee: mn("dep.configure"),
+            site: MutationCandidateSite::Function { name: mn("f") },
+            arg_offset: 0,
+            imported_args: ImportedArgs::default(),
+        };
+        let distinct_candidate = MutationCandidate {
+            callee: mn("dep.validate"),
+            ..candidate.clone()
+        };
+        let make_cache = |candidates| {
+            let safety_map = SafetyMap::new();
+            let mut safety = ModuleSafety::new();
+            safety.mutation_candidates = candidates;
+            safety_map.insert(mn("dup"), SafetyResult::Ok(safety));
+            LibraryCache::build(
+                &safety_map,
+                &ImportGraph::new(),
+                &Exports::empty(),
+                &SideEffectMap::new(),
+            )
+        };
+
+        let mut cache = make_cache(vec![candidate.clone()]);
+        cache.merge_dep_caches(vec![
+            make_cache(vec![candidate.clone(), distinct_candidate.clone()]),
+            make_cache(vec![candidate.clone()]),
+        ]);
+
+        assert_eq!(cache.modules.len(), 1);
+        let candidates = &cache.modules[0].mutation_candidates;
+        assert_eq!(candidates.len(), 2);
+        assert!(candidates.contains(&candidate));
+        assert!(candidates.contains(&distinct_candidate));
+    }
+
+    #[test]
     fn test_own_build_plus_merge_matches_full_build() {
         let dep_modules: Vec<(&str, &str)> = vec![
             ("safe_module", "def greet(name): return f'Hello, {name}'\n"),
@@ -1484,6 +1522,32 @@ mod tests {
             caller.is_safe(),
             "caller error should be cleared once the ambiguous import feeds into error clearing",
         );
+    }
+
+    #[test]
+    fn test_multiple_ambiguous_imports_resolve_independently() {
+        let dep_cache = build_cache(&TestSources::new(&[
+            ("pkg", ""),
+            ("pkg.one", "def helper(): return 1\n"),
+            ("pkg.two", "def helper(): return 2\n"),
+        ]));
+        let mut own_cache = build_cache(&TestSources::new(&[
+            ("caller_one", "from pkg import one\nx = one.helper()\n"),
+            ("caller_two", "from pkg import two\nx = two.helper()\n"),
+        ]));
+
+        own_cache.merge_dep_caches(vec![dep_cache]);
+        own_cache.resolve_cross_library_errors();
+
+        for (caller_name, imported_name) in [("caller_one", "pkg.one"), ("caller_two", "pkg.two")] {
+            let caller = own_cache
+                .modules
+                .iter()
+                .find(|module| module.name == mn(caller_name))
+                .unwrap();
+            assert!(caller.imports.contains(&mn(imported_name)));
+            assert!(caller.is_safe());
+        }
     }
 
     #[test]

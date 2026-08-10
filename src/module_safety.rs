@@ -174,7 +174,7 @@ impl FunctionSafetyInfo {
 
 /// Where a cross-library mutation candidate occurs, and how the reduce step
 /// applies it when the candidate is confirmed. The two cases are mutually exclusive.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MutationCandidateSite {
     /// A call at module scope. On confirmation, an `ImportedVarArgument` error is added to the
     /// module. Carries the callee as written at the call site for the error metadata (the resolved
@@ -187,7 +187,7 @@ pub enum MutationCandidateSite {
 
 /// A module-scope or in-function call that passes an imported object to a callee
 /// that is unresolved in this library (a cross-library candidate).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MutationCandidate {
     /// Resolved FQN of the callee (e.g. `setup.configure`).
     pub callee: ModuleName,
