@@ -146,6 +146,26 @@ fn graph_edge_sets(graph: &ImportGraph, name: &ModuleName) -> GraphEdgeSets {
     }
 }
 
+/// Resolve `name` against the merged module set and, when it resolves to a module
+/// other than `from`, add it to `imports` as a real edge. Self-edges are skipped
+/// to mirror the whole-program builder's `try_add_edge` (which rejects them), so a
+/// module resolving a missing or ambiguous submodule import to itself never
+/// becomes its own dependency. Returns the resolved target — including a
+/// self-resolution, which callers still record for cross-library error clearing —
+/// or `None` when `name` does not resolve.
+fn resolve_and_add_import_edge(
+    imports: &mut AHashSet<ModuleName>,
+    from: ModuleName,
+    name: &ModuleName,
+    module_names: &AHashSet<ModuleName>,
+) -> Option<ModuleName> {
+    let resolved = resolve_to_known_module(name, module_names)?;
+    if resolved != from {
+        imports.insert(resolved);
+    }
+    Some(resolved)
+}
+
 impl LibraryCache {
     pub fn empty() -> Self {
         LibraryCache {
@@ -342,8 +362,12 @@ impl LibraryCache {
             .filter_map(|module| {
                 let mut resolved = AHashSet::new();
                 for ambiguous in module.ambiguous_imports.drain() {
-                    if let Some(target) = resolve_to_known_module(&ambiguous, module_names) {
-                        module.imports.insert(target);
+                    if let Some(target) = resolve_and_add_import_edge(
+                        &mut module.imports,
+                        module.name,
+                        &ambiguous,
+                        module_names,
+                    ) {
                         resolved.insert(target);
                     }
                 }
@@ -470,11 +494,18 @@ impl LibraryCache {
             }
 
             for missing in module.missing_imports.drain() {
-                if let Some(resolved) = resolve_to_known_module(&missing, &module_names) {
-                    module.imports.insert(resolved);
-                    resolved_modules.insert(resolved);
-                } else {
-                    still_missing.insert(missing);
+                match resolve_and_add_import_edge(
+                    &mut module.imports,
+                    module.name,
+                    &missing,
+                    &module_names,
+                ) {
+                    Some(resolved) => {
+                        resolved_modules.insert(resolved);
+                    }
+                    None => {
+                        still_missing.insert(missing);
+                    }
                 }
             }
 
