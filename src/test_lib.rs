@@ -108,7 +108,11 @@ impl ModuleProvider for StubSources {
         Some(AstResult::Ok(parse_pyi_with_version(
             src,
             *name,
-            false,
+            // A package's relative imports resolve against itself, so this graph
+            // only records `asyncio -> asyncio.locks` when `asyncio/__init__.pyi`
+            // is parsed as one. Without it the submodule is never reached and its
+            // star re-exports go unexpanded.
+            shared_stubs().is_init(name),
             self.python_version,
         )))
     }
@@ -361,7 +365,7 @@ impl ModuleProvider for TestSources {
             return Some(AstResult::Ok(parse_pyi_with_version(
                 src,
                 *name,
-                false,
+                shared_stubs().is_init(name),
                 self.python_version,
             )));
         }

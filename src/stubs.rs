@@ -5,6 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::ffi::OsStr;
 use std::sync::OnceLock;
 
 use pyrefly_python::module_name::ModuleName;
@@ -14,6 +15,8 @@ use starlark_map::small_map::SmallMap;
 use crate::analyzer::AnalyzedModule;
 use crate::builtins::Builtins;
 use crate::effects::EffectKind;
+use crate::hasher::AHashSet;
+use crate::hasher::HashSetExt;
 use crate::stub_analyzer;
 
 /// A lazily initialized map of parsed stubs. Stores the text of the stub files in the `raw` map on
@@ -22,6 +25,10 @@ use crate::stub_analyzer;
 pub struct Stubs {
     raw: SmallMap<ModuleName, String>,
     parsed: SmallMap<ModuleName, OnceLock<AnalyzedModule>>,
+    /// Modules whose stub came from an `__init__.pyi` file, i.e. packages. Needed
+    /// so relative imports (`from .sub import ...`) in package stubs resolve
+    /// against the package itself rather than its parent.
+    init_modules: AHashSet<ModuleName>,
 }
 
 impl Stubs {
@@ -29,19 +36,33 @@ impl Stubs {
         let bundle = lifeguard_stubs::bundled_stubs().unwrap();
         let mut raw = SmallMap::new();
         let mut parsed = SmallMap::new();
+        let mut init_modules = AHashSet::new();
         for (path, val) in bundle {
             let key = ModuleName::from_relative_path(&path).unwrap();
+            if path.file_name() == Some(OsStr::new("__init__.pyi")) {
+                init_modules.insert(key);
+            }
             raw.insert(key, val);
             parsed.insert(key, OnceLock::new());
         }
-        Self { raw, parsed }
+        Self {
+            raw,
+            parsed,
+            init_modules,
+        }
+    }
+
+    /// Whether the stub for `key` is a package (came from an `__init__.pyi` file).
+    pub fn is_init(&self, key: &ModuleName) -> bool {
+        self.init_modules.contains(key)
     }
 
     /// Get the analysis output for a stub module, running the analysis if it hasn't happened yet.
     pub fn get(&self, key: &ModuleName) -> Option<&AnalyzedModule> {
         let raw = self.raw.get(key)?;
         let parsed = self.parsed.get(key)?;
-        let ret = parsed.get_or_init(|| stub_analyzer::analyze_str(*key, raw, self));
+        let is_init = self.is_init(key);
+        let ret = parsed.get_or_init(|| stub_analyzer::analyze_str(*key, raw, is_init, self));
         Some(ret)
     }
 

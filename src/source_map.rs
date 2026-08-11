@@ -235,7 +235,7 @@ fn make_source_info_map(
             *mod_name,
             SourceInfo {
                 source_type: PySourceType::Stub,
-                is_init: false,
+                is_init: stubs.is_init(mod_name),
                 path: None,
             },
         );
