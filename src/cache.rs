@@ -864,22 +864,26 @@ impl<'a> SafetyResolver<'a> {
             .any(|info| info.verdict.is_safe())
     }
 
+    /// `module`'s own verdict for `local`, or `None` when it has no such entry.
+    /// The MRO must only be walked when the class itself does not define the method.
+    fn own_verdict(&self, module: &ModuleName, local: &str) -> Option<FunctionSafety> {
+        Some(self.by_module.get(module)?.get(local)?.verdict)
+    }
+
     /// Whether `module` has an own entry for `local` verified `Safe`.
     fn own_call_safe(&self, module: &ModuleName, local: &str) -> bool {
-        self.by_module
-            .get(module)
-            .is_some_and(|fs| lookup_in_safety_map(local, fs))
+        self.own_verdict(module, local).is_some_and(|v| v.is_safe())
     }
 
     /// Whether a plain function call is found and verified `Safe`.
     fn is_call_verified_safe(&self, func_name: &str) -> bool {
         match self.split_at_module(func_name) {
-            Some((module, local)) => {
-                self.own_call_safe(&module, local)
-                    || self
-                        .mro_method_verdict(&module, local)
-                        .is_some_and(|v| v.is_safe())
-            }
+            Some((module, local)) => match self.own_verdict(&module, local) {
+                Some(verdict) => verdict.is_safe(),
+                None => self
+                    .mro_method_verdict(&module, local)
+                    .is_some_and(|v| v.is_safe()),
+            },
             None => self.unqualified_safe(func_name),
         }
     }
@@ -1211,7 +1215,9 @@ fn resolve_callee_verdict(
     match callee {
         ResolvedCallee::Qualified { module, local } => func_safety_by_module
             .get(module)
-            .and_then(|fs| lookup_verdict_in_safety_map(local, fs)),
+            .and_then(|fs| fs.get(local))
+            .map(|info| info.verdict)
+            .and_then(maybe_non_blocking_verdict),
         ResolvedCallee::Unqualified { name } => {
             if globally_safe.contains(name.as_str()) {
                 Some(FunctionSafety::Safe)
@@ -1423,13 +1429,9 @@ pub(crate) fn promote_fixpoint(
     (all_promoted, globally_safe_funcs)
 }
 
-/// Like `lookup_in_safety_map` but returns the resolved verdict when it is
-/// non-blocking (`Safe` or `UnsafeIfImported`), else `None`.
-fn lookup_verdict_in_safety_map(
-    local_name: &str,
-    fs: &AHashMap<String, FunctionSafetyInfo>,
-) -> Option<FunctionSafety> {
-    match fs.get(local_name)?.verdict {
+/// `verdict` when it is non-blocking (`Safe` or `UnsafeIfImported`), else `None`.
+fn maybe_non_blocking_verdict(verdict: FunctionSafety) -> Option<FunctionSafety> {
+    match verdict {
         v @ (FunctionSafety::Safe | FunctionSafety::UnsafeIfImported) => Some(v),
         _ => None,
     }
@@ -1673,6 +1675,47 @@ mod tests {
         assert!(
             !no_mro.is_call_verified_safe("sub.Sub.method"),
             "without MRO data an inherited method is not verified (no class fallback)",
+        );
+    }
+
+    #[test]
+    fn mro_own_unsafe_override_shadows_safe_base() {
+        let modules: AHashSet<ModuleName> =
+            [ModuleName::from_str("base"), ModuleName::from_str("sub")]
+                .into_iter()
+                .collect();
+        let mut by_module: AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>> =
+            AHashMap::new();
+        by_module.insert(
+            ModuleName::from_str("base"),
+            [(
+                "Base.method".to_owned(),
+                FunctionSafetyInfo::new(FunctionSafety::Safe),
+            )]
+            .into_iter()
+            .collect(),
+        );
+        // `sub.Sub` overrides the inherited `method` with an `Unsafe` one.
+        by_module.insert(
+            ModuleName::from_str("sub"),
+            [(
+                "Sub.method".to_owned(),
+                FunctionSafetyInfo::new(FunctionSafety::Unsafe),
+            )]
+            .into_iter()
+            .collect(),
+        );
+        let class_bases: HashMap<ModuleName, Vec<ModuleName>> = [(
+            ModuleName::from_str("sub.Sub"),
+            vec![ModuleName::from_str("base.Base")],
+        )]
+        .into_iter()
+        .collect();
+
+        let resolver = SafetyResolver::new(&modules, &by_module).with_class_bases(&class_bases);
+        assert!(
+            !resolver.is_call_verified_safe("sub.Sub.method"),
+            "an own Unsafe override shadows the base's Safe verdict; the MRO must not be walked",
         );
     }
 
