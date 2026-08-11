@@ -12,21 +12,6 @@ from .events import *
 from .exceptions import *
 from .futures import *
 from .locks import *
-
-# TODO(T275372839): have collect_re_exports follow star imports for class names
-# so this per-package stub workaround isn't needed. The `from .locks import *`
-# above doesn't register class names for call resolution.
-from .coroutines import (
-    iscoroutine as iscoroutine,
-    iscoroutinefunction as iscoroutinefunction,
-)
-from .locks import (
-    BoundedSemaphore as BoundedSemaphore,
-    Condition as Condition,
-    Event as Event,
-    Lock as Lock,
-    Semaphore as Semaphore,
-)
 from .protocols import *
 from .queues import *
 from .runners import *
