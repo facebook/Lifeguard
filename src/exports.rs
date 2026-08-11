@@ -483,8 +483,7 @@ impl<'a> ExportsBuilder<'a> {
             self.inner.all.insert(self.module_name, all_names);
         }
 
-        // Star re-export expansion is scoped to stub files.
-        if parsed_module.is_stub() && !definitions.import_all.is_empty() {
+        if !definitions.import_all.is_empty() {
             let fallbacks = Self::star_ranges_in_except_handlers(&parsed_module.ast.body);
             let stars: Vec<StarImport> = definitions
                 .import_all
