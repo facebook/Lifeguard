@@ -570,6 +570,9 @@ impl<'a> ImportGraphBuilder<'a> {
         time("  Filtering module re-exports", || {
             merged_exports.filter_module_re_exports(&import_graph)
         });
+        time("  Expanding star re-exports", || {
+            merged_exports.expand_star_re_exports(&import_graph)
+        });
 
         (import_graph, merged_exports)
     }

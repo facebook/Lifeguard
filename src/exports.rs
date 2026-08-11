@@ -14,10 +14,12 @@ use pyrefly_python::module_name::ModuleName;
 use pyrefly_python::symbol_kind::SymbolKind;
 use pyrefly_util::visit::Visit;
 use rayon::prelude::*;
+use ruff_python_ast::ExceptHandler;
 use ruff_python_ast::Expr;
 use ruff_python_ast::Stmt;
 use ruff_python_ast::name::Name;
 use ruff_text_size::TextRange;
+use ruff_text_size::TextSize;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -98,6 +100,25 @@ where
     Some(current)
 }
 
+/// A `from S import *` statement: its source module, its location, and whether it
+/// sits in an `except` handler. Handler stars are `ImportError` fallbacks that only
+/// run when the primary import failed, so they rank below any non-handler star.
+#[derive(Debug, Clone, Copy)]
+struct StarImport {
+    source: ModuleName,
+    range: TextRange,
+    is_fallback: bool,
+}
+
+/// How a name currently bound in a module got there. Ordering is precedence:
+/// a non-fallback star beats a fallback one, and a later star beats an earlier
+/// one, matching Python's sequential rebinding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct StarRank {
+    is_primary: bool,
+    offset: TextSize,
+}
+
 #[derive(Debug)]
 pub struct Exports {
     /// Map of definitions to the name of their containing module.
@@ -109,6 +130,11 @@ pub struct Exports {
     /// Map of fully-qualified function names to their return types (class names).
     /// Populated from stub file function return type annotations.
     return_types: AHashMap<ModuleName, ModuleName>,
+    /// Map of importing module to the modules it star-imports (`from S import *`),
+    /// with the location of each star import and whether it sits in an `except`
+    /// handler. Consumed by `expand_star_re_exports` once all per-module exports
+    /// are merged.
+    star_imports: AHashMap<ModuleName, Vec<StarImport>>,
 }
 
 impl Exports {
@@ -118,6 +144,7 @@ impl Exports {
             re_exports: AHashMap::new(),
             all: AHashMap::new(),
             return_types: AHashMap::new(),
+            star_imports: AHashMap::new(),
         }
     }
 
@@ -126,12 +153,14 @@ impl Exports {
         re_exports: usize,
         all: usize,
         return_types: usize,
+        star_imports: usize,
     ) -> Self {
         Self {
             exports: AHashMap::with_capacity(exports),
             re_exports: AHashMap::with_capacity(re_exports),
             all: AHashMap::with_capacity(all),
             return_types: AHashMap::with_capacity(return_types),
+            star_imports: AHashMap::with_capacity(star_imports),
         }
     }
 
@@ -227,26 +256,30 @@ impl Exports {
         self.re_exports.extend(other.re_exports);
         self.all.extend(other.all);
         self.return_types.extend(other.return_types);
+        self.star_imports.extend(other.star_imports);
     }
 
     /// Merge a collection of per-module Exports into a single Exports.
     pub fn merge_all(all_exports: Vec<Exports>) -> Self {
-        let (total_exports, total_re_exports, total_all, total_return_types) = all_exports
-            .iter()
-            .fold((0, 0, 0, 0), |(e, re, a, rt), exports| {
-                (
-                    e + exports.exports.len(),
-                    re + exports.re_exports.len(),
-                    a + exports.all.len(),
-                    rt + exports.return_types.len(),
-                )
-            });
+        let (total_exports, total_re_exports, total_all, total_return_types, total_star_imports) =
+            all_exports
+                .iter()
+                .fold((0, 0, 0, 0, 0), |(e, re, a, rt, si), exports| {
+                    (
+                        e + exports.exports.len(),
+                        re + exports.re_exports.len(),
+                        a + exports.all.len(),
+                        rt + exports.return_types.len(),
+                        si + exports.star_imports.len(),
+                    )
+                });
 
         let mut result = Self::with_capacity(
             total_exports,
             total_re_exports,
             total_all,
             total_return_types,
+            total_star_imports,
         );
         for exports in all_exports {
             result.merge(exports);
@@ -269,6 +302,109 @@ impl Exports {
             .collect();
         for exported in &to_remove {
             self.re_exports.remove(exported);
+        }
+    }
+
+    pub fn expand_star_re_exports(&mut self, import_graph: &ImportGraph) {
+        if self.star_imports.is_empty() {
+            return;
+        }
+
+        // Deterministic edge list (importer, star), ordered by the star's position
+        // within its module.
+        let mut edges: Vec<(ModuleName, StarImport)> = self
+            .star_imports
+            .iter()
+            .flat_map(|(m, stars)| stars.iter().map(move |star| (*m, *star)))
+            .collect();
+        edges.sort_by(|a, b| {
+            a.0.as_str()
+                .cmp(b.0.as_str())
+                .then_with(|| a.1.range.start().cmp(&b.1.range.start()))
+                .then_with(|| a.1.source.as_str().cmp(b.1.source.as_str()))
+        });
+
+        // Only modules a star import touches need a member index: the source, to
+        // enumerate the names it binds, and the importer, to resolve shadowing.
+        let mut relevant: AHashSet<&str> = AHashSet::new();
+        for (m, star) in &edges {
+            relevant.insert(m.as_str());
+            relevant.insert(star.source.as_str());
+        }
+
+        // Index of each relevant module's member names, seeded from real exports
+        // and explicit re-exports.
+        // The value records what bounded the name: `None` for a non-star binding,
+        // `Some(rank)` for the star that bound it.
+        let mut members: AHashMap<ModuleName, AHashMap<Name, Option<StarRank>>> = AHashMap::new();
+        for name in self.exports.keys() {
+            if !relevant.contains(name.as_str().rsplit_once('.').map_or("", |(m, _)| m)) {
+                continue;
+            }
+            let attr = Attribute::from_module_name(name);
+            members
+                .entry(attr.module)
+                .or_default()
+                .insert(attr.attr, None);
+        }
+        for exported in self.re_exports.keys() {
+            if !relevant.contains(exported.module.as_str()) {
+                continue;
+            }
+            members
+                .entry(exported.module)
+                .or_default()
+                .insert(exported.attr.clone(), None);
+        }
+
+        loop {
+            let mut changed = false;
+            for (m, star) in &edges {
+                let s = &star.source;
+                // Names that `from S import *` binds: S.__all__ if declared, else
+                // every non-underscore member of S.
+                let names: Vec<Name> = match self.all.get(s) {
+                    Some(all) => all.clone(),
+                    None => members
+                        .get(s)
+                        .map(|set| {
+                            set.keys()
+                                .filter(|n| !n.starts_with('_'))
+                                .cloned()
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                };
+                let rank = StarRank {
+                    is_primary: !star.is_fallback,
+                    offset: star.range.start(),
+                };
+                for n in names {
+                    // Star imports bind in execution order, so a later star overwrites
+                    // a name an earlier one bound — except that an `except`-handler
+                    // fallback never displaces a primary star, since only one of the
+                    // two branches runs. A non-star binding always shadows, regardless
+                    // of position — deliberately more conservative than Python, where
+                    // a star overwrites a definition written above it.
+                    match members.get(m).and_then(|set| set.get(&n)) {
+                        Some(None) => continue,
+                        Some(Some(bound)) if *bound >= rank => continue,
+                        _ => {}
+                    }
+                    let imported = Attribute::new(*s, n.as_str());
+                    // Don't re-export a name that resolves to a submodule
+                    if import_graph.contains(&imported.as_module_name()) {
+                        continue;
+                    }
+                    let exported = Attribute::new(*m, n.as_str());
+                    self.re_exports.insert(exported, (imported, star.range));
+                    members.entry(*m).or_default().insert(n, Some(rank));
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
         }
     }
 
@@ -347,11 +483,79 @@ impl<'a> ExportsBuilder<'a> {
             self.inner.all.insert(self.module_name, all_names);
         }
 
+        // Star re-export expansion is scoped to stub files.
+        if parsed_module.is_stub() && !definitions.import_all.is_empty() {
+            let fallbacks = Self::star_ranges_in_except_handlers(&parsed_module.ast.body);
+            let stars: Vec<StarImport> = definitions
+                .import_all
+                .iter()
+                .map(|(module, range)| StarImport {
+                    source: *module,
+                    range: *range,
+                    is_fallback: fallbacks.contains(range),
+                })
+                .collect();
+            self.inner.star_imports.insert(self.module_name, stars);
+        }
+
         if parsed_module.is_stub() {
             self.extract_return_types(&parsed_module.ast.body, &definitions, self.module_name);
         }
 
         self.inner
+    }
+
+    /// Locations of `from S import *` statements sitting in an `except` handler.
+    /// These are `ImportError` fallbacks guarding a primary import, so only one of
+    /// the two ever runs and the fallback must not displace the primary.
+    fn star_ranges_in_except_handlers(body: &[Stmt]) -> AHashSet<TextRange> {
+        fn walk(body: &[Stmt], in_handler: bool, out: &mut AHashSet<TextRange>) {
+            for stmt in body {
+                match stmt {
+                    Stmt::ImportFrom(x) if in_handler => {
+                        for a in &x.names {
+                            if &a.name == "*" {
+                                out.insert(a.name.range);
+                            }
+                        }
+                    }
+                    Stmt::Try(x) => {
+                        walk(&x.body, in_handler, out);
+                        for handler in &x.handlers {
+                            let ExceptHandler::ExceptHandler(h) = handler;
+                            walk(&h.body, true, out);
+                        }
+                        walk(&x.orelse, in_handler, out);
+                        walk(&x.finalbody, in_handler, out);
+                    }
+                    Stmt::If(x) => {
+                        walk(&x.body, in_handler, out);
+                        for clause in &x.elif_else_clauses {
+                            walk(&clause.body, in_handler, out);
+                        }
+                    }
+                    Stmt::With(x) => walk(&x.body, in_handler, out),
+                    Stmt::For(x) => {
+                        walk(&x.body, in_handler, out);
+                        walk(&x.orelse, in_handler, out);
+                    }
+                    Stmt::While(x) => {
+                        walk(&x.body, in_handler, out);
+                        walk(&x.orelse, in_handler, out);
+                    }
+                    Stmt::Match(x) => {
+                        for case in &x.cases {
+                            walk(&case.body, in_handler, out);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let mut out = AHashSet::new();
+        walk(body, false, &mut out);
+        out
     }
 
     fn convert_dunder_all(dunder_all: &[DunderAllEntry]) -> Vec<Name> {
@@ -760,5 +964,217 @@ x = 1
         assert!(exports.is_function(&ModuleName::from_str("test.my_func")));
         assert!(!exports.is_function(&ModuleName::from_str("test.MyClass")));
         assert!(!exports.is_function(&ModuleName::from_str("test.x")));
+    }
+
+    fn make_star_exports(modules: &[(&str, &str)]) -> Exports {
+        use crate::config::AnalysisConfig;
+        use crate::test_lib::TestSources;
+        // Expansion is scoped to stubs, so the star cases are exercised as `.pyi`.
+        let stub_names: Vec<&str> = modules.iter().map(|(name, _)| *name).collect();
+        let sources = TestSources::new_with_stubs(modules, &stub_names);
+        let config = AnalysisConfig::default();
+        ImportGraph::make_with_exports(&sources, &config).1
+    }
+
+    fn attr(module: &str, name: &str) -> super::Attribute {
+        super::Attribute::new(ModuleName::from_str(module), name)
+    }
+
+    #[test]
+    fn test_star_reexport_basic() {
+        // `from b import *` re-exports every public name of b under a.
+        let b = "class C: ...\ndef f(): ...\nx = 1\n";
+        let exports = make_star_exports(&[("a", "from b import *\n"), ("b", b)]);
+        assert_eq!(
+            exports.resolve_imported_name(&attr("a", "C")),
+            Some(attr("b", "C"))
+        );
+        assert!(exports.is_re_export(&attr("a", "f")));
+        assert!(exports.is_re_export(&attr("a", "x")));
+        assert!(exports.is_class(&ModuleName::from_str("a.C")));
+    }
+
+    #[test]
+    fn test_star_reexport_respects_dunder_all() {
+        // `from b import *` binds only b.__all__ when it is declared.
+        let b = "__all__ = [\"C\"]\nclass C: ...\nclass D: ...\n";
+        let exports = make_star_exports(&[("a", "from b import *\n"), ("b", b)]);
+        assert!(exports.is_re_export(&attr("a", "C")));
+        assert!(!exports.is_re_export(&attr("a", "D")));
+    }
+
+    #[test]
+    fn test_star_reexport_skips_private() {
+        // Without __all__, `import *` excludes underscore-prefixed names.
+        let b = "def pub(): ...\ndef _hidden(): ...\n";
+        let exports = make_star_exports(&[("a", "from b import *\n"), ("b", b)]);
+        assert!(exports.is_re_export(&attr("a", "pub")));
+        assert!(!exports.is_re_export(&attr("a", "_hidden")));
+    }
+
+    #[test]
+    fn test_star_reexport_local_shadows() {
+        // A local definition of C in a shadows the star import of b.C.
+        let b = "class C: ...\n";
+        let a = "from b import *\nclass C: ...\n";
+        let exports = make_star_exports(&[("a", a), ("b", b)]);
+        assert!(!exports.is_re_export(&attr("a", "C")));
+        assert!(exports.is_class(&ModuleName::from_str("a.C")));
+    }
+
+    #[test]
+    fn test_star_reexport_chain() {
+        // Chained stars a <- b <- c resolve transitively to the definition in c.
+        let exports = make_star_exports(&[
+            ("a", "from b import *\n"),
+            ("b", "from c import *\n"),
+            ("c", "class Widget: ...\n"),
+        ]);
+        assert_eq!(
+            exports.resolve_transitive(&attr("a", "Widget")),
+            Some(attr("c", "Widget"))
+        );
+        assert!(exports.is_class(&ModuleName::from_str("a.Widget")));
+    }
+
+    #[test]
+    fn test_star_reexport_duplicate_name_last_wins() {
+        // When two star imports in the same module export the same name, the later
+        // star overwrites the earlier binding, as it does at runtime.
+        let exports = make_star_exports(&[
+            ("a", "from b import *\nfrom c import *\n"),
+            ("b", "class X: ...\n"),
+            ("c", "class X: ...\n"),
+        ]);
+        assert!(exports.is_re_export(&attr("a", "X")));
+        assert_eq!(
+            exports.resolve_imported_name(&attr("a", "X")),
+            Some(attr("c", "X"))
+        );
+    }
+
+    #[test]
+    fn test_star_reexport_duplicate_name_resolved_late_still_last_wins() {
+        // c only acquires X on a later fixpoint pass (via its own star). The later
+        // star must still win once the name shows up, not lose to the earlier one
+        // that bound X first.
+        let exports = make_star_exports(&[
+            ("a", "from b import *\nfrom c import *\n"),
+            ("b", "class X: ...\n"),
+            ("c", "from d import *\n"),
+            ("d", "class X: ...\n"),
+        ]);
+        assert_eq!(
+            exports.resolve_imported_name(&attr("a", "X")),
+            Some(attr("c", "X"))
+        );
+        assert_eq!(
+            exports.resolve_transitive(&attr("a", "X")),
+            Some(attr("d", "X"))
+        );
+    }
+
+    #[test]
+    fn test_star_reexport_except_fallback_loses_to_primary() {
+        // `except ImportError: from c import *` guards the primary star in the try
+        // body. Only one branch runs, so the fallback must not win the name despite
+        // sitting later in the file.
+        let a = "try:\n    from b import *\nexcept ImportError:\n    from c import *\n";
+        let exports =
+            make_star_exports(&[("a", a), ("b", "class X: ...\n"), ("c", "class X: ...\n")]);
+        assert_eq!(
+            exports.resolve_imported_name(&attr("a", "X")),
+            Some(attr("b", "X"))
+        );
+    }
+
+    #[test]
+    fn test_star_reexport_except_fallback_binds_names_primary_lacks() {
+        // Deprioritizing a fallback must not silence it: it is still the only
+        // source for names the primary star does not provide.
+        let a = "try:\n    from b import *\nexcept ImportError:\n    from c import *\n";
+        let exports = make_star_exports(&[
+            ("a", a),
+            ("b", "class X: ...\n"),
+            ("c", "class X: ...\nclass Y: ...\n"),
+        ]);
+        assert_eq!(
+            exports.resolve_imported_name(&attr("a", "X")),
+            Some(attr("b", "X"))
+        );
+        assert_eq!(
+            exports.resolve_imported_name(&attr("a", "Y")),
+            Some(attr("c", "Y"))
+        );
+    }
+
+    #[test]
+    fn test_star_reexport_nested_except_fallback_stays_fallback() {
+        // A `try` nested inside an `except` handler is still a fallback: its body only
+        // runs because the primary import failed, so its stars must not displace the
+        // primary despite sitting later in the file.
+        let a = "try:\n    from b import *\nexcept ImportError:\n    try:\n        from c import *\n    except ImportError:\n        from d import *\n";
+        let exports = make_star_exports(&[
+            ("a", a),
+            ("b", "class X: ...\n"),
+            ("c", "class X: ...\n"),
+            ("d", "class X: ...\n"),
+        ]);
+        assert_eq!(
+            exports.resolve_imported_name(&attr("a", "X")),
+            Some(attr("b", "X"))
+        );
+    }
+
+    #[test]
+    fn test_star_reexport_match_arm_in_except_is_fallback() {
+        // `match` is the other block that can wrap a module-level star. One inside an
+        // `except` handler is still a fallback, like any other nesting.
+        let a = "import sys\ntry:\n    from b import *\nexcept ImportError:\n    match sys.version_info:\n        case _:\n            from c import *\n";
+        let exports =
+            make_star_exports(&[("a", a), ("b", "class X: ...\n"), ("c", "class X: ...\n")]);
+        assert_eq!(
+            exports.resolve_imported_name(&attr("a", "X")),
+            Some(attr("b", "X"))
+        );
+    }
+
+    #[test]
+    fn test_star_reexport_multi_star_cycle_terminates() {
+        // Cyclic star imports with several stars per module rebind the same name on
+        // successive passes. Each rebind raises that name's rank, and a module's stars
+        // have distinct ranks, so the fixpoint converges instead of looping.
+        let exports = make_star_exports(&[
+            ("a", "from b import *\nfrom c import *\n"),
+            ("b", "from c import *\nfrom a import *\n"),
+            ("c", "from a import *\nfrom b import *\nclass Z: ...\n"),
+        ]);
+        // Z is defined in c; a real definition is never displaced by a star.
+        assert_eq!(
+            exports.resolve_transitive(&attr("a", "Z")),
+            Some(attr("c", "Z"))
+        );
+        assert_eq!(
+            exports.resolve_transitive(&attr("b", "Z")),
+            Some(attr("c", "Z"))
+        );
+    }
+
+    #[test]
+    fn test_star_reexport_mutual_cycle_terminates() {
+        // Mutually star-importing modules must not loop forever. Each module's
+        // public name flows to the other, and expansion reaches a fixpoint.
+        let exports = make_star_exports(&[
+            ("a", "from b import *\nclass A: ...\n"),
+            ("b", "from a import *\nclass B: ...\n"),
+        ]);
+        assert_eq!(
+            exports.resolve_imported_name(&attr("a", "B")),
+            Some(attr("b", "B"))
+        );
+        assert_eq!(
+            exports.resolve_imported_name(&attr("b", "A")),
+            Some(attr("a", "A"))
+        );
     }
 }
