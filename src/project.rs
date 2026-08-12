@@ -1312,34 +1312,24 @@ impl ProjectInfo {
         // resolution (class-prefix proxy + unqualified fallback + module gating).
         // Keep the full `FunctionSafetyInfo`: mutation-candidate resolution may
         // still consult `mutated_params` when a callee resolves through this view.
-        let mut view: AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>> = state
-            .function_safety
-            .par_iter()
-            .filter_map(|entry| {
-                let fqn = entry.key();
-                fqn.iter_parents().find_map(|(parent, dot_pos)| {
-                    self.analysis_map.contains_key(&parent).then(|| {
-                        (
-                            parent,
-                            fqn.as_str()[dot_pos + 1..].to_owned(),
-                            entry.value().clone(),
-                        )
-                    })
-                })
-            })
-            .fold(
-                AHashMap::<ModuleName, AHashMap<String, FunctionSafetyInfo>>::new,
-                |mut acc, (module, local, info)| {
-                    acc.entry(module).or_default().insert(local, info);
-                    acc
-                },
-            )
-            .reduce(AHashMap::new, |mut a, b| {
-                for (module, inner) in b {
-                    a.entry(module).or_default().extend(inner);
-                }
-                a
+        let by_module: DashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>> =
+            DashMap::with_capacity(self.analysis_map.len());
+        state.function_safety.par_iter().for_each(|entry| {
+            let fqn = entry.key();
+            let resolved = fqn.iter_parents().find_map(|(parent, dot_pos)| {
+                self.analysis_map
+                    .contains_key(&parent)
+                    .then(|| (parent, &fqn.as_str()[dot_pos + 1..]))
             });
+            if let Some((module, local)) = resolved {
+                by_module
+                    .entry(module)
+                    .or_default()
+                    .insert(local.to_owned(), entry.value().clone());
+            }
+        });
+        let mut view: AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>> =
+            by_module.into_iter().collect();
 
         let module_names: AHashSet<ModuleName> = self.analysis_map.keys().copied().collect();
 
@@ -1374,14 +1364,14 @@ impl ProjectInfo {
         changed.extend(promoted);
 
         // Write back only changed verdicts so the module-scope pass reads them.
-        for (module, local) in &changed {
+        changed.par_iter().for_each(|(module, local)| {
             let fqn = ModuleName::from_str(&format!("{}.{}", module.as_str(), local));
             if let Some(mut entry) = state.function_safety.get_mut(&fqn) {
                 if let Some(info) = get_function_safety(&view, module, local) {
                     entry.verdict = info.verdict;
                 }
             }
-        }
+        });
     }
 
     /// Collect calls that pass an imported object to a callee unresolved in this library (a
