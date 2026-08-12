@@ -40,7 +40,7 @@ pub fn run(args: ShowEffectsArgs) -> Result<()> {
     let config = AnalysisConfig::with_python_version(python_version, None);
 
     let sources = TestSources::new(&[("current_module", &source)]);
-    let (import_graph, exports) = ImportGraph::make_with_exports(&sources, &config);
+    let (import_graph, exports, _) = ImportGraph::make_with_exports(&sources, &config);
 
     let typ = module_parser::file_source_type(&path).unwrap();
     let is_init = path

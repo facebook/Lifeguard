@@ -861,7 +861,7 @@ mod tests {
         let ast_result = sources.parse(&mod_name).expect("module not found");
         let parsed_module = ast_result.as_parsed().expect("module failed to parse");
         let (definitions, _classes) = build_definitions_and_classes(parsed_module, &config);
-        let (import_graph, exports) = ImportGraph::make_with_exports(&sources, &config);
+        let (import_graph, exports, _) = ImportGraph::make_with_exports(&sources, &config);
         BindingsTable::new(&definitions, &exports, &import_graph, parsed_module)
     }
 
@@ -872,7 +872,7 @@ mod tests {
         let code = sources.get_code(&mod_name).expect("module not found");
         let parsed_module = parse_pyi(code, mod_name, false);
         let (definitions, _classes) = build_definitions_and_classes(&parsed_module, &config);
-        let (import_graph, exports) = ImportGraph::make_with_exports(&sources, &config);
+        let (import_graph, exports, _) = ImportGraph::make_with_exports(&sources, &config);
         BindingsTable::new(&definitions, &exports, &import_graph, &parsed_module)
     }
 

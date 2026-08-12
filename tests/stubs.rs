@@ -127,13 +127,14 @@ Set.register(MyContainer)
         ];
         let sources = TestSources::new_with_stubs(&modules, &["b"]);
         let config = AnalysisConfig::default();
-        let (import_graph, exports) = ImportGraph::make_with_exports(&sources, &config);
+        let (import_graph, exports, in_scope) = ImportGraph::make_with_exports(&sources, &config);
         let result = project::run_analysis(
             &sources,
             &exports,
             &import_graph,
             &config,
             project::ExecutionMode::WholeProgram,
+            &in_scope,
         );
         assert!(
             result.safety_map.get(&ModuleName::from_str("b")).is_some(),

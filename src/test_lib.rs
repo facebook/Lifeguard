@@ -469,7 +469,7 @@ fn check_output_with_config(
     config: AnalysisConfig,
 ) {
     let sources = TestSources::new(&modules);
-    let (import_graph, exports) = ImportGraph::make_with_exports(&sources, &config);
+    let (import_graph, exports, in_scope) = ImportGraph::make_with_exports(&sources, &config);
 
     let safety_map = match check {
         Check::Errors => {
@@ -479,13 +479,16 @@ fn check_output_with_config(
                 &import_graph,
                 &config,
                 project::ExecutionMode::WholeProgram,
+                &in_scope,
             )
             .safety_map
         }
         _ => SafetyMap::new(),
     };
     let effect_map = match check {
-        Check::Effects => project::analyze_all(&sources, &exports, &import_graph, &config).0,
+        Check::Effects => {
+            project::analyze_all(&sources, &exports, &import_graph, &config, &in_scope).0
+        }
         _ => HashMap::<_, _, ahash::RandomState>::default(),
     };
 
@@ -705,8 +708,8 @@ where
 pub fn analyze_tree(modules: &Vec<(&str, &str)>) -> AnalysisMap {
     let sources = TestSources::new(modules);
     let config = AnalysisConfig::default();
-    let (import_graph, exports) = ImportGraph::make_with_exports(&sources, &config);
-    project::analyze_all(&sources, &exports, &import_graph, &config).0
+    let (import_graph, exports, in_scope) = ImportGraph::make_with_exports(&sources, &config);
+    project::analyze_all(&sources, &exports, &import_graph, &config, &in_scope).0
 }
 
 /// Build the import graph for a set of modules.
@@ -742,13 +745,14 @@ pub fn verbose_test_options() -> Options {
 /// to inject parse errors.
 pub fn run_analysis_on(sources: &TestSources) -> (AnalysisOutput, ImportGraph, Exports) {
     let config = AnalysisConfig::default();
-    let (import_graph, exports) = ImportGraph::make_with_exports(sources, &config);
+    let (import_graph, exports, in_scope) = ImportGraph::make_with_exports(sources, &config);
     let output = project::run_analysis(
         sources,
         &exports,
         &import_graph,
         &config,
         project::ExecutionMode::WholeProgram,
+        &in_scope,
     );
     (output, import_graph, exports)
 }

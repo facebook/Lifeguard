@@ -106,13 +106,13 @@ pub fn run_pipeline(
         Sources::new_with_version(src_map, root_dir.to_path_buf(), options.python_version)
     });
 
-    let (import_graph, exports) = time("Creating import graph and exports", || {
+    let (import_graph, exports, in_scope) = time("Creating import graph and exports", || {
         ImportGraph::make_with_exports(&sources, &config)
     });
     report_memory("After creating import graph and exports");
 
     let output = time("Analyzing AST", || {
-        project::run_analysis(&sources, &exports, &import_graph, &config, mode)
+        project::run_analysis(&sources, &exports, &import_graph, &config, mode, &in_scope)
     });
     report_memory("After analyzing AST");
 

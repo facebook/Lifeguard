@@ -97,13 +97,14 @@ mod tests {
 
     fn build_cache(sources: &TestSources) -> LibraryCache {
         let config = AnalysisConfig::default();
-        let (import_graph, exports) = ImportGraph::make_with_exports(sources, &config);
+        let (import_graph, exports, in_scope) = ImportGraph::make_with_exports(sources, &config);
         let output = project::run_analysis(
             sources,
             &exports,
             &import_graph,
             &config,
             project::ExecutionMode::Incremental,
+            &in_scope,
         );
         LibraryCache::build(
             &output.safety_map,

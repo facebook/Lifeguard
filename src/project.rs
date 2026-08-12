@@ -446,8 +446,10 @@ pub fn run_analysis(
     import_graph: &ImportGraph,
     config: &AnalysisConfig,
     mode: ExecutionMode,
+    in_scope: &AHashSet<ModuleName>,
 ) -> AnalysisOutput {
-    let (analysis_map, parse_errors) = analyze_all(sources, exports, import_graph, config);
+    let (analysis_map, parse_errors) =
+        analyze_all(sources, exports, import_graph, config, in_scope);
     let side_effect_imports = time("  Computing side-effect imports", || {
         compute_side_effect_imports(&analysis_map)
     });
@@ -852,13 +854,14 @@ fn analyze_module(
     (mod_name, output)
 }
 
-/// Analyze all modules and build an analysis map.
-/// Parse errors are collected and returned separately.
+/// Analyze every module in `in_scope` (the modules the import-graph pass parsed)
+/// and build an analysis map. Parse errors are collected and returned separately.
 pub fn analyze_all(
     sources: &impl ModuleProvider,
     exports: &Exports,
     import_graph: &ImportGraph,
     config: &AnalysisConfig,
+    in_scope: &AHashSet<ModuleName>,
 ) -> (AnalysisMap, ParseErrors) {
     let ctx = AnalysisContext {
         exports,
@@ -872,6 +875,7 @@ pub fn analyze_all(
     let mut analysis_map: AnalysisMap = time("  Building analysis map", || {
         sources
             .module_names_par_iter()
+            .filter(|mod_name| in_scope.contains(mod_name))
             .filter_map(|mod_name| {
                 let ast_result = sources.parse(mod_name)?;
                 match ast_result {

@@ -203,11 +203,13 @@ impl ImportGraph {
         ImportGraphBuilder::with_capacity(sources.len(), config).build(sources)
     }
 
-    /// Build an import graph and collect exports in a single pass
+    /// Build an import graph and collect exports in a single pass, and report which
+    /// modules were parsed. Bundled stubs are parsed only when something reaches
+    /// them, so the third value is the set the analysis pass should cover.
     pub fn make_with_exports(
         sources: &impl ModuleProvider,
         config: &AnalysisConfig,
-    ) -> (Self, Exports) {
+    ) -> (Self, Exports, AHashSet<ModuleName>) {
         ImportGraphBuilder::with_capacity(sources.len(), config).build_with_exports(sources)
     }
 
@@ -535,13 +537,60 @@ impl<'a> ImportGraphBuilder<'a> {
         self.add_edges_and_finish(all_imports)
     }
 
-    fn build_with_exports(mut self, sources: &impl ModuleProvider) -> (ImportGraph, Exports) {
+    /// Modules the traversal starts from: everything the source DB provided, plus
+    /// `builtins`, which the analyzers consult for every module without it being
+    /// imported. Bundled stubs are reached only when something imports them.
+    ///
+    /// Drawn from `module_names_iter` so a seed is always a module the provider
+    /// actually provides — `is_stub` may answer for names it does not.
+    fn seed_modules(sources: &impl ModuleProvider) -> Vec<ModuleName> {
+        let builtins = ModuleName::builtins();
+        sources
+            .module_names_iter()
+            .filter(|name| {
+                **name == builtins || !sources.is_stub(name) || sources.overrides_source(name)
+            })
+            .copied()
+            .collect()
+    }
+
+    fn build_with_exports(
+        mut self,
+        sources: &impl ModuleProvider,
+    ) -> (ImportGraph, Exports, AHashSet<ModuleName>) {
         self.add_nodes(sources.module_names_iter());
 
-        let results: Vec<Result<(CollectedImports, Exports), ModuleName>> =
-            time("  Collecting imports and exports", || {
-                sources
-                    .module_names_par_iter()
+        // Every bundled stub stays a graph node, so import classification and
+        // `resolve_missing_to_known` still see the whole name space. Only the stubs
+        // something can actually reach get parsed.
+        //
+        // Reaching a module also reaches its stub submodules, because attribute
+        // access resolves through them without an import edge: `import os` alone
+        // must still resolve `os.path.join`.
+        let mut stub_children: AHashMap<ModuleName, Vec<ModuleName>> = AHashMap::new();
+        for name in sources.module_names_iter() {
+            if sources.is_stub(name)
+                && let Some(parent) = name.parent()
+            {
+                stub_children.entry(parent).or_default().push(*name);
+            }
+        }
+
+        let mut reached: AHashSet<ModuleName> = AHashSet::new();
+        let mut frontier: Vec<ModuleName> = Vec::new();
+        for name in Self::seed_modules(sources) {
+            if reached.insert(name) {
+                frontier.push(name);
+            }
+        }
+
+        let mut successes: Vec<(CollectedImports, Exports)> = Vec::new();
+        let mut unparseable: Vec<ModuleName> = Vec::new();
+
+        time("  Collecting imports and exports", || {
+            while !frontier.is_empty() {
+                let results: Vec<Result<(CollectedImports, Exports), ModuleName>> = frontier
+                    .par_iter()
                     .filter_map(|name| {
                         let ast_result = sources.parse(name)?;
                         if ast_result.as_parsed().is_err() {
@@ -552,15 +601,30 @@ impl<'a> ImportGraphBuilder<'a> {
                         let exports = Exports::new_unfiltered(module, &self.config.sys_info);
                         Some(Ok((imports, exports)))
                     })
-                    .collect()
-            });
+                    .collect();
 
-        let mut successes = Vec::new();
-        for result in results {
-            match result {
-                Ok(pair) => successes.push(pair),
-                Err(name) => self.graph.remove_node(&name),
+                frontier.clear();
+                for result in results {
+                    match result {
+                        Ok((imports, exports)) => {
+                            let children = stub_children.get(&imports.module);
+                            for imported in
+                                imports.imports.iter().chain(children.into_iter().flatten())
+                            {
+                                if self.graph.contains(imported) && reached.insert(*imported) {
+                                    frontier.push(*imported);
+                                }
+                            }
+                            successes.push((imports, exports));
+                        }
+                        Err(name) => unparseable.push(name),
+                    }
+                }
             }
+        });
+
+        for name in unparseable {
+            self.graph.remove_node(&name);
         }
 
         let (all_imports, all_exports): (Vec<_>, Vec<_>) = successes.into_iter().unzip();
@@ -574,6 +638,6 @@ impl<'a> ImportGraphBuilder<'a> {
             merged_exports.expand_star_re_exports(&import_graph)
         });
 
-        (import_graph, merged_exports)
+        (import_graph, merged_exports, reached)
     }
 }
