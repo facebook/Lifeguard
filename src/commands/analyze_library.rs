@@ -77,6 +77,34 @@ fn detect_root_dir(src_map: &SourceMap) -> Result<PathBuf> {
     }
 }
 
+/// Modules per worker thread. Below this, rayon splits the work so finely that
+/// scheduling costs more than it saves.
+const MODULES_PER_THREAD: usize = 64;
+
+/// Cap the rayon pool to the size of this action's workload.
+///
+/// One `analyze-library` action analyzes its own sources plus the bundled stubs
+/// they reach — usually a few hundred modules. On a many-core host rayon's default
+/// pool turns that into a swarm of tiny tasks: measured on a one-module library,
+/// going from 8 to 72 threads left wall time unchanged while CPU grew ~8x. Thousands
+/// of these actions share a machine, so that CPU is contention, not speed, is the main issue.
+fn size_rayon_pool(source_count: usize) {
+    let available = std::thread::available_parallelism().map_or(1, |n| n.get());
+    // Reached stubs dominate the workload for a small library, so a library with
+    // almost no sources of its own still deserves more than one thread.
+    let modules = source_count + REACHED_STUB_ESTIMATE;
+    let threads = (modules / MODULES_PER_THREAD).clamp(1, available);
+    if let Err(e) = rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build_global()
+    {
+        warn!("could not size the rayon pool to {threads} threads: {e}");
+    }
+}
+
+/// Rough count of bundled stubs a library pulls in; see `build_with_exports`.
+const REACHED_STUB_ESTIMATE: usize = 200;
+
 pub fn run(args: AnalyzeLibraryArgs) -> Result<()> {
     let timer = ProcessTimer::new();
 
@@ -89,8 +117,13 @@ pub fn run(args: AnalyzeLibraryArgs) -> Result<()> {
 
     info!("Loading source db from {}", args.db_path.display());
 
-    let src_map = time("Loading source db", || {
-        source_map::load_source_map(&args.db_path)
+    let src_map = time("Loading source db", || -> Result<SourceMap> {
+        // Sized before the first parallel iterator, so parsing stays serial here.
+        let raw = source_map::load_raw_source_map(&args.db_path)?;
+        size_rayon_pool(raw.len());
+        Ok(time("  Resolving source map", || {
+            source_map::resolve_source_map(raw)
+        }))
     })?;
 
     let python_version = parse_python_version(&args.python_version)?;

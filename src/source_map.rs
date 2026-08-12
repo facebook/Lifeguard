@@ -99,8 +99,14 @@ pub fn is_valid_python_identifier(name: &str) -> bool {
 }
 
 pub fn load_source_map<P: AsRef<Path>>(db_path: P) -> Result<SourceMap> {
-    let raw = time("  Parsing source map", || parse_source_map(db_path))?;
+    let raw = load_raw_source_map(db_path)?;
     Ok(time("  Resolving source map", || resolve_source_map(raw)))
+}
+
+/// Parse the source DB without resolving it. Split out so a caller can size the
+/// rayon pool from the entry count before any parallel work starts.
+pub(crate) fn load_raw_source_map<P: AsRef<Path>>(db_path: P) -> Result<RawSourceMap> {
+    time("  Parsing source map", || parse_source_map(db_path))
 }
 
 /// Parse a source DB JSON file. Supports three formats:
