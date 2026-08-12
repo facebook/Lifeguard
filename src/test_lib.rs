@@ -45,6 +45,7 @@ use crate::pyrefly::sys_info::PythonVersion;
 use crate::runner::Options;
 use crate::source_map::AstResult;
 use crate::source_map::ModuleProvider;
+use crate::source_map::bundled_stub_sources;
 use crate::stubs::Stubs;
 use crate::traits::AsStr;
 use crate::traits::ModuleExt;
@@ -83,53 +84,6 @@ pub fn shared_stubs() -> &'static Stubs {
     STUBS.get_or_init(Stubs::new)
 }
 
-/// A [`ModuleProvider`] over the bundled stubs alone, used to precompute the
-/// stub import graph.
-struct StubSources {
-    names: Vec<ModuleName>,
-    python_version: PythonVersion,
-}
-
-impl ModuleProvider for StubSources {
-    fn module_names_iter(&self) -> impl Iterator<Item = &ModuleName> {
-        self.names.iter()
-    }
-
-    fn module_names_par_iter(&self) -> impl ParallelIterator<Item = &ModuleName> {
-        self.names.par_iter()
-    }
-
-    fn len(&self) -> usize {
-        self.names.len()
-    }
-
-    fn parse(&self, name: &ModuleName) -> Option<AstResult> {
-        let src = shared_stubs().get_raw_source(name)?;
-        Some(AstResult::Ok(parse_pyi_with_version(
-            src,
-            *name,
-            // A package's relative imports resolve against itself, so this graph
-            // only records `asyncio -> asyncio.locks` when `asyncio/__init__.pyi`
-            // is parsed as one. Without it the submodule is never reached and its
-            // star re-exports go unexpanded.
-            shared_stubs().is_init(name),
-            self.python_version,
-        )))
-    }
-
-    fn is_stub(&self, _name: &ModuleName) -> bool {
-        true
-    }
-
-    fn overrides_source(&self, _name: &ModuleName) -> bool {
-        false
-    }
-
-    fn stubs(&self) -> &Stubs {
-        shared_stubs()
-    }
-}
-
 /// The import graph over the bundled stubs, built once per Python version.
 ///
 /// Keyed on the version because stubs guard imports on `sys.version_info`, so
@@ -154,15 +108,8 @@ fn stub_import_graph(python_version: PythonVersion) -> Arc<ImportGraph> {
     // Threads racing for the same version block here rather than each building
     // a graph and discarding all but one.
     cell.get_or_init(|| {
-        let sources = StubSources {
-            names: shared_stubs()
-                .raw_sources_iter()
-                .map(|(name, _)| *name)
-                .collect(),
-            python_version,
-        };
         Arc::new(ImportGraph::make(
-            &sources,
+            &bundled_stub_sources(python_version),
             &AnalysisConfig::with_python_version(python_version, None),
         ))
     })

@@ -304,6 +304,13 @@ impl Sources {
     }
 }
 
+/// A [`Sources`] over the bundled stubs alone. With no source DB every module
+/// in it is a bundled stub, which is what a caller that wants the stub-only
+/// import graph is after.
+pub(crate) fn bundled_stub_sources(python_version: PythonVersion) -> Sources {
+    Sources::new_with_version(SourceMap::default(), PathBuf::new(), python_version)
+}
+
 impl ModuleProvider for Sources {
     fn module_names_iter(&self) -> impl Iterator<Item = &ModuleName> {
         self.info_map.keys()

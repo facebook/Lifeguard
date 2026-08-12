@@ -8,7 +8,6 @@
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::path::Path;
-use std::path::PathBuf;
 
 use dashmap::DashMap;
 use pyrefly_python::module_name::ModuleName;
@@ -39,8 +38,7 @@ use crate::mro::c3_linearize;
 use crate::project::SafetyMap;
 use crate::project::SideEffectMap;
 use crate::pyrefly::sys_info::PythonVersion;
-use crate::source_map::SourceMap;
-use crate::source_map::Sources;
+use crate::source_map::bundled_stub_sources;
 use crate::traits::ModuleNameExt;
 
 /// Cached analysis results for a single Python library.
@@ -673,8 +671,7 @@ impl LibraryCache {
         &mut self,
         python_version: PythonVersion,
     ) -> AHashSet<ModuleName> {
-        let sources =
-            Sources::new_with_version(SourceMap::default(), PathBuf::new(), python_version);
+        let sources = bundled_stub_sources(python_version);
         let config = AnalysisConfig::with_python_version(python_version, None);
         let graph = ImportGraph::make(&sources, &config);
 
