@@ -15,6 +15,7 @@ use starlark_map::small_map::SmallMap;
 use crate::analyzer::AnalyzedModule;
 use crate::builtins::Builtins;
 use crate::effects::EffectKind;
+use crate::hasher::AHashMap;
 use crate::hasher::AHashSet;
 use crate::hasher::HashSetExt;
 use crate::stub_analyzer;
@@ -29,6 +30,9 @@ pub struct Stubs {
     /// so relative imports (`from .sub import ...`) in package stubs resolve
     /// against the package itself rather than its parent.
     init_modules: AHashSet<ModuleName>,
+    /// Memoizes `is_method_safe_in_builtins`, whose scan covers every builtin
+    /// function scope and returns the same answer at every call site.
+    safe_builtin_methods: OnceLock<AHashMap<Name, bool>>,
 }
 
 impl Stubs {
@@ -49,6 +53,7 @@ impl Stubs {
             raw,
             parsed,
             init_modules,
+            safe_builtin_methods: OnceLock::new(),
         }
     }
 
@@ -90,22 +95,43 @@ impl Stubs {
     /// effects table during stub analysis, so we check the definitions table
     /// to find all builtin methods and then verify none of them are mutating.
     pub fn is_method_safe_in_builtins(&self, method_name: &Name) -> bool {
-        let Some(builtins) = self.get(&ModuleName::builtins()) else {
-            return false;
-        };
-        let suffix = format!(".{}", method_name.as_str());
-        let mut found = false;
-        for func in builtins.definitions.function_scopes() {
-            if func.as_str().ends_with(&suffix) {
-                found = true;
-                if let Some(effects) = builtins.module_effects.effects.get(func) {
-                    if effects.iter().any(|e| e.kind == EffectKind::Mutation) {
-                        return false;
-                    }
-                }
+        let safe = match self.safe_builtin_methods.get() {
+            Some(safe) => safe,
+            None => {
+                // Resolved before entering `get_or_init`, not inside it. `get`
+                // runs the stub analysis, which is handed `self`; a stub that
+                // asked this same question mid-analysis can re-enter the
+                // `OnceLock`, and re-entrant initialization deadlocks.
+                let builtins = self.get(&ModuleName::builtins());
+                self.safe_builtin_methods
+                    .get_or_init(|| Self::build_safe_builtin_methods(builtins))
             }
+        };
+        safe.get(method_name).copied().unwrap_or(false)
+    }
+
+    /// Method name -> whether every builtin definition of it is non-mutating.
+    /// Absent means no builtin type defines the name.
+    fn build_safe_builtin_methods(builtins: Option<&AnalyzedModule>) -> AHashMap<Name, bool> {
+        let mut safe = AHashMap::default();
+        let Some(builtins) = builtins else {
+            return safe;
+        };
+        for func in builtins.definitions.function_scopes() {
+            // Last component of a qualified scope. Usually a method
+            // (`builtins.list.append`), but module-level and nested functions
+            // (`builtins.print`) reach here too and are treated the same way.
+            let Some((_, method)) = func.as_str().rsplit_once('.') else {
+                continue;
+            };
+            let mutates = builtins
+                .module_effects
+                .effects
+                .get(func)
+                .is_some_and(|effects| effects.iter().any(|e| e.kind == EffectKind::Mutation));
+            *safe.entry(Name::new(method)).or_insert(true) &= !mutates;
         }
-        found
+        safe
     }
 }
 
