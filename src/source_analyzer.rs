@@ -127,30 +127,6 @@ fn mark_called_imports(output: &mut ModuleEffects) {
     }
 }
 
-fn get_qualified_import(res: &ResolvedName, attribute_module: &ModuleName) -> Option<ModuleName> {
-    let full_module = match &res.definition.style {
-        DefinitionStyle::ImportModule(_) => *attribute_module,
-        DefinitionStyle::Import(parent) | DefinitionStyle::ImportAsEq(parent) => {
-            // For `from parent import name`, prepend parent to get full path
-            parent.concat(attribute_module)
-        }
-        DefinitionStyle::ImportAs(parent, orig_name) => {
-            // For `from parent import orig_name as alias`, replace alias with orig_name
-            // attribute_module starts with alias (res.name), replace with parent.orig_name
-            let rest = attribute_module
-                .as_str()
-                .strip_prefix(res.name.as_str())
-                .and_then(|s| s.strip_prefix('.'));
-            match rest {
-                Some(r) => parent.append(orig_name).append_str(r),
-                None => parent.append(orig_name),
-            }
-        }
-        _ => return None,
-    };
-    Some(full_module)
-}
-
 fn is_builtin_literal(expr: &Expr) -> bool {
     matches!(
         expr,
@@ -341,7 +317,7 @@ impl<'a> SourceAnalyzer<'a> {
         if res.is_import() {
             for attr_key in [Some(attr), None] {
                 let attribute_module = get_import_chain_string(obj, attr_key, &res.name);
-                if let Some(full_module) = get_qualified_import(&res, &attribute_module) {
+                if let Some(full_module) = res.qualify_import_access(&attribute_module) {
                     if self.import_graph.contains(&full_module) {
                         return Some(full_module);
                     }
@@ -880,18 +856,11 @@ impl<'a> SourceAnalyzer<'a> {
             let attribute_module = get_import_chain_string(obj, Some(attr), &res.name);
 
             // Compute the full module path and add to called imports if it differs from base
-            if let Some(full_module) = get_qualified_import(&res, &attribute_module) {
+            if let Some(full_module) = res.qualify_import_access(&attribute_module) {
                 // Only the import styles admitted by `is_import()` reach here; an
                 // unrecognized style falls back to `None`, conservatively treating
                 // the access as a distinct called import.
-                let imported_module = match &res.definition.style {
-                    DefinitionStyle::ImportModule(m) => Some(*m),
-                    DefinitionStyle::Import(parent) | DefinitionStyle::ImportAsEq(parent) => {
-                        Some(parent.append(&res.name))
-                    }
-                    DefinitionStyle::ImportAs(parent, orig_name) => Some(parent.append(orig_name)),
-                    _ => None,
-                };
+                let imported_module = res.imported_target();
 
                 if imported_module != Some(full_module) {
                     output.add_called_import(full_module, &self.cursor.scope());
@@ -1014,16 +983,8 @@ impl<'a> SourceAnalyzer<'a> {
         }
 
         let scope = self.cursor.scope();
-        match &res.definition.style {
-            DefinitionStyle::ImportModule(module) => {
-                output.add_called_import(*module, &scope);
-            }
-            DefinitionStyle::Import(parent)
-            | DefinitionStyle::ImportAsEq(parent)
-            | DefinitionStyle::ImportAs(parent, _) => {
-                output.add_called_import(*parent, &scope);
-            }
-            _ => {}
+        if let Some(module) = res.import_parent() {
+            output.add_called_import(module, &scope);
         }
     }
 

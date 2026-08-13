@@ -173,6 +173,50 @@ impl<'a> ResolvedName<'a> {
         self.definition.is_import()
     }
 
+    /// The module bound by this import definition.
+    pub fn imported_target(&self) -> Option<ModuleName> {
+        match &self.definition.style {
+            DefinitionStyle::ImportModule(module) => Some(*module),
+            DefinitionStyle::Import(parent) | DefinitionStyle::ImportAsEq(parent) => {
+                Some(parent.append(&self.name))
+            }
+            DefinitionStyle::ImportAs(parent, original_name) => Some(parent.append(original_name)),
+            _ => None,
+        }
+    }
+
+    /// The module whose execution is required when the bound import name is accessed.
+    pub fn import_parent(&self) -> Option<ModuleName> {
+        match &self.definition.style {
+            DefinitionStyle::ImportModule(module) => Some(*module),
+            DefinitionStyle::Import(parent)
+            | DefinitionStyle::ImportAsEq(parent)
+            | DefinitionStyle::ImportAs(parent, _) => Some(*parent),
+            _ => None,
+        }
+    }
+
+    /// Resolve an attribute chain rooted at this import to its original module path.
+    pub fn qualify_import_access(&self, access: &ModuleName) -> Option<ModuleName> {
+        match &self.definition.style {
+            DefinitionStyle::ImportModule(_) => Some(*access),
+            DefinitionStyle::Import(parent) | DefinitionStyle::ImportAsEq(parent) => {
+                Some(parent.concat(access))
+            }
+            DefinitionStyle::ImportAs(parent, original_name) => {
+                let suffix = access
+                    .as_str()
+                    .strip_prefix(self.name.as_str())
+                    .and_then(|rest| rest.strip_prefix('.'));
+                Some(match suffix {
+                    Some(suffix) => parent.append(original_name).append_str(suffix),
+                    None => parent.append(original_name),
+                })
+            }
+            _ => None,
+        }
+    }
+
     fn scope_prefix(&self) -> ModuleName {
         match self.definition.get_imported_module_name() {
             Some(mod_name) => mod_name,
