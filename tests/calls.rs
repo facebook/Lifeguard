@@ -427,6 +427,22 @@ eval("exec('import os')") # E: exec-call
     }
 
     #[test]
+    fn test_imported_class_alias_preserves_qualified_call() {
+        let code1 = r#"
+            class C:
+                @classmethod
+                def f(cls) -> None:
+                    input()
+        "#;
+        let code2 = r#"
+            from m1 import C
+            Alias = C
+            Alias.f() # E: unsafe-method-call
+        "#;
+        check_all(vec![("m1", code1), ("m2", code2)])
+    }
+
+    #[test]
     fn test_function_from_subscript() {
         let code = r#"
 import foo

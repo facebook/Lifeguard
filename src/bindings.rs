@@ -95,6 +95,12 @@ impl Alias {
 type Bindings = AHashMap<Name, Value>;
 type Aliases = AHashMap<Name, Alias>;
 
+pub(crate) enum QualifiedGlobalAlias<'a> {
+    NoAlias,
+    UnusableAlias,
+    Resolved(&'a Value, ModuleName, bool),
+}
+
 /// Look up a name in a nested scope map.
 fn get_nested<'a, V>(
     map: &'a AHashMap<ModuleName, AHashMap<Name, V>>,
@@ -175,6 +181,17 @@ impl BindingsTable {
         self.alias_table.resolve(scope, name)
     }
 
+    /// Resolve the base of a non-empty dotted expression through its terminal global alias.
+    /// Distinguishes an absent alias from a present alias that cannot produce a qualified name.
+    pub(crate) fn resolve_qualified_global_alias<'a>(
+        &'a self,
+        resolved: &ResolvedName,
+        expression_name: &ModuleName,
+    ) -> QualifiedGlobalAlias<'a> {
+        self.alias_table
+            .resolve_qualified_global_alias(resolved, expression_name)
+    }
+
     // Useful for testing
     pub fn lookup_str(&self, scope: &str, name: &str) -> Option<&Value> {
         self.lookup(&ModuleName::from_str(scope), &Name::new(name))
@@ -232,6 +249,30 @@ impl AliasTable {
     /// Follow a chain of local aliases to its terminal binding.
     pub fn resolve(&self, scope: &ModuleName, name: &Name) -> Option<&Alias> {
         resolve_alias(&self.aliases, scope, name)
+    }
+
+    fn resolve_qualified_global_alias<'a>(
+        &'a self,
+        resolved: &ResolvedName,
+        expression_name: &ModuleName,
+    ) -> QualifiedGlobalAlias<'a> {
+        if self.lookup_alias(&resolved.scope, &resolved.name).is_none() {
+            return QualifiedGlobalAlias::NoAlias;
+        }
+        let Some(Alias::Global(value)) = self.resolve(&resolved.scope, &resolved.name) else {
+            return QualifiedGlobalAlias::UnusableAlias;
+        };
+        let Some(target) = value.as_module_name() else {
+            return QualifiedGlobalAlias::UnusableAlias;
+        };
+        let parts = expression_name.components();
+        if parts.first() != Some(&resolved.name) {
+            return QualifiedGlobalAlias::UnusableAlias;
+        }
+        let has_suffix = parts.len() > 1;
+        let mut qualified = target.components();
+        qualified.extend_from_slice(&parts[1..]);
+        QualifiedGlobalAlias::Resolved(value, ModuleName::from_parts(qualified), has_suffix)
     }
 }
 
@@ -537,34 +578,22 @@ impl<'a, 'b> BindingsTableBuilder<'a, 'b> {
     fn resolve_to_class(&self, expr: &Expr) -> Option<ModuleName> {
         let res = self.resolve_expr(expr)?;
         let expr_name = res.expr_full_name?;
-        if let Some(alias) = self.aliases.resolve(&res.scope, &res.name) {
-            // We have resolved `res.name`, which is the base name of `expr`, i.e. if expr is
-            // `foo.bar.baz` we have only resolved `foo`, so we need to be careful that we take the
-            // rest of the name into account
-            let parts = expr_name.components();
-            match alias {
-                Alias::Global(Value::Class(c)) if parts.len() == 1 => {
-                    // We have an undotted name that aliases a class; return the class
-                    return Some(*c);
-                }
-                Alias::Global(Value::Module(m)) => {
-                    // The prefix of `expr_name` is an aliased module; replace it with the actual
-                    // module name and then see if the new qualified name is a class
-                    let mut new = m.components();
-                    new.extend_from_slice(&parts[1..]);
-                    let name = ModuleName::from_parts(new);
-                    if self.exports.is_class(&name) {
-                        return Some(name);
-                    }
-                }
+        match self
+            .aliases
+            .resolve_qualified_global_alias(&res, &expr_name)
+        {
+            QualifiedGlobalAlias::Resolved(value, qualified, has_suffix) => match value {
+                Value::Class(class) if !has_suffix => return Some(*class),
+                Value::Module(_) if self.exports.is_class(&qualified) => return Some(qualified),
                 _ => {}
+            },
+            QualifiedGlobalAlias::NoAlias => {
+                let name = res.qualified_name();
+                if self.exports.is_class(&name) {
+                    return Some(name);
+                }
             }
-        } else {
-            // This is not an aliased name, look it up directly
-            let name = res.qualified_name();
-            if self.exports.is_class(&name) {
-                return Some(name);
-            }
+            QualifiedGlobalAlias::UnusableAlias => {}
         }
         // We have not matched the expression to a class
         None
@@ -582,20 +611,17 @@ impl<'a, 'b> BindingsTableBuilder<'a, 'b> {
         let res = self.resolve_expr(func)?;
         let expr_name = res.expr_full_name?;
 
-        let fqn = if let Some(alias) = self.aliases.resolve(&res.scope, &res.name) {
-            let parts = expr_name.components();
-            match alias {
-                Alias::Global(Value::Function(f)) if parts.len() == 1 => *f,
-                Alias::Global(Value::Module(m)) => {
-                    let mut new = m.components();
-                    new.extend_from_slice(&parts[1..]);
-                    ModuleName::from_parts(new)
-                }
-                Alias::Global(Value::Variable(v)) if parts.len() == 1 => *v,
+        let fqn = match self
+            .aliases
+            .resolve_qualified_global_alias(&res, &expr_name)
+        {
+            QualifiedGlobalAlias::Resolved(value, qualified, has_suffix) => match value {
+                Value::Function(_) | Value::Variable(_) if !has_suffix => qualified,
+                Value::Module(_) => qualified,
                 _ => return None,
-            }
-        } else {
-            res.qualified_name()
+            },
+            QualifiedGlobalAlias::NoAlias => res.qualified_name(),
+            QualifiedGlobalAlias::UnusableAlias => return None,
         };
 
         if let Some(rt) = self.exports.get_return_type(&fqn) {
@@ -831,10 +857,15 @@ fn get_numeric_type(n: &ExprNumberLiteral) -> ModuleName {
 #[cfg(test)]
 mod tests {
 
+    use ruff_text_size::TextRange;
+
     use super::*;
     use crate::config::AnalysisConfig;
     use crate::module_info::build_definitions_and_classes;
     use crate::module_parser::parse_pyi;
+    use crate::pyrefly::definitions::Definition;
+    use crate::pyrefly::definitions::DefinitionStyle;
+    use crate::pyrefly::definitions::Definitions;
     use crate::source_map::ModuleProvider;
     use crate::test_lib::*;
 
@@ -906,6 +937,52 @@ mod tests {
             "foo.bar",
             Alias::Global(Value::Function(ModuleName::from_str("foo.bar"))).as_str()
         );
+    }
+
+    #[test]
+    fn test_qualified_global_alias_distinguishes_unusable_aliases() {
+        let scope = ModuleName::from_str("test");
+        let name = Name::new("alias");
+        let definition = Definition {
+            style: DefinitionStyle::ImplicitGlobal,
+            range: TextRange::default(),
+            needs_anywhere: false,
+            docstring_range: None,
+        };
+        let definitions = Definitions::default();
+        let resolved = ResolvedName {
+            name: name.clone(),
+            definition: &definition,
+            scope,
+            scope_definitions: &definitions,
+            expr_full_name: None,
+        };
+
+        let table = |alias| AliasTable {
+            aliases: AHashMap::from_iter([(scope, AHashMap::from_iter([(name.clone(), alias)]))]),
+        };
+        assert!(matches!(
+            AliasTable {
+                aliases: AHashMap::new()
+            }
+            .resolve_qualified_global_alias(&resolved, &ModuleName::from_str("alias.attr")),
+            QualifiedGlobalAlias::NoAlias
+        ));
+        assert!(matches!(
+            table(Alias::Local(scope, Name::new("other")))
+                .resolve_qualified_global_alias(&resolved, &ModuleName::from_str("alias.attr")),
+            QualifiedGlobalAlias::UnusableAlias
+        ));
+        assert!(matches!(
+            table(Alias::Global(Value::Unknown))
+                .resolve_qualified_global_alias(&resolved, &ModuleName::from_str("alias.attr")),
+            QualifiedGlobalAlias::UnusableAlias
+        ));
+        assert!(matches!(
+            table(Alias::Global(Value::Module(ModuleName::from_str("target"))))
+                .resolve_qualified_global_alias(&resolved, &ModuleName::from_str("other.attr")),
+            QualifiedGlobalAlias::UnusableAlias
+        ));
     }
 
     #[test]

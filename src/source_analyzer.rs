@@ -44,6 +44,7 @@ use tracing::trace;
 use crate::analyzer::AnalyzedModule;
 use crate::analyzer::Analyzer;
 use crate::bindings::Alias;
+use crate::bindings::QualifiedGlobalAlias;
 use crate::bindings::Value;
 use crate::class::FieldKind;
 use crate::config::AnalysisConfig;
@@ -530,20 +531,14 @@ impl<'a> SourceAnalyzer<'a> {
         // module-qualified Global yields a valid substitution: a Local terminal
         // (broken chain, cycle, or depth bound in resolve) carries a local
         // variable name, which would produce a bogus module name here.
-        let alias = match self.info.bindings.resolve(&res.scope, &res.name) {
-            Some(Alias::Global(value)) => value.as_module_name().map(|m| m.as_str()).unwrap_or(""),
-            _ => return None,
-        };
-        if alias.is_empty() {
-            return None;
+        match self
+            .info
+            .bindings
+            .resolve_qualified_global_alias(res, call_name)
+        {
+            QualifiedGlobalAlias::Resolved(_, qualified, _) => Some(qualified),
+            QualifiedGlobalAlias::NoAlias | QualifiedGlobalAlias::UnusableAlias => None,
         }
-        // Only replace the base name at the start of the call_name
-        let call_name_str = call_name.as_str();
-        let base_name_str = res.name.as_str();
-
-        call_name_str
-            .starts_with(base_name_str)
-            .then(|| ModuleName::from_str(&call_name_str.replacen(base_name_str, alias, 1)))
     }
 
     fn get_method_definition_source_name(
