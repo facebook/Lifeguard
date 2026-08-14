@@ -27,7 +27,7 @@ use crate::hasher::AHashMap;
 use crate::hasher::AHashSet;
 use crate::hasher::HashMapExt;
 use crate::hasher::HashSetExt;
-use crate::source_map::AstResult;
+use crate::module_parser::ParsedModule;
 use crate::source_map::ModuleProvider;
 use crate::tracing::time;
 use crate::traits::ModuleNameExt;
@@ -468,19 +468,20 @@ impl<'a> ImportGraphBuilder<'a> {
         });
     }
 
-    fn collect_imports(
-        &self,
-        name: ModuleName,
-        ast_result: &AstResult,
-    ) -> Option<CollectedImports> {
-        let module = ast_result.as_parsed().ok()?;
+    fn collect_imports(&self, name: ModuleName, module: &ParsedModule) -> CollectedImports {
         let collector = ModuleImportCollector::new(name, module.is_init, &self.graph, self.config);
         let (imports, ambiguous) = collector.collect(&module.ast);
-        Some(CollectedImports {
+        CollectedImports {
             module: name,
             imports,
             ambiguous,
-        })
+        }
+    }
+
+    fn remove_unparseable_nodes(&mut self, failures: Vec<ModuleName>) {
+        for name in failures {
+            self.graph.remove_node(&name);
+        }
     }
 
     fn add_edges_and_finish(mut self, all_imports: Vec<CollectedImports>) -> ImportGraph {
@@ -516,22 +517,24 @@ impl<'a> ImportGraphBuilder<'a> {
                     .module_names_par_iter()
                     .filter_map(|name| {
                         let ast_result = sources.parse(name)?;
-                        if ast_result.as_parsed().is_err() {
-                            return Some(Err(*name));
-                        }
-                        self.collect_imports(*name, &ast_result).map(Ok)
+                        Some(match ast_result.as_parsed() {
+                            Ok(module) => Ok(self.collect_imports(*name, module)),
+                            Err(_) => Err(*name),
+                        })
                     })
                     .collect()
             });
 
         let mut all_imports = Vec::new();
+        let mut failures = Vec::new();
         time("  Splitting results and removing unparseable nodes", || {
             for result in results {
                 match result {
                     Ok(imports) => all_imports.push(imports),
-                    Err(name) => self.graph.remove_node(&name),
+                    Err(name) => failures.push(name),
                 }
             }
+            self.remove_unparseable_nodes(failures);
         });
 
         self.add_edges_and_finish(all_imports)
@@ -593,11 +596,11 @@ impl<'a> ImportGraphBuilder<'a> {
                     .par_iter()
                     .filter_map(|name| {
                         let ast_result = sources.parse(name)?;
-                        if ast_result.as_parsed().is_err() {
-                            return Some(Err(*name));
-                        }
-                        let imports = self.collect_imports(*name, &ast_result)?;
-                        let module = ast_result.as_parsed().ok()?;
+                        let module = match ast_result.as_parsed() {
+                            Ok(module) => module,
+                            Err(_) => return Some(Err(*name)),
+                        };
+                        let imports = self.collect_imports(*name, module);
                         let exports = Exports::new_unfiltered(module, &self.config.sys_info);
                         Some(Ok((imports, exports)))
                     })
@@ -623,9 +626,7 @@ impl<'a> ImportGraphBuilder<'a> {
             }
         });
 
-        for name in unparseable {
-            self.graph.remove_node(&name);
-        }
+        self.remove_unparseable_nodes(unparseable);
 
         let (all_imports, all_exports): (Vec<_>, Vec<_>) = successes.into_iter().unzip();
         let import_graph = self.add_edges_and_finish(all_imports);
