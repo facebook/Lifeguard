@@ -345,23 +345,11 @@ impl GlobalAnalysisState {
     }
 
     fn add_error_to_module(&self, mod_name: &ModuleName, err: SafetyError) {
-        let mut entry = self
-            .safety_map
-            .entry(*mod_name)
-            .or_insert_with(|| SafetyResult::Ok(ModuleSafety::new()));
-        if let SafetyResult::Ok(module_safety) = entry.value_mut() {
-            module_safety.add_error(err);
-        }
+        self.update_module_safety(mod_name, |safety| safety.add_error(err));
     }
 
     fn add_force_imports_eager_override_to_module(&self, mod_name: &ModuleName, err: SafetyError) {
-        let mut entry = self
-            .safety_map
-            .entry(*mod_name)
-            .or_insert_with(|| SafetyResult::Ok(ModuleSafety::new()));
-        if let SafetyResult::Ok(module_safety) = entry.value_mut() {
-            module_safety.add_force_import_override(err);
-        }
+        self.update_module_safety(mod_name, |safety| safety.add_force_import_override(err));
     }
 
     fn add_implicit_imports_to_module(
@@ -369,12 +357,18 @@ impl GlobalAnalysisState {
         mod_name: &ModuleName,
         implicit_imports: &AHashSet<ModuleName>,
     ) {
+        self.update_module_safety(mod_name, |safety| {
+            safety.add_implicit_imports(implicit_imports)
+        });
+    }
+
+    fn update_module_safety(&self, mod_name: &ModuleName, update: impl FnOnce(&mut ModuleSafety)) {
         let mut entry = self
             .safety_map
             .entry(*mod_name)
             .or_insert_with(|| SafetyResult::Ok(ModuleSafety::new()));
-        if let SafetyResult::Ok(module_safety) = entry.value_mut() {
-            module_safety.add_implicit_imports(implicit_imports);
+        if let SafetyResult::Ok(safety) = entry.value_mut() {
+            update(safety);
         }
     }
 
