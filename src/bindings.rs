@@ -265,6 +265,9 @@ impl AliasTable {
         let Some(target) = value.as_module_name() else {
             return QualifiedGlobalAlias::UnusableAlias;
         };
+        if target.as_str().is_empty() {
+            return QualifiedGlobalAlias::UnusableAlias;
+        }
         let parts = expression_name.components();
         if parts.first() != Some(&resolved.name) {
             return QualifiedGlobalAlias::UnusableAlias;
@@ -975,6 +978,11 @@ mod tests {
         ));
         assert!(matches!(
             table(Alias::Global(Value::Unknown))
+                .resolve_qualified_global_alias(&resolved, &ModuleName::from_str("alias.attr")),
+            QualifiedGlobalAlias::UnusableAlias
+        ));
+        assert!(matches!(
+            table(Alias::Global(Value::Module(ModuleName::from_str(""))))
                 .resolve_qualified_global_alias(&resolved, &ModuleName::from_str("alias.attr")),
             QualifiedGlobalAlias::UnusableAlias
         ));
