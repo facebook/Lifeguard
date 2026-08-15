@@ -222,6 +222,21 @@ impl Exports {
         self.return_types.get(func_name).copied()
     }
 
+    /// Get the class a call to `func_name` evaluates to, from the function's
+    /// stub-annotated return type. Re-export chains are followed, so a function
+    /// imported from the module that stubs it keeps its annotation.
+    pub fn resolve_return_class(&self, func_name: &ModuleName) -> Option<ModuleName> {
+        let return_type = match self.get_return_type(func_name) {
+            Some(return_type) => return_type,
+            None => {
+                let attr = Attribute::from_module_name(func_name);
+                let source = self.resolve_transitive(&attr)?;
+                self.get_return_type(&source.as_module_name())?
+            }
+        };
+        self.is_class(&return_type).then_some(return_type)
+    }
+
     /// Get an iterator to all exported symbols and their export info.
     pub fn get_exports(&self) -> impl Iterator<Item = (&ModuleName, &ExportType)> {
         self.exports.iter()

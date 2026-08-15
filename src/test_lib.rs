@@ -446,9 +446,6 @@ fn check_output_with_config(
         let code = &dedent(code);
         let module_info = Module::make(module_name_str, code);
 
-        let exp = Expectation::parse(code);
-        let expected_errs: AHashSet<&ExpectedError> = exp.errors.iter().collect();
-
         let errs = if matches!(check, Check::Errors) {
             let safety_ref = safety_map.get(&module_name).unwrap();
             let module_safety = safety_ref.as_safety().expect("Failed to get module safety");
@@ -464,18 +461,26 @@ fn check_output_with_config(
             let module_analysis = effect_map.get(&module_name).unwrap();
             get_effects(&module_analysis.module_effects, &module_info)
         };
-        let actual_errs: AHashSet<&ExpectedError> = errs.iter().collect();
-
-        // Take both set differences, {actual} - {expected} and {expected} - {actual}
-        let not_asserted: Vec<_> = actual_errs.difference(&expected_errs).collect();
-        let not_raised: Vec<_> = expected_errs.difference(&actual_errs).collect();
-        assert!(
-            not_asserted.is_empty() && not_raised.is_empty(),
-            "Not asserted: {:?}\nNot raised: {:?}",
-            not_asserted,
-            not_raised
-        );
+        assert_expectations(code, &errs);
     }
+}
+
+/// Compare what the analysis found in a module against the expectations
+/// annotated in its source.
+fn assert_expectations(code: &str, errs: &[ExpectedError]) {
+    let exp = Expectation::parse(code);
+    let expected_errs: AHashSet<&ExpectedError> = exp.errors.iter().collect();
+    let actual_errs: AHashSet<&ExpectedError> = errs.iter().collect();
+
+    // Take both set differences, {actual} - {expected} and {expected} - {actual}
+    let not_asserted: Vec<_> = actual_errs.difference(&expected_errs).collect();
+    let not_raised: Vec<_> = expected_errs.difference(&actual_errs).collect();
+    assert!(
+        not_asserted.is_empty() && not_raised.is_empty(),
+        "Not asserted: {:?}\nNot raised: {:?}",
+        not_asserted,
+        not_raised
+    );
 }
 
 fn get_safety_errors(sft: &ModuleSafety, mi: &Module) -> Vec<ExpectedError> {
@@ -501,6 +506,21 @@ pub fn check(code: &str) {
 
 pub fn check_all(modules: Vec<(&str, &str)>) {
     check_output(modules, Check::Errors, None);
+}
+
+/// [`check_all`], with `stub_names` analyzed as `.pyi` stubs. Expectations are
+/// only read from the other modules: a stub declares effects rather than
+/// executing them, so annotating errors in one is meaningless.
+pub fn check_all_with_stubs(modules: Vec<(&str, &str)>, stub_names: &[&str]) {
+    let sources = TestSources::new_with_stubs(&modules, stub_names);
+    let safety_map = run_analysis_on(&sources).0.safety_map;
+    for (name, code) in modules.iter().filter(|(n, _)| !stub_names.contains(n)) {
+        let code = &dedent(code);
+        let module_info = Module::make(name, code);
+        let safety_ref = safety_map.get(&ModuleName::from_str(name)).unwrap();
+        let module_safety = safety_ref.as_safety().expect("Failed to get module safety");
+        assert_expectations(code, &get_safety_errors(module_safety, &module_info));
+    }
 }
 
 pub fn check_errors_and_implicit_imports(

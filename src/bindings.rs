@@ -603,14 +603,11 @@ impl<'a, 'b> BindingsTableBuilder<'a, 'b> {
     }
 
     fn get_call_type(&self, call: &ExprCall) -> Option<ModuleName> {
-        if let Some(class_name) = self.resolve_to_class(&call.func) {
-            return Some(class_name);
-        }
-        let return_type = self.get_function_return_type(&call.func)?;
-        self.exports.is_class(&return_type).then_some(return_type)
+        self.resolve_to_class(&call.func)
+            .or_else(|| self.get_function_return_class(&call.func))
     }
 
-    fn get_function_return_type(&self, func: &Expr) -> Option<ModuleName> {
+    fn get_function_return_class(&self, func: &Expr) -> Option<ModuleName> {
         let res = self.resolve_expr(func)?;
         let expr_name = res.expr_full_name?;
 
@@ -627,13 +624,7 @@ impl<'a, 'b> BindingsTableBuilder<'a, 'b> {
             QualifiedGlobalAlias::UnusableAlias => return None,
         };
 
-        if let Some(rt) = self.exports.get_return_type(&fqn) {
-            return Some(rt);
-        }
-        // Follow re-export chain for re-exported functions
-        let attr = Attribute::from_module_name(&fqn);
-        let source = self.exports.resolve_transitive(&attr)?;
-        self.exports.get_return_type(&source.as_module_name())
+        self.exports.resolve_return_class(&fqn)
     }
 
     fn get_expr_type(&self, expr: &Expr) -> Option<ModuleName> {

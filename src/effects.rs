@@ -364,6 +364,16 @@ impl CallData {
     pub fn imported_args(&self) -> &ImportedArgs {
         &self.imported_args
     }
+
+    /// Attach this call data to an effect, dropping it when it carries neither
+    /// imported-argument nor parameter-forwarding information.
+    pub fn into_effect_data(self) -> EffectData {
+        if self.has_unsafe_args() || self.has_forwarded_params() {
+            EffectData::Call(Box::new(self))
+        } else {
+            EffectData::None
+        }
+    }
 }
 
 #[derive(Debug, Eq, PartialEq, Hash, Clone)]

@@ -219,6 +219,113 @@ import os
     }
 
     #[test]
+    fn test_method_call_on_constructor_result() {
+        let code = r#"
+class Widget:
+    def render(self):
+        pass
+
+Widget().render()
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_unsafe_method_call_on_constructor_result() {
+        let code = r#"
+class Widget:
+    def render(self):
+        raise Exception()
+
+Widget().render()  # E: unsafe-method-call
+"#;
+        check(code);
+    }
+
+    /// `widgets.Widget.render` raises, so resolving a receiver to `Widget` is
+    /// what makes the call report; `factory` is a stub, the only place a return
+    /// type annotation is read from.
+    fn check_returned_widget(factory: &str, test: &str) {
+        let widgets = r#"
+class Widget:
+    def render(self):
+        raise Exception()
+"#;
+        check_all_with_stubs(
+            vec![("widgets", widgets), ("factory", factory), ("test", test)],
+            &["factory"],
+        );
+    }
+
+    const RETURNS_WIDGET: &str = r#"
+from widgets import Widget
+
+def make_widget() -> Widget:
+    no_effects()
+"#;
+
+    const FACTORY_RETURNS_WIDGET: &str = r#"
+from widgets import Widget
+
+class Factory:
+    def create(self) -> Widget:
+        no_effects()
+"#;
+
+    #[test]
+    fn test_method_call_on_annotated_return_value() {
+        let widgets = r#"
+class Widget:
+    def render(self):
+        pass
+"#;
+        let test = r#"
+from factory import make_widget
+
+make_widget().render()
+"#;
+        check_all_with_stubs(
+            vec![
+                ("widgets", widgets),
+                ("factory", RETURNS_WIDGET),
+                ("test", test),
+            ],
+            &["factory"],
+        );
+    }
+
+    #[test]
+    fn test_unsafe_method_call_on_annotated_return_value() {
+        let test = r#"
+from factory import make_widget
+
+make_widget().render()  # E: unsafe-method-call
+"#;
+        check_returned_widget(RETURNS_WIDGET, test);
+    }
+
+    #[test]
+    fn test_unsafe_method_call_on_chained_annotated_returns() {
+        let test = r#"
+from factory import Factory
+
+Factory().create().render()  # E: unsafe-method-call
+"#;
+        check_returned_widget(FACTORY_RETURNS_WIDGET, test);
+    }
+
+    #[test]
+    fn test_unsafe_method_call_on_bound_annotated_return() {
+        let test = r#"
+from factory import Factory
+
+f = Factory()
+f.create().render()  # E: unsafe-method-call
+"#;
+        check_returned_widget(FACTORY_RETURNS_WIDGET, test);
+    }
+
+    #[test]
     fn test_method_call_resolves_with_none_fallback() {
         // We should not infer ctx: None and raise an unknown-method error.
         let code = r#"

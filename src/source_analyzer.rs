@@ -339,7 +339,7 @@ impl<'a> SourceAnalyzer<'a> {
         trace!("Unknown call: {}(...)", format::format_expr(func));
         let name = match func {
             Expr::Attribute(e) => match *e.value {
-                // we don't infer return types, so foo().bar() ends up here
+                // `foo().bar()` whose receiver has no known class
                 Expr::Call(_) => "<chained method>",
                 // probably a method on a literal or an expression
                 _ => "<unknown method>",
@@ -570,6 +570,14 @@ impl<'a> SourceAnalyzer<'a> {
             }
         }
 
+        if let Some(fname) = self.chained_call_method(func) {
+            output.called_functions.insert(fname);
+            let data = call_data.into_effect_data();
+            let eff = Effect::with_data(EffectKind::MethodCall, fname, range, data);
+            self.add_effect(eff, output);
+            return;
+        }
+
         let resolved = self.resolve_function_name(func, args, output);
 
         // More than MAX_ARGS positional args overflow the `unsafe_indices` bitset,
@@ -590,12 +598,7 @@ impl<'a> SourceAnalyzer<'a> {
         };
 
         output.called_functions.insert(fname);
-        // Keep the call data when it carries imported-arg or parameter forwarding info
-        let data = if call_data.has_unsafe_args() || call_data.has_forwarded_params() {
-            EffectData::Call(Box::new(call_data))
-        } else {
-            EffectData::None
-        };
+        let data = call_data.into_effect_data();
 
         // Functions we have special-cased as safe.
         if manual_override::declared_safe(&fname) {
@@ -614,6 +617,55 @@ impl<'a> SourceAnalyzer<'a> {
         };
         let eff = Effect::with_data(kind, fname, range, data);
         self.add_effect(eff, output);
+    }
+
+    /// A method called on the result of another call (`Widget().render()`,
+    /// `make_widget().render()`), resolved to `<class>.<method>`.
+    fn chained_call_method(&self, func: &Expr) -> Option<ModuleName> {
+        let Expr::Attribute(ExprAttribute { value, attr, .. }) = func else {
+            return None;
+        };
+        let Expr::Call(receiver) = value.as_ref() else {
+            return None;
+        };
+        Some(self.call_result_class(&receiver.func)?.append_str(&attr.id))
+    }
+
+    /// The class a call to `func` returns: `func` itself when it names a class,
+    /// otherwise its stub-annotated return type.
+    fn call_result_class(&self, func: &Expr) -> Option<ModuleName> {
+        // A method on another call's result is not a name the resolver can see,
+        // so resolve it against the class that call returns.
+        let name = match self.chained_call_method(func) {
+            Some(chained) => chained,
+            None => self.call_target_name(func)?,
+        };
+        if self.info.exports.is_class(&name) {
+            return Some(name);
+        }
+        self.info.exports.resolve_return_class(&name)
+    }
+
+    /// The fully qualified name a call target resolves to.
+    fn call_target_name(&self, func: &Expr) -> Option<ModuleName> {
+        let res = self.info.resolve(&self.cursor, func)?;
+        // A method on a typed receiver (`factory.create`) belongs to the
+        // receiver's class, not to the scope the receiver is bound in.
+        if let Expr::Attribute(ExprAttribute { attr, .. }) = func
+            && let Some(typ) = self.info.bindings.get_type(&res.scope, &res.name)
+        {
+            return Some(typ.append_str(&attr.id));
+        }
+        self.resolved_fname(&res)
+    }
+
+    /// The call name `res` resolves to, with any import alias substituted.
+    fn resolved_fname(&self, res: &ResolvedName) -> Option<ModuleName> {
+        let call_name = res.expr_full_name?;
+        Some(
+            self.fname_replace_import_alias(&call_name, res)
+                .unwrap_or_else(|| res.qualified_name()),
+        )
     }
 
     // Helper function for check_unpacked_call()
@@ -635,15 +687,11 @@ impl<'a> SourceAnalyzer<'a> {
             return None;
         }
 
-        let Some(call_name) = res.expr_full_name else {
+        let Some(fname) = self.resolved_fname(&res) else {
             // We have a base name but no full name (e.g. `x.f[i]()`)
             self.unknown_function_name(func, output);
             return None;
         };
-
-        let fname = self
-            .fname_replace_import_alias(&call_name, &res)
-            .unwrap_or_else(|| res.qualified_name());
 
         Some((res, fname))
     }
