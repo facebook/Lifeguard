@@ -373,14 +373,17 @@ impl GlobalAnalysisState {
         }
     }
 
+    /// Replace `func`'s verdict outright, discarding anything recorded before.
+    fn set_function_safety(&self, func: &ModuleName, info: FunctionSafetyInfo) {
+        self.function_safety.insert(*func, info);
+    }
+
     fn mark_safe(&self, func: &ModuleName) {
-        self.function_safety
-            .insert(*func, FunctionSafetyInfo::new(FunctionSafety::Safe));
+        self.set_function_safety(func, FunctionSafetyInfo::new(FunctionSafety::Safe));
     }
 
     fn mark_unsafe(&self, func: &ModuleName) {
-        self.function_safety
-            .insert(*func, FunctionSafetyInfo::new(FunctionSafety::Unsafe));
+        self.set_function_safety(func, FunctionSafetyInfo::new(FunctionSafety::Unsafe));
     }
 
     fn mark_unsafe_missing_dep(&self, func: &ModuleName, callee: &ModuleName) {
@@ -1610,7 +1613,35 @@ impl ProjectInfo {
             };
             match self.check_constructor_call(&call, state) {
                 Ok(true) => state.mark_safe(cls_name),
-                Ok(false) | Err(_) => state.mark_unsafe(cls_name),
+                Ok(false) => {
+                    // `check_constructor_call` just ran each constructor method through
+                    // `check_call_body`, so a recorded verdict is that method's final
+                    // one and a missing entry means it had no body to analyze.
+                    let mut combined = FunctionSafetyInfo::new(FunctionSafety::Safe);
+                    for method in self.constructor_methods(*cls_name) {
+                        if let Some(info) = state.function_safety.get(&method) {
+                            combined.verdict.insert(info.verdict);
+                            if info.verdict.has(FunctionSafety::UnsafeMissingDep) {
+                                // The class waits on the method, not on the callees
+                                // that left it unresolved: deciding from those callees
+                                // would let the class clear while the method stayed
+                                // unsafe for an unrelated reason.
+                                combined.missing_dep_callees.insert(method);
+                            }
+                        }
+                    }
+                    // Only an entirely recoverable fold is worth caching. `Unsafe` never
+                    // clears, and an empty fold means no method accounted for the
+                    // failure, which must not be cached as a safe class.
+                    let recoverable = !combined.verdict.is_safe()
+                        && !combined.verdict.has(FunctionSafety::Unsafe);
+                    if recoverable {
+                        state.set_function_safety(cls_name, combined);
+                    } else {
+                        state.mark_unsafe(cls_name);
+                    }
+                }
+                Err(_) => state.mark_unsafe(cls_name),
             }
         });
     }

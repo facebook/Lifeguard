@@ -1133,6 +1133,66 @@ mod tests {
     }
 
     #[test]
+    fn test_class_promotion_follows_its_constructor_methods() {
+        // `Model` is blocked on `Model.__init__`, not on what it calls, so the
+        // blocking callee resolving safe must not promote the unsafe constructor.
+        let mut models = safe_cached_module("models", &[], &[]);
+        models.function_safety = fsmap([
+            unsafe_missing_dep("Model", "models.Model.__init__"),
+            unsafe_("Model.__init__"),
+        ]);
+        let mut helpers = safe_cached_module("helpers", &[], &[]);
+        helpers.function_safety = fsmap([safe("initialize")]);
+        let mut cache = LibraryCache::empty();
+        cache.modules = vec![models, helpers];
+
+        cache.resolve_cross_library_errors();
+
+        let models = cache
+            .modules
+            .iter()
+            .find(|module| module.name == mn("models"))
+            .unwrap();
+        let verdict = models
+            .function_safety
+            .get("Model")
+            .map(|info| info.verdict)
+            .expect("the class entry should survive the reduce");
+
+        assert!(
+            !verdict.is_safe(),
+            "the class must not promote past an unsafe constructor method",
+        );
+    }
+
+    #[test]
+    fn test_constructor_keeps_recoverable_verdict_for_missing_dep() {
+        let cache = build_cache(&TestSources::new(&[(
+            "models",
+            "from helpers import initialize\n\nclass Model:\n    def __init__(self):\n        initialize()\n",
+        )]));
+        let models = cache
+            .modules
+            .iter()
+            .find(|module| module.name == mn("models"))
+            .unwrap();
+        let verdict = models
+            .function_safety
+            .get("Model")
+            .map(|info| info.verdict)
+            .expect("the class should have a cached constructor summary");
+
+        assert!(
+            verdict.has(FunctionSafety::UnsafeMissingDep),
+            "an unresolved cross-library callee keeps the constructor recoverable",
+        );
+        assert!(
+            !verdict.has(FunctionSafety::Unsafe),
+            "a hard-unsafe constructor could never be promoted once `initialize` resolves",
+        );
+    }
+
+    #[test]
     fn test_cross_library_non_mutating_callee_stays_safe() {
         // Unconfirmed direction (parity preservation): the cross-library callee does
         // NOT mutate its parameter, so the deferred pessimism must be resolved
