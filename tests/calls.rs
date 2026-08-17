@@ -326,6 +326,40 @@ f.create().render()  # E: unsafe-method-call
     }
 
     #[test]
+    fn test_imported_inherited_method_call() {
+        let code1 = r#"
+            class Base:
+                def wrap(self):
+                    pass
+
+            class Derived(Base):
+                pass
+        "#;
+        let code2 = r#"
+            from m1 import Derived
+            Derived().wrap()
+        "#;
+        check_all(vec![("m1", code1), ("m2", code2)]);
+    }
+
+    #[test]
+    fn test_imported_inherited_unsafe_method_call() {
+        let code1 = r#"
+            class Base:
+                def wrap(self):
+                    raise Exception()
+
+            class Derived(Base):
+                pass
+        "#;
+        let code2 = r#"
+            from m1 import Derived
+            Derived().wrap() # E: unsafe-method-call
+        "#;
+        check_all(vec![("m1", code1), ("m2", code2)]);
+    }
+
+    #[test]
     fn test_method_call_resolves_with_none_fallback() {
         // We should not infer ctx: None and raise an unknown-method error.
         let code = r#"

@@ -56,6 +56,7 @@ use crate::module_safety::MutationCandidate;
 use crate::module_safety::MutationCandidateSite;
 use crate::module_safety::ParamPosition;
 use crate::module_safety::SafetyResult;
+use crate::mro::c3_linearize;
 use crate::source_map::AstResult;
 use crate::source_map::ModuleProvider;
 use crate::stubs::Stubs;
@@ -457,7 +458,15 @@ pub fn run_analysis(
         filter_out_stubs(&safety_map, sources)
     });
 
-    let class_bases = time("  Extracting class bases", || info.classes.base_edges());
+    let class_bases = time("  Extracting class bases", || {
+        info.classes
+            .base_edges()
+            .into_par_iter()
+            .filter(|(class, _)| {
+                resolve_enclosing_module(class, |module| safety_map.contains_key(module)).is_some()
+            })
+            .collect()
+    });
 
     // Deallocating ProjectInfo takes seconds on large projects. Hand it to a
     // dedicated background thread so the dealloc is non-blocking
@@ -1163,6 +1172,7 @@ struct ProjectInfo {
     analysis_map: AnalysisMap,
     effect_table: EffectTable,
     classes: ClassTable,
+    class_bases: HashMap<ModuleName, Vec<ModuleName>>,
     // Mappings of functions to the containing module
     functions: AHashMap<ModuleName, ModuleName>,
     re_exports: AHashSet<ModuleName>,
@@ -1189,6 +1199,9 @@ impl ProjectInfo {
         let classes = time("    Merging all classes", || {
             merge_all_classes(&mut analysis_map)
         });
+        let class_bases = time("    Indexing class bases", || {
+            classes.base_edges().into_iter().collect()
+        });
         let ((re_exports, nested_functions), mutated_params) = rayon::join(
             || {
                 time("    Getting re-exports + nested fns", || {
@@ -1208,6 +1221,7 @@ impl ProjectInfo {
             analysis_map,
             effect_table,
             classes,
+            class_bases,
             functions,
             re_exports,
             methods,
@@ -1226,6 +1240,21 @@ impl ProjectInfo {
         } else {
             self.re_exports.contains(&call_name)
         }
+    }
+
+    fn resolve_callable(&self, name: &ModuleName) -> Option<ModuleName> {
+        if self.contains_callable(name) {
+            return Some(*name);
+        }
+        let (class, method) = name.split_attr()?;
+        if !self.classes.contains(&class) {
+            return None;
+        }
+        c3_linearize(&self.class_bases, &class)
+            .into_iter()
+            .skip(1)
+            .map(|base| base.append_str(method.as_str()))
+            .find(|candidate| self.contains_callable(candidate))
     }
 
     pub fn collect_errors_from_project(
@@ -1768,6 +1797,9 @@ impl ProjectInfo {
         state: &GlobalAnalysisState,
         publish_safety_error: bool,
     ) -> Result<bool> {
+        if let Some(resolved) = self.resolve_callable(&call.func) {
+            call.func = resolved;
+        }
         if !self.can_resolve_call(call, state) {
             if publish_safety_error {
                 let err = self.check_unknown_call(call)?;

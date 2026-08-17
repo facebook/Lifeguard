@@ -62,7 +62,7 @@ mod tests {
 
             handler = logging.NullHandler()
             formatter = logging.Formatter("%(asctime)s - %(message)s")
-            handler.setFormatter(formatter) # E: unknown-method-call
+            handler.setFormatter(formatter)
             foo.logger.addHandler(handler) # E: unknown-function-call
        "#;
         let foo = r#"
