@@ -285,6 +285,18 @@ fn resolve_enclosing_module<'a>(
         .map(|(module, dot_pos)| (module, Some(&scope.as_str()[dot_pos + 1..])))
 }
 
+/// Resolve a nested scope to a proper ancestor module. Unlike
+/// `resolve_enclosing_module`, this never treats `scope` itself as a module.
+fn resolve_enclosing_parent_module<'a>(
+    scope: &'a ModuleName,
+    is_module: impl Fn(&ModuleName) -> bool,
+) -> Option<(ModuleName, &'a str)> {
+    scope
+        .iter_parents()
+        .find(|(parent, _)| is_module(parent))
+        .map(|(module, dot_pos)| (module, &scope.as_str()[dot_pos + 1..]))
+}
+
 /// Collected output from the analysis pipeline.
 pub struct AnalysisOutput {
     pub safety_map: SafetyMap,
@@ -1342,11 +1354,8 @@ impl ProjectInfo {
             DashMap::with_capacity(self.analysis_map.len());
         state.function_safety.par_iter().for_each(|entry| {
             let fqn = entry.key();
-            let resolved = fqn.iter_parents().find_map(|(parent, dot_pos)| {
-                self.analysis_map
-                    .contains_key(&parent)
-                    .then(|| (parent, &fqn.as_str()[dot_pos + 1..]))
-            });
+            let resolved =
+                resolve_enclosing_parent_module(fqn, |name| self.analysis_map.contains_key(name));
             if let Some((module, local)) = resolved {
                 by_module
                     .entry(module)
@@ -1488,17 +1497,9 @@ impl ProjectInfo {
         scope: &ModuleName,
         import_graph: &'a ImportGraph,
     ) -> Option<MutationCandidateScope<'a>> {
-        let (module, caller_function) = if self.analysis_map.contains_key(scope) {
-            (*scope, None)
-        } else {
-            let (m, dot_pos) = scope
-                .iter_parents()
-                .find(|(p, _)| self.analysis_map.contains_key(p))?;
-            (
-                m,
-                Some(ModuleName::from_str(&scope.as_str()[dot_pos + 1..])),
-            )
-        };
+        let (module, caller_function) =
+            resolve_enclosing_module(scope, |name| self.analysis_map.contains_key(name))?;
+        let caller_function = caller_function.map(ModuleName::from_str);
         let missing = import_graph.get_missing_imports(&module);
         let ambiguous = import_graph.get_ambiguous_imports(&module);
         if missing.is_none() && ambiguous.is_none() {
@@ -2109,5 +2110,60 @@ impl ProjectInfo {
             call.effect.kind,
             EffectKind::DecoratorCall | EffectKind::ImportedDecoratorCall
         ) && matches!(call.effect.data, EffectData::Call(_))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn enclosing_parent_module_ignores_same_named_module() {
+        let package = ModuleName::from_str("package");
+        let scope = ModuleName::from_str("package.child");
+        let modules = AHashSet::from_iter([package, scope]);
+
+        assert_eq!(
+            resolve_enclosing_parent_module(&scope, |name| modules.contains(name)),
+            Some((package, "child"))
+        );
+        assert_eq!(
+            resolve_enclosing_module(&scope, |name| modules.contains(name)),
+            Some((scope, None))
+        );
+    }
+
+    #[test]
+    fn enclosing_module_resolution_needs_a_module_ancestor() {
+        let scope = ModuleName::from_str("package.child.leaf");
+        let no_modules = |_: &ModuleName| false;
+
+        assert_eq!(
+            resolve_enclosing_module(&scope, no_modules),
+            None,
+            "a scope that is neither a module nor nested in one resolves to nothing",
+        );
+        assert_eq!(
+            resolve_enclosing_parent_module(&scope, no_modules),
+            None,
+            "the parent-only form has no ancestor to resolve against either",
+        );
+    }
+
+    #[test]
+    fn enclosing_parent_module_rejects_scope_only_module() {
+        let scope = ModuleName::from_str("package.child");
+        let modules = AHashSet::from_iter([scope]);
+
+        assert_eq!(
+            resolve_enclosing_parent_module(&scope, |name| modules.contains(name)),
+            None,
+            "a proper ancestor is required, so a scope that is only itself a module does not resolve",
+        );
+        assert_eq!(
+            resolve_enclosing_module(&scope, |name| modules.contains(name)),
+            Some((scope, None)),
+            "the scope-inclusive form still resolves it — that is the whole difference between the two",
+        );
     }
 }
