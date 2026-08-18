@@ -653,60 +653,52 @@ impl LifeGuardAnalysis {
     /// and B is a passing module with non-empty failing deps, add B to A's failing
     /// deps so B is eagerly imported.
     pub fn propagate_side_effect_imports(&mut self, side_effect_imports: &SideEffectMap) {
-        let has_failing_deps: AHashSet<ModuleName> = self
-            .output
-            .lazy_eligible
-            .iter()
-            .filter_map(|entry| (!entry.value().is_empty()).then(|| *entry.key()))
-            .collect();
+        let has_failing_deps = self.modules_with_failing_deps();
 
         side_effect_imports
             .par_iter()
             .for_each(|(module_name, se_imports)| {
-                if !self.passing_modules.contains(module_name) {
-                    return;
-                }
-                self.output
-                    .lazy_eligible
-                    .entry(*module_name)
-                    .or_default()
-                    .extend(
-                        se_imports
-                            .iter()
-                            .filter(|se_import| has_failing_deps.contains(*se_import))
-                            .copied(),
-                    );
+                self.propagate_side_effect_entry(*module_name, se_imports, &has_failing_deps);
             });
     }
 
     fn propagate_cached_side_effect_imports(&mut self, modules: &[CachedModule]) {
-        let has_failing_deps: AHashSet<ModuleName> = self
-            .output
+        let has_failing_deps = self.modules_with_failing_deps();
+
+        modules.par_iter().for_each(|module| {
+            self.propagate_side_effect_entry(
+                module.name,
+                &module.side_effect_imports,
+                &has_failing_deps,
+            );
+        });
+    }
+
+    fn modules_with_failing_deps(&self) -> AHashSet<ModuleName> {
+        self.output
             .lazy_eligible
             .iter()
             .filter_map(|entry| (!entry.value().is_empty()).then(|| *entry.key()))
-            .collect();
+            .collect()
+    }
 
-        modules.par_iter().for_each(|module| {
-            // Only passing modules with side-effect imports can contribute; skip the
-            // rest before taking a `lazy_eligible` shard lock (the majority have no
-            // side-effect imports, so this avoids needless shard contention).
-            if module.side_effect_imports.is_empty() || !self.passing_modules.contains(&module.name)
-            {
-                return;
-            }
-            self.output
-                .lazy_eligible
-                .entry(module.name)
-                .or_default()
-                .extend(
-                    module
-                        .side_effect_imports
-                        .iter()
-                        .filter(|import| has_failing_deps.contains(*import))
-                        .copied(),
-                );
-        });
+    fn propagate_side_effect_entry(
+        &self,
+        module: ModuleName,
+        imports: &AHashSet<ModuleName>,
+        has_failing_deps: &AHashSet<ModuleName>,
+    ) {
+        // Most modules have no side-effect imports. Check both conditions before
+        // taking a `lazy_eligible` shard lock to avoid needless contention.
+        if imports.is_empty() || !self.passing_modules.contains(&module) {
+            return;
+        }
+        self.output.lazy_eligible.entry(module).or_default().extend(
+            imports
+                .iter()
+                .filter(|import| has_failing_deps.contains(*import))
+                .copied(),
+        );
     }
 
     pub fn get_report(&self) -> String {
