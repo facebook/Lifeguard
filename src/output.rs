@@ -178,6 +178,38 @@ struct ClassifiedModules {
     aggregated_errors: AHashMap<(ErrorKind, ErrorMetadata), usize>,
 }
 
+/// The source and cached representations intentionally use the same classification rules:
+/// regular errors make a module fail, while eager-import overrides are tracked independently.
+struct ModuleStatus {
+    is_safe: bool,
+    load_eagerly: bool,
+}
+
+impl ClassifiedModules {
+    fn record_status(&mut self, module: ModuleName, status: ModuleStatus) {
+        if status.is_safe {
+            self.passing_modules.insert(module);
+        } else {
+            self.failing_modules.insert(module);
+        }
+        if status.load_eagerly {
+            self.load_imports_eagerly.insert(module);
+        }
+    }
+
+    fn record_implicit_imports(&mut self, module: ModuleName, imports: Vec<ModuleName>) {
+        if !imports.is_empty() {
+            self.implicit_imports.insert(module, imports);
+        }
+    }
+
+    fn record_errors(&mut self, errors: impl IntoIterator<Item = (ErrorKind, ErrorMetadata)>) {
+        for error in errors.into_iter().collect::<AHashSet<_>>() {
+            *self.aggregated_errors.entry(error).or_insert(0) += 1;
+        }
+    }
+}
+
 /// Iterate the safety map and classify each module as passing or failing.
 /// Also collects load_imports_eagerly, implicit imports, and aggregated error counts.
 fn classify_modules(safety_map: SafetyMap) -> ClassifiedModules {
@@ -193,35 +225,21 @@ fn classify_modules(safety_map: SafetyMap) -> ClassifiedModules {
             }
         };
 
-        let mut module_errors = AHashSet::new();
-        let is_safe = module_safety.is_safe();
-        if module_safety.should_load_imports_eagerly() {
-            result.load_imports_eagerly.insert(module_name);
-        }
-        if module_safety.has_implicit_imports() {
-            result
-                .implicit_imports
-                .insert(module_name, module_safety.implicit_imports);
-        }
-
-        let module_set = if is_safe {
-            &mut result.passing_modules
-        } else {
-            &mut result.failing_modules
-        };
-        module_set.insert(module_name);
-
-        for error in module_safety.errors {
-            module_errors.insert((error.kind, error.metadata));
-        }
-
-        // TODO: Should we add force_imports_eager_overrides to a separate error count?
-        for error in module_safety.force_imports_eager_overrides {
-            module_errors.insert((error.kind, error.metadata));
-        }
-        for k in module_errors.drain() {
-            *result.aggregated_errors.entry(k).or_insert(0) += 1;
-        }
+        result.record_status(
+            module_name,
+            ModuleStatus {
+                is_safe: module_safety.is_safe(),
+                load_eagerly: module_safety.should_load_imports_eagerly(),
+            },
+        );
+        result.record_implicit_imports(module_name, module_safety.implicit_imports);
+        result.record_errors(
+            module_safety
+                .errors
+                .into_iter()
+                .chain(module_safety.force_imports_eager_overrides)
+                .map(|error| (error.kind, error.metadata)),
+        );
     }
 
     result
@@ -245,32 +263,21 @@ fn classify_cached_modules(
             }
         };
 
-        if safety.errors.is_empty() {
-            result.passing_modules.insert(module.name);
-        } else {
-            result.failing_modules.insert(module.name);
-        }
-        if !safety.force_imports_eager_overrides.is_empty() {
-            result.load_imports_eagerly.insert(module.name);
-        }
-        if !safety.implicit_imports.is_empty() {
-            result
-                .implicit_imports
-                .insert(module.name, safety.implicit_imports.clone());
-        }
-
-        let mut module_errors = AHashSet::new();
-        for error in safety
-            .errors
-            .iter()
-            .chain(&safety.force_imports_eager_overrides)
-        {
-            let metadata = ErrorMetadata::from(error.metadata.as_str());
-            module_errors.insert((error.kind, metadata));
-        }
-        for error in module_errors {
-            *result.aggregated_errors.entry(error).or_insert(0) += 1;
-        }
+        result.record_status(
+            module.name,
+            ModuleStatus {
+                is_safe: safety.errors.is_empty(),
+                load_eagerly: !safety.force_imports_eager_overrides.is_empty(),
+            },
+        );
+        result.record_implicit_imports(module.name, safety.implicit_imports.clone());
+        result.record_errors(
+            safety
+                .errors
+                .iter()
+                .chain(&safety.force_imports_eager_overrides)
+                .map(|error| (error.kind, ErrorMetadata::from(error.metadata.as_str()))),
+        );
     }
 
     result
