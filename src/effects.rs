@@ -435,6 +435,13 @@ impl Effect {
         self.try_handlers.is_some()
     }
 
+    pub fn call_data(&self) -> Option<&CallData> {
+        match &self.data {
+            EffectData::Call(data) => Some(data),
+            EffectData::None => None,
+        }
+    }
+
     /// Check whether any enclosing try handler catches the given exception name.
     pub fn try_context_catches(&self, exc_name: &ModuleName) -> bool {
         self.try_handlers

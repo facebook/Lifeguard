@@ -1076,7 +1076,7 @@ fn compute_mutated_params(
                         continue;
                     }
                     // Parameter-forwarding edges recorded on call effects.
-                    let EffectData::Call(ref call_data) = eff.data else {
+                    let Some(call_data) = eff.call_data() else {
                         continue;
                     };
                     let forwarded = call_data.forwarded_params();
@@ -1942,7 +1942,7 @@ impl ProjectInfo {
     /// Whether `call_effect` passes an imported variable to a parameter the callee
     /// (transitively) mutates, i.e. running this call mutates imported state.
     fn call_mutates_imported_arg(&self, call_effect: &Effect) -> bool {
-        let EffectData::Call(ref call_data) = call_effect.data else {
+        let Some(call_data) = call_effect.call_data() else {
             return false;
         };
         if !call_data.has_unsafe_args() {
@@ -1956,7 +1956,9 @@ impl ProjectInfo {
     /// argument. Such a call must be deferred to the reduce step when its callee
     /// is unresolved in this library (the callee may mutate the argument).
     fn defers_cross_library_mutation(&self, call_effect: &Effect) -> bool {
-        matches!(call_effect.data, EffectData::Call(ref cd) if cd.has_unsafe_args())
+        call_effect
+            .call_data()
+            .is_some_and(|data| data.has_unsafe_args())
     }
 
     fn check_call_params(&self, call: &Call, state: &GlobalAnalysisState) {
