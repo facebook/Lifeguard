@@ -16,7 +16,6 @@ use anyhow::anyhow;
 // Re-exported because ModuleName is part of the public SourceMap type
 pub use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
-use ruff_python_ast::PySourceType;
 use serde::Deserialize;
 use tracing::warn;
 
@@ -34,10 +33,21 @@ use crate::tracing::time;
 /// Lightweight per-module metadata without a parsed AST.
 /// Used by the on-demand parsing pipeline to avoid holding all ASTs in memory.
 struct SourceInfo {
-    pub source_type: PySourceType,
     pub is_init: bool,
-    /// File path relative to root_dir. None for in-memory stubs.
-    pub path: Option<PathBuf>,
+    pub backing: SourceBacking,
+}
+
+enum SourceBacking {
+    /// Source path relative to the source database's root directory.
+    File(PathBuf),
+    /// Source supplied by Lifeguard's bundled in-memory stubs.
+    Stub,
+}
+
+impl SourceBacking {
+    fn is_stub(&self) -> bool {
+        matches!(self, Self::Stub)
+    }
 }
 
 type SourceInfoMap = HashMap<ModuleName, SourceInfo, ahash::RandomState>;
@@ -225,9 +235,8 @@ fn make_source_info_map(
         info_map.insert(
             name,
             SourceInfo {
-                source_type: PySourceType::Python,
                 is_init,
-                path: Some(path),
+                backing: SourceBacking::File(path),
             },
         );
     }
@@ -240,9 +249,8 @@ fn make_source_info_map(
         info_map.insert(
             *mod_name,
             SourceInfo {
-                source_type: PySourceType::Stub,
                 is_init: stubs.is_init(mod_name),
-                path: None,
+                backing: SourceBacking::Stub,
             },
         );
     }
@@ -328,9 +336,9 @@ impl ModuleProvider for Sources {
     fn parse(&self, name: &ModuleName) -> Option<AstResult> {
         let name = *name;
         let info = self.info_map.get(&name)?;
-        match &info.path {
+        match &info.backing {
             // File-backed module: read and parse from root_dir/path.
-            Some(path) => {
+            SourceBacking::File(path) => {
                 let full_path = self.root_dir.join(path);
                 let result = match read_and_parse_source_with_version(
                     &full_path,
@@ -345,7 +353,7 @@ impl ModuleProvider for Sources {
             }
             // Stub module (no path): bundled/in-memory stubs may be partial or
             // synthetic, so parse leniently rather than dropping them on an error.
-            None => {
+            SourceBacking::Stub => {
                 let src = self.stubs.get_raw_source(&name)?;
                 Some(AstResult::Ok(parse_pyi_with_version(
                     src,
@@ -360,7 +368,7 @@ impl ModuleProvider for Sources {
     fn is_stub(&self, name: &ModuleName) -> bool {
         self.info_map
             .get(name)
-            .is_some_and(|info| matches!(info.source_type, PySourceType::Stub))
+            .is_some_and(|info| info.backing.is_stub())
     }
 
     fn overrides_source(&self, name: &ModuleName) -> bool {
