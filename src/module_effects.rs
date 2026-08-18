@@ -9,6 +9,7 @@ use pyrefly_python::module_name::ModuleName;
 use ruff_text_size::TextRange;
 
 use crate::effects::Effect;
+use crate::effects::EffectKind;
 use crate::effects::EffectTable;
 use crate::hasher::AHashMap;
 use crate::hasher::AHashSet;
@@ -89,6 +90,12 @@ impl ModuleEffects {
             .or_default()
             .insert(import);
         self.all_called_import_names.insert(import);
+    }
+
+    pub fn scope_has_effect(&self, scope: &ModuleName, kind: EffectKind) -> bool {
+        self.effects
+            .get(scope)
+            .is_some_and(|effects| effects.iter().any(|effect| effect.kind == kind))
     }
 }
 

@@ -833,9 +833,7 @@ impl<'a> SourceAnalyzer<'a> {
             return true;
         };
         stub.module_effects
-            .effects
-            .get(&method_fqn)
-            .is_some_and(|effects| effects.iter().any(|e| e.kind == EffectKind::Mutation))
+            .scope_has_effect(&method_fqn, EffectKind::Mutation)
     }
 
     fn check_indirectly_called_method(
