@@ -88,6 +88,83 @@ enum ArgClass {
     Other,
 }
 
+#[derive(Default)]
+struct CallDataBuilder {
+    has_unsafe: bool,
+    unsafe_indices: u64,
+    unsafe_keyword_names: Vec<ModuleName>,
+    has_unsafe_kwargs_expansion: bool,
+    unsafe_args_expansion_min: Option<usize>,
+    forwarded_params: Vec<(ArgSlot, ModuleName)>,
+}
+
+impl CallDataBuilder {
+    fn record_positional(&mut self, index: usize, is_starred: bool, class: ArgClass) {
+        match class {
+            ArgClass::Imported => {
+                self.has_unsafe = true;
+                if is_starred {
+                    // An imported value unpacked through `*args` can reach every positional slot
+                    // from `index` onward. Arguments arrive in order, so the first star is the
+                    // minimum affected index.
+                    self.unsafe_args_expansion_min.get_or_insert(index);
+                } else if index < MAX_ARGS {
+                    // The bitmask represents only the first `MAX_ARGS` positional slots.
+                    self.unsafe_indices |= 1u64 << index;
+                }
+            }
+            ArgClass::ForwardedParam(param) => {
+                let slot = if is_starred {
+                    // `g(prefix, *param)` spreads the parameter across every callee slot from
+                    // `index` onward, so conservatively retain it as a star expansion.
+                    ArgSlot::StarExpansion(index)
+                } else {
+                    // Retain the destination slot so callee mutations can be attributed back to
+                    // the forwarded parameter.
+                    ArgSlot::Positional(index)
+                };
+                self.forwarded_params.push((slot, param));
+            }
+            ArgClass::Other => {}
+        }
+    }
+
+    fn record_keyword(&mut self, name: Option<&Identifier>, class: ArgClass) {
+        match class {
+            ArgClass::Imported => {
+                self.has_unsafe = true;
+                match name {
+                    Some(name) => self
+                        .unsafe_keyword_names
+                        .push(ModuleName::from_str(name.as_str())),
+                    // A `**kwargs` expansion cannot be reduced to specific keyword names.
+                    None => self.has_unsafe_kwargs_expansion = true,
+                }
+            }
+            ArgClass::ForwardedParam(param) => {
+                // Only a named keyword maps to a specific callee parameter; forwarding through
+                // `**kwargs` cannot be tracked precisely.
+                if let Some(name) = name {
+                    self.forwarded_params
+                        .push((ArgSlot::Keyword(ModuleName::from_str(name.as_str())), param));
+                }
+            }
+            ArgClass::Other => {}
+        }
+    }
+
+    fn finish(self) -> CallData {
+        CallData::new(
+            self.has_unsafe,
+            self.unsafe_indices,
+            self.unsafe_keyword_names,
+            self.has_unsafe_kwargs_expansion,
+        )
+        .with_args_expansion(self.unsafe_args_expansion_min)
+        .with_forwarded_params(self.forwarded_params)
+    }
+}
+
 // Main entry point for the analyzer library.
 //
 // Runs a side-effect analysis over a module and returns a list of effects.
@@ -375,12 +452,7 @@ impl<'a> SourceAnalyzer<'a> {
     }
 
     fn check_call_args(&self, args: &Arguments, output: &mut ModuleEffects) -> CallData {
-        let mut has_unsafe = false;
-        let mut unsafe_indices: u64 = 0;
-        let mut unsafe_keyword_names = Vec::new();
-        let mut has_unsafe_kwargs_expansion = false;
-        let mut unsafe_args_expansion_min: Option<usize> = None;
-        let mut forwarded_params: Vec<(ArgSlot, ModuleName)> = Vec::new();
+        let mut builder = CallDataBuilder::default();
 
         for (i, arg) in args.args.as_ref().iter().enumerate() {
             // Unwrap starred args *x to classify the inner expression. A starred arg
@@ -390,67 +462,12 @@ impl<'a> SourceAnalyzer<'a> {
                 Expr::Starred(starred) => (true, &*starred.value),
                 _ => (false, arg),
             };
-            match self.classify_call_arg(inner_arg, output) {
-                ArgClass::Imported => {
-                    has_unsafe = true;
-                    if is_starred {
-                        // Unsafe value unpacked via `*args` reaches positional slots
-                        // at or after `i`; args are visited in increasing index, so
-                        // the first star seen is the smallest such index.
-                        unsafe_args_expansion_min.get_or_insert(i);
-                    } else if i < MAX_ARGS {
-                        unsafe_indices |= 1u64 << i;
-                    }
-                }
-                ArgClass::ForwardedParam(param) => {
-                    if !is_starred {
-                        // Record the positional slot the parameter is forwarded into,
-                        // so a mutation in the callee can be attributed back to it.
-                        forwarded_params.push((ArgSlot::Positional(i), param));
-                    } else {
-                        // Star-forwarding a parameter (`g(prefix, *param)`) spreads it
-                        // across the callee's positional slots from index `i` onward.
-                        // Record a StarExpansion so the forwarding is tracked and
-                        // conservatively matched against those parameters.
-                        forwarded_params.push((ArgSlot::StarExpansion(i), param));
-                    }
-                }
-                ArgClass::Other => {}
-            }
+            builder.record_positional(i, is_starred, self.classify_call_arg(inner_arg, output));
         }
         for arg in args.keywords.as_ref() {
-            match self.classify_call_arg(&arg.value, output) {
-                ArgClass::Imported => {
-                    has_unsafe = true;
-                    match &arg.arg {
-                        Some(ident) => {
-                            unsafe_keyword_names.push(ModuleName::from_str(ident.as_str()));
-                        }
-                        None => {
-                            // **kwargs expansion — can't determine specific keywords
-                            has_unsafe_kwargs_expansion = true;
-                        }
-                    }
-                }
-                ArgClass::ForwardedParam(param) => {
-                    // Only named keywords can be matched to the callee's parameter;
-                    // a **kwargs expansion of a parameter can't be tracked precisely.
-                    if let Some(ident) = &arg.arg {
-                        let slot = ArgSlot::Keyword(ModuleName::from_str(ident.as_str()));
-                        forwarded_params.push((slot, param));
-                    }
-                }
-                ArgClass::Other => {}
-            }
+            builder.record_keyword(arg.arg.as_ref(), self.classify_call_arg(&arg.value, output));
         }
-        CallData::new(
-            has_unsafe,
-            unsafe_indices,
-            unsafe_keyword_names,
-            has_unsafe_kwargs_expansion,
-        )
-        .with_args_expansion(unsafe_args_expansion_min)
-        .with_forwarded_params(forwarded_params)
+        builder.finish()
     }
 
     /// True when a stub defines the called function, so the stub's declared
