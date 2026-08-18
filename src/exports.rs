@@ -119,6 +119,40 @@ struct StarRank {
     offset: TextSize,
 }
 
+type StarMembers = AHashMap<ModuleName, AHashMap<Name, Option<StarRank>>>;
+
+fn star_bound_names(
+    source: &ModuleName,
+    all: &AHashMap<ModuleName, Vec<Name>>,
+    members: &StarMembers,
+) -> Vec<Name> {
+    match all.get(source) {
+        Some(names) => names.clone(),
+        None => members
+            .get(source)
+            .map(|members| {
+                members
+                    .keys()
+                    .filter(|name| !name.starts_with('_'))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default(),
+    }
+}
+
+/// Star imports bind in execution order, so a later star overwrites a name an earlier one bound,
+/// except that an `except`-handler fallback never displaces a primary star because only one branch
+/// runs. A non-star binding always shadows, regardless of position; this is deliberately more
+/// conservative than Python, where a star overwrites a definition written above it.
+fn star_can_replace(existing: Option<&Option<StarRank>>, rank: StarRank) -> bool {
+    match existing {
+        Some(None) => false,
+        Some(Some(bound)) => *bound < rank,
+        None => true,
+    }
+}
+
 #[derive(Debug)]
 pub struct Exports {
     /// Map of definitions to the name of their containing module.
@@ -351,7 +385,7 @@ impl Exports {
         // and explicit re-exports.
         // The value records what bounded the name: `None` for a non-star binding,
         // `Some(rank)` for the star that bound it.
-        let mut members: AHashMap<ModuleName, AHashMap<Name, Option<StarRank>>> = AHashMap::new();
+        let mut members = StarMembers::new();
         for name in self.exports.keys() {
             if !relevant.contains(name.as_str().rsplit_once('.').map_or("", |(m, _)| m)) {
                 continue;
@@ -378,33 +412,14 @@ impl Exports {
                 let s = &star.source;
                 // Names that `from S import *` binds: S.__all__ if declared, else
                 // every non-underscore member of S.
-                let names: Vec<Name> = match self.all.get(s) {
-                    Some(all) => all.clone(),
-                    None => members
-                        .get(s)
-                        .map(|set| {
-                            set.keys()
-                                .filter(|n| !n.starts_with('_'))
-                                .cloned()
-                                .collect()
-                        })
-                        .unwrap_or_default(),
-                };
+                let names = star_bound_names(s, &self.all, &members);
                 let rank = StarRank {
                     is_primary: !star.is_fallback,
                     offset: star.range.start(),
                 };
                 for n in names {
-                    // Star imports bind in execution order, so a later star overwrites
-                    // a name an earlier one bound — except that an `except`-handler
-                    // fallback never displaces a primary star, since only one of the
-                    // two branches runs. A non-star binding always shadows, regardless
-                    // of position — deliberately more conservative than Python, where
-                    // a star overwrites a definition written above it.
-                    match members.get(m).and_then(|set| set.get(&n)) {
-                        Some(None) => continue,
-                        Some(Some(bound)) if *bound >= rank => continue,
-                        _ => {}
+                    if !star_can_replace(members.get(m).and_then(|set| set.get(&n)), rank) {
+                        continue;
                     }
                     let imported = Attribute::new(*s, n.as_str());
                     // Don't re-export a name that resolves to a submodule
