@@ -177,7 +177,6 @@ class OverloadMerger(cst.CSTTransformer):
         if isinstance(first_stmt, cst.SimpleStatementLine):
             if len(first_stmt.body) == 1 and isinstance(first_stmt.body[0], cst.Expr):
                 expr = first_stmt.body[0]
-                # pyre-ignore[16]: expr is narrowed here
                 if isinstance(expr.value, (cst.SimpleString, cst.ConcatenatedString)):
                     return first_stmt
 
