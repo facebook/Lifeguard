@@ -1,4 +1,8 @@
 # Lifeguard for Lazy Imports
+
+[![PyPI - Version](https://img.shields.io/pypi/v/lifeguard-lazy-imports.svg)](https://pypi.org/pypi/lifeguard-lazy-imports/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+
 A fast static analysis tool to aid adoption of [Lazy Imports](https://peps.python.org/pep-0810/) in Python.
 
 <p align="center">
@@ -32,7 +36,6 @@ Lifeguard is in active development. We are aiming to be ready for general use by
 
 ### Items on our roadmap
 - We are preparing GitHub actions to fully support external contributors.
-- We plan to release to [PyPI](https://pypi.org/).
 - We've tested and support Python 3.12 and 3.14. Other versions may also work. We do not yet support the [`lazy` keyword added in PEP 810](https://peps.python.org/pep-0810/) — but we fully intend to support this ahead of the 3.15 release.
 - We are actively developing a standalone linter output mode to help users identify which specific lines in their codebase are incompatible with Lazy Imports.
 - We plan to add support for easy ingestion of Lifeguard's output to drive Lazy Imports enablement for advanced users (see [Using the Output](#using-the-output)).
