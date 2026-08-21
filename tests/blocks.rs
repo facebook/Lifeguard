@@ -34,6 +34,16 @@ for x in f():  # E: imported-function-call
     }
 
     #[test]
+    fn test_return_effects() {
+        let code = r#"
+from foo import f
+def h():
+    return f()  # E: imported-function-call
+"#;
+        check_effects(code);
+    }
+
+    #[test]
     fn test_for_target() {
         let code = r#"
 import foo

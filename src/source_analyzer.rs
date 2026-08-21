@@ -1565,6 +1565,11 @@ impl<'a> SourceAnalyzer<'a> {
             Stmt::AugAssign(a) => self.aug_assign(a, output),
             Stmt::Delete(d) => self.delete(d, output),
             Stmt::Expr(e) => self.expr(&e.value, output),
+            Stmt::Return(e) => {
+                if let Some(value) = &e.value {
+                    self.expr(value, output);
+                }
+            }
             Stmt::ClassDef(c) => self.class_def(c, output),
             Stmt::FunctionDef(f) => self.function_def(f, output),
             Stmt::Raise(e) => self.raise(e, output),

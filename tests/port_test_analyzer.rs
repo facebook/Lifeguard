@@ -196,7 +196,7 @@ mod tests {
     fn test_pending_function_exec() {
         let __main__ = r#"
             def fn(code):
-                return exec(code)
+                return exec(code) # E: exec-call
        "#;
         check_all(vec![("__main__", __main__)])
     }

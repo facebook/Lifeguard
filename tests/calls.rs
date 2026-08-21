@@ -88,6 +88,18 @@ a = f("a", "b")
     }
 
     #[test]
+    fn test_unsafe_call_returned_from_a_function() {
+        let code = r#"
+from foo import f
+def g():
+    return f()
+
+a = g()  # E: unsafe-function-call
+"#;
+        check(code);
+    }
+
+    #[test]
     fn test_unsafe_local_function_call() {
         // Only the call itself should be marked with an error, not also the
         // nested callsite
