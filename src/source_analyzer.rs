@@ -21,6 +21,7 @@ use ruff_python_ast::Identifier;
 use ruff_python_ast::PySourceType;
 use ruff_python_ast::Stmt;
 use ruff_python_ast::StmtAnnAssign;
+use ruff_python_ast::StmtAssert;
 use ruff_python_ast::StmtAssign;
 use ruff_python_ast::StmtAugAssign;
 use ruff_python_ast::StmtClassDef;
@@ -1267,6 +1268,15 @@ impl<'a> SourceAnalyzer<'a> {
         }
     }
 
+    /// `assert cond, msg` evaluates both at import time (unless run under `-O`,
+    /// which we can't assume).
+    fn assert_(&self, x: &StmtAssert, output: &mut ModuleEffects) {
+        self.expr(&x.test, output);
+        if let Some(msg) = &x.msg {
+            self.expr(msg, output);
+        }
+    }
+
     fn raise(&self, x: &StmtRaise, output: &mut ModuleEffects) {
         let name = match &x.exc {
             Some(exc) => Self::exception_name(exc.as_ref())
@@ -1581,6 +1591,7 @@ impl<'a> SourceAnalyzer<'a> {
             Stmt::Match(e) => self.match_(e, output),
             Stmt::Import(e) => self.add_pending_import(e, output),
             Stmt::ImportFrom(e) => self.import_from(e, output),
+            Stmt::Assert(e) => self.assert_(e, output),
             _ => {}
         }
         // Recurse into the bodies of block constructs we don't handle specially

@@ -34,6 +34,28 @@ for x in f():  # E: imported-function-call
     }
 
     #[test]
+    fn test_assert_effects() {
+        let code = r#"
+from foo import f, g
+assert f()  # E: imported-function-call
+assert True, g()  # E: imported-function-call
+"#;
+        check_effects(code);
+    }
+
+    #[test]
+    fn test_assert_effects_in_a_called_function() {
+        let code = r#"
+from foo import f
+def g():
+    assert f()
+
+g()  # E: unsafe-function-call
+"#;
+        check(code);
+    }
+
+    #[test]
     fn test_return_effects() {
         let code = r#"
 from foo import f
