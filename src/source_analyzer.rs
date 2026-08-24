@@ -18,6 +18,7 @@ use ruff_python_ast::ExprContext;
 use ruff_python_ast::ExprLambda;
 use ruff_python_ast::ExprSubscript;
 use ruff_python_ast::Identifier;
+use ruff_python_ast::Parameters;
 use ruff_python_ast::PySourceType;
 use ruff_python_ast::Stmt;
 use ruff_python_ast::StmtAnnAssign;
@@ -1067,12 +1068,18 @@ impl<'a> SourceAnalyzer<'a> {
         // TODO(T268531819): Since we cannot detect when a lambda is being called, we do not analyse
         // the body. Parameter defaults are still checked since they execute at definition time.
         if let Some(ref params) = lambda.parameters {
-            for default in params
-                .iter_non_variadic_params()
-                .filter_map(|p| p.default())
-            {
-                self.expr(default, output);
-            }
+            self.check_param_defaults(params, output);
+        }
+    }
+
+    /// Parameter defaults are evaluated where the function is defined, not where it
+    /// is called, so they run in the enclosing scope like any other expression.
+    fn check_param_defaults(&self, params: &Parameters, output: &mut ModuleEffects) {
+        for default in params
+            .iter_non_variadic_params()
+            .filter_map(|p| p.default())
+        {
+            self.expr(default, output);
         }
     }
 
@@ -1244,6 +1251,7 @@ impl<'a> SourceAnalyzer<'a> {
 
     fn function_def(&mut self, x: &StmtFunctionDef, output: &mut ModuleEffects) {
         self.check_decorators(&x.decorator_list, output);
+        self.check_param_defaults(&x.parameters, output);
         // only check toplevel functions
         if self.cursor.scope() == self.info.module_name {
             let exported_name = Attribute::new(self.info.module_name, &x.name.id);

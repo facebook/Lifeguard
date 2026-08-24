@@ -34,6 +34,17 @@ for x in f():  # E: imported-function-call
     }
 
     #[test]
+    fn test_parameter_default_effects() {
+        let code = r#"
+from foo import f
+def g(a, b=f(), *args, c=f(), **kwargs):  # E: imported-function-call
+    pass
+"#;
+        // The defaults run when `g` is defined, not when it is called.
+        check_effects(code);
+    }
+
+    #[test]
     fn test_raise_expression_effects() {
         let code = r#"
 from foo import f, g
