@@ -1279,17 +1279,22 @@ impl<'a> SourceAnalyzer<'a> {
 
     fn raise(&self, x: &StmtRaise, output: &mut ModuleEffects) {
         let name = match &x.exc {
-            Some(exc) => Self::exception_name(exc.as_ref())
-                .unwrap_or_else(|| ModuleName::from_str("<unknown exception>")),
+            Some(exc) => {
+                // Both are evaluated before the exception propagates, even when a
+                // handler catches it.
+                self.expr(exc, output);
+                if let Some(cause) = &x.cause {
+                    self.expr(cause, output);
+                }
+                Self::exception_name(exc)
+                    .unwrap_or_else(|| ModuleName::from_str("<unknown exception>"))
+            }
             // Bare `raise` (re-raise): we can't determine the type, so treat it as caught if
             // we're inside any try body at all.
-            None => {
-                if self.cursor.in_try_body() {
-                    return;
-                }
-                ModuleName::from_str("<unknown exception>")
-            }
+            None if self.cursor.in_try_body() => return,
+            None => ModuleName::from_str("<unknown exception>"),
         };
+
         if self.cursor.catches_exception(&name) {
             return;
         }

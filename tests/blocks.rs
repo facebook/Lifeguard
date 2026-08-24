@@ -34,6 +34,18 @@ for x in f():  # E: imported-function-call
     }
 
     #[test]
+    fn test_raise_expression_effects() {
+        let code = r#"
+from foo import f, g
+try:
+    raise f() from g()  # E: imported-function-call  # E: imported-function-call
+except Exception:
+    pass
+"#;
+        check_effects(code);
+    }
+
+    #[test]
     fn test_assert_effects() {
         let code = r#"
 from foo import f, g
