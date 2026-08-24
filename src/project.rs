@@ -24,9 +24,6 @@ use tracing::warn;
 
 use crate::analyzer;
 use crate::analyzer::AnalyzedModule;
-use crate::cache::apply_mutation_candidates;
-use crate::cache::get_function_safety;
-use crate::cache::promote_fixpoint;
 use crate::class::Class;
 use crate::class::ClassTable;
 use crate::class::FieldKind;
@@ -57,6 +54,8 @@ use crate::module_safety::MutationCandidateSite;
 use crate::module_safety::ParamPosition;
 use crate::module_safety::SafetyResult;
 use crate::mro::c3_linearize;
+use crate::resolution::get_function_safety;
+use crate::resolution::resolve_program;
 use crate::source_map::AstResult;
 use crate::source_map::ModuleProvider;
 use crate::stubs::Stubs;
@@ -1386,17 +1385,28 @@ impl ProjectInfo {
         // each drops from its caller's missing-dep set, promoting callers left with no
         // missing dep to Safe. Module-scope mutations cannot be confirmed (sink unused);
         // module-scope imported-arg mutations are caught by the module-scope pass.
-        apply_mutation_candidates(
-            candidates.iter().map(|(m, v)| (*m, v.as_slice())),
+        let outcome = resolve_program(
             &module_names,
             &mut view,
-            |_module, _metadata| {},
+            candidates
+                .iter()
+                .map(|(module, candidates)| (*module, candidates.as_slice())),
+            AHashSet::new(),
+            // Never reached, which is why the index handed to promotion above can
+            // be empty: `resolve_program` only indexes a name when a module-scope
+            // candidate is *confirmed*, and none can be here. Asserted rather than
+            // gated so that the assumption fails loudly if it stops holding.
+            |module, metadata| {
+                debug_assert!(
+                    false,
+                    "whole-program pass confirmed a module-scope mutation ({}.{}), but no \
+                     candidate callee should resolve here",
+                    module.as_str(),
+                    metadata,
+                );
+            },
         );
-
-        // Promotion fixpoint: a callee promoted to Safe can unblock its callers.
-        let (promoted, _globally_safe_funcs) =
-            promote_fixpoint(&module_names, &mut view, AHashSet::new());
-        changed.extend(promoted);
+        changed.extend(outcome.promoted);
 
         // Write back only changed verdicts so the module-scope pass reads them.
         changed.par_iter().for_each(|(module, local)| {

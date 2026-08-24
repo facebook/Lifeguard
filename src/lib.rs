@@ -34,6 +34,7 @@ pub mod mro;
 pub mod output;
 pub mod project;
 pub mod pyrefly;
+mod resolution;
 pub mod runner;
 pub mod source_analyzer;
 pub mod source_map;

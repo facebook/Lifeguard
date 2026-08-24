@@ -33,3 +33,13 @@ pub type AHashMap<K, V> = std::collections::HashMap<K, V, FixedState>;
 
 /// Drop-in replacement for `ahash::AHashSet` using a fixed seed.
 pub type AHashSet<K> = std::collections::HashSet<K, FixedState>;
+
+/// Union two sets by extending the larger allocation with the smaller one to minimize rehashing.
+pub fn union_larger<T>(a: AHashSet<T>, b: AHashSet<T>) -> AHashSet<T>
+where
+    T: Eq + std::hash::Hash,
+{
+    let (mut large, small) = if a.len() >= b.len() { (a, b) } else { (b, a) };
+    large.extend(small);
+    large
+}
