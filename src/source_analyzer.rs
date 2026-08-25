@@ -1626,7 +1626,18 @@ impl<'a> SourceAnalyzer<'a> {
             Stmt::Import(e) => self.add_pending_import(e, output),
             Stmt::ImportFrom(e) => self.import_from(e, output),
             Stmt::Assert(e) => self.assert_(e, output),
-            _ => {}
+            // A type alias' value is only evaluated on first access (PEP 695).
+            Stmt::TypeAlias(_) => {}
+            // Nothing to evaluate.
+            Stmt::Pass(_)
+            | Stmt::Break(_)
+            | Stmt::Continue(_)
+            | Stmt::Global(_)
+            | Stmt::Nonlocal(_) => {}
+            // `!cmd` / `%magic` runs arbitrary code, but it only parses in a
+            // notebook: the analyzer is handed `.py` sources, where this cannot
+            // appear.
+            Stmt::IpyEscapeCommand(_) => {}
         }
         // Recurse into the bodies of block constructs we don't handle specially
         if matches!(x, Stmt::For(_) | Stmt::While(_) | Stmt::Match(_)) {

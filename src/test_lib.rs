@@ -415,6 +415,20 @@ fn check_output_with_config(
     implicit_imports: Option<Vec<(&str, Vec<&str>)>>,
     config: AnalysisConfig,
 ) {
+    if let Some(mismatch) = output_mismatch(modules, check, implicit_imports, config) {
+        panic!("{mismatch}");
+    }
+}
+
+/// How the analysis differs from the modules' annotations, or `None` when they
+/// agree. Split out from [`check_output_with_config`] so a test over a table of
+/// snippets can report every row that fails rather than only the first.
+fn output_mismatch(
+    modules: Vec<(&str, &str)>,
+    check: Check,
+    implicit_imports: Option<Vec<(&str, Vec<&str>)>>,
+    config: AnalysisConfig,
+) -> Option<String> {
     let sources = TestSources::new(&modules);
     let (import_graph, exports, in_scope) = ImportGraph::make_with_exports(&sources, &config);
 
@@ -461,13 +475,23 @@ fn check_output_with_config(
             let module_analysis = effect_map.get(&module_name).unwrap();
             get_effects(&module_analysis.module_effects, &module_info)
         };
-        assert_expectations(code, &errs);
+        if let Some(mismatch) = expectation_mismatch(code, &errs) {
+            return Some(mismatch);
+        }
     }
+    None
 }
 
 /// Compare what the analysis found in a module against the expectations
 /// annotated in its source.
 fn assert_expectations(code: &str, errs: &[ExpectedError]) {
+    if let Some(mismatch) = expectation_mismatch(code, errs) {
+        panic!("{mismatch}");
+    }
+}
+
+/// How the analysis differs from the code's annotations, or `None` when they agree.
+fn expectation_mismatch(code: &str, errs: &[ExpectedError]) -> Option<String> {
     let exp = Expectation::parse(code);
     let expected_errs: AHashSet<&ExpectedError> = exp.errors.iter().collect();
     let actual_errs: AHashSet<&ExpectedError> = errs.iter().collect();
@@ -475,12 +499,8 @@ fn assert_expectations(code: &str, errs: &[ExpectedError]) {
     // Take both set differences, {actual} - {expected} and {expected} - {actual}
     let not_asserted: Vec<_> = actual_errs.difference(&expected_errs).collect();
     let not_raised: Vec<_> = expected_errs.difference(&actual_errs).collect();
-    assert!(
-        not_asserted.is_empty() && not_raised.is_empty(),
-        "Not asserted: {:?}\nNot raised: {:?}",
-        not_asserted,
-        not_raised
-    );
+    (!not_asserted.is_empty() || !not_raised.is_empty())
+        .then(|| format!("Not asserted: {not_asserted:?}\nNot raised: {not_raised:?}"))
 }
 
 fn get_safety_errors(sft: &ModuleSafety, mi: &Module) -> Vec<ExpectedError> {
@@ -532,6 +552,16 @@ pub fn check_errors_and_implicit_imports(
 
 pub fn check_effects(code: &str) {
     check_output(vec![("test", code)], Check::Effects, None);
+}
+
+/// [`check_effects`], reporting the mismatch instead of panicking.
+pub fn effects_mismatch(code: &str) -> Option<String> {
+    output_mismatch(
+        vec![("test", code)],
+        Check::Effects,
+        None,
+        AnalysisConfig::default(),
+    )
 }
 
 pub fn check_effects_as_main(code: &str) {

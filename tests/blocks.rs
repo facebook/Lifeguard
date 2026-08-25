@@ -33,6 +33,50 @@ for x in f():  # E: imported-function-call
         check_effects(code);
     }
 
+    /// One row per statement kind the analyzer walks, pinning the expression it is
+    /// expected to reach. Exhaustiveness over `Stmt` is enforced by the `match` in
+    /// `source_analyzer::stmt`, not here.
+    #[test]
+    fn test_expressions_are_analyzed_in_every_statement_kind() {
+        let statements = [
+            "x = f()  # E: imported-function-call",
+            "x: int = f()  # E: imported-function-call",
+            "x += f()  # E: imported-function-call",
+            "del f()[f()]  # E: imported-function-call",
+            "del f().x  # E: imported-function-call",
+            "f()  # E: imported-function-call",
+            "def g():\n    return f()  # E: imported-function-call",
+            "def g(x=f()):  # E: imported-function-call\n    pass",
+            "class C(f()):  # E: imported-function-call\n    pass",
+            "raise f() from f()  # E: raise  # E: imported-function-call",
+            "assert True, f()  # E: imported-function-call",
+            "@f()  # E: imported-decorator-call\ndef g():\n    pass",
+            // PEP 695 defers a type alias' value to first access.
+            "type X = f()",
+            "if f():  # E: imported-function-call\n    pass",
+            "while f():  # E: imported-function-call\n    break",
+            "for x in f():  # E: imported-function-call\n    pass",
+            "with f():  # E: imported-function-call\n    pass",
+            "try:\n    f()  # E: imported-function-call\nfinally:\n    pass",
+            "match f():  # E: imported-function-call\n    case _:\n        pass",
+        ];
+
+        // Report every kind that was missed, not just the first.
+        let missed: Vec<String> = statements
+            .into_iter()
+            .filter_map(|statement| {
+                let code = format!("from foo import f\n{statement}\n");
+                effects_mismatch(&code).map(|mismatch| format!("{statement}\n{mismatch}"))
+            })
+            .collect();
+
+        assert!(
+            missed.is_empty(),
+            "expressions were not analyzed in:\n{}",
+            missed.join("\n\n")
+        );
+    }
+
     #[test]
     fn test_del_attribute_effects() {
         let code = r#"
