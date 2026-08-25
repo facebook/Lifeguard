@@ -34,6 +34,30 @@ for x in f():  # E: imported-function-call
     }
 
     #[test]
+    fn test_del_attribute_effects() {
+        let code = r#"
+from foo import f
+del f().x  # E: imported-function-call
+"#;
+        // Deleting an attribute evaluates the object it is on.
+        check_effects(code);
+    }
+
+    #[test]
+    fn test_del_subscript_effects() {
+        // Expectations are matched per line, so the receiver and the key are split
+        // across two of them to pin both.
+        let code = r#"
+from foo import f, g
+del f()[  # E: imported-function-call
+    g()  # E: imported-function-call
+]
+"#;
+        // Deleting an element evaluates both the receiver and the key.
+        check_effects(code);
+    }
+
+    #[test]
     fn test_class_base_effects() {
         let code = r#"
 from foo import f, g

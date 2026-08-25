@@ -1167,8 +1167,16 @@ impl<'a> SourceAnalyzer<'a> {
     fn delete(&self, x: &StmtDelete, output: &mut ModuleEffects) {
         for target in &x.targets {
             match target {
-                Expr::Subscript(_) | Expr::Attribute(_) => {
+                Expr::Subscript(e) => {
                     self.check_assign_target(target, output);
+                    // `del f()[k]` evaluates the receiver and the key.
+                    self.expr(&e.value, output);
+                    self.expr(&e.slice, output);
+                }
+                Expr::Attribute(e) => {
+                    self.check_assign_target(target, output);
+                    // `del f().x` evaluates the object the attribute is on.
+                    self.expr(&e.value, output);
                 }
                 _ => {}
             }
