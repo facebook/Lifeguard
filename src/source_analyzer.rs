@@ -1237,6 +1237,19 @@ impl<'a> SourceAnalyzer<'a> {
 
     fn class_def(&mut self, x: &StmtClassDef, output: &mut ModuleEffects) {
         self.check_decorators(&x.decorator_list, output);
+        // Base classes and keywords (`metaclass=`) are evaluated in the enclosing
+        // scope, before the class body runs. A bare name like `class C(Base)` is
+        // skipped: looking one up has no side effect
+        if let Some(arguments) = &x.arguments {
+            let evaluated = arguments
+                .args
+                .iter()
+                .chain(arguments.keywords.iter().map(|keyword| &keyword.value))
+                .filter(|expr| !matches!(expr, Expr::Name(_)));
+            for expr in evaluated {
+                self.expr(expr, output);
+            }
+        }
         self.cursor.enter_class_scope(x);
         let exported_name = Attribute::new(self.info.module_name, &x.name.id);
         self.check_re_exports(&exported_name, x.range, output);

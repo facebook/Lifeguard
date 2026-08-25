@@ -34,6 +34,28 @@ for x in f():  # E: imported-function-call
     }
 
     #[test]
+    fn test_class_base_effects() {
+        let code = r#"
+from foo import f, g
+class C(f(), metaclass=g()):  # E: imported-function-call  # E: imported-function-call
+    pass
+"#;
+        // Bases and keywords are evaluated where the class is defined.
+        check_effects(code);
+    }
+
+    /// Looking up a name has no side effect
+    #[test]
+    fn test_class_base_name_is_not_an_effect() {
+        let code = r#"
+from foo import Base
+class C(Base):
+    pass
+"#;
+        check_effects(code);
+    }
+
+    #[test]
     fn test_parameter_default_effects() {
         let code = r#"
 from foo import f
