@@ -31,7 +31,7 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
-          toolchain: nightly-2026-05-22
+          toolchain: nightly-2026-07-05
           components: clippy, rustfmt
       - name: Build sdist
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
