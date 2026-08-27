@@ -398,17 +398,21 @@ impl LibraryCache {
             )
             .with_decorator_cache(&decorator_scan_cache)
             .with_class_bases(class_bases);
-            self.clear_errors_where(&resolver, |_| true);
+            self.clear_errors_where(|caller, error| resolver.clears_error(caller, error, |_| true));
         } else {
-            // Without promotion evidence, clear only `UnsafeDecoratorCall`: its
-            // safety follows from static verdicts alone. Decorator checks ignore
-            // the globally-safe index, so an empty one suffices.
+            // Without promotion evidence, clear only static-safe kinds:
+            // `UnsafeDecoratorCall` via the general verdict, plus (always, inside
+            // `clears_error`) constructor-shaped `UnsafeFunctionCall` and
+            // class-decorator calls, whose safety follows from static verdicts alone.
+            // These checks ignore the globally-safe index, so an empty one suffices.
             let empty = AHashSet::new();
             let resolver =
                 SafetyResolver::with_safe_index(module_names, func_safety_by_module, &empty)
                     .with_decorator_cache(&decorator_scan_cache)
                     .with_class_bases(class_bases);
-            self.clear_errors_where(&resolver, |kind| kind == ErrorKind::UnsafeDecoratorCall);
+            self.clear_errors_where(|caller, error| {
+                resolver.clears_error(caller, error, |kind| kind == ErrorKind::UnsafeDecoratorCall)
+            });
         }
         debug!("{} functions promoted", outcome.promoted.len());
     }
@@ -436,22 +440,20 @@ impl LibraryCache {
             .reduce(AHashSet::new, union_larger)
     }
 
-    /// Drop every error whose kind `should_clear` selects and that `resolver`
-    /// verifies as safe, in parallel. Returns whether any error was removed.
+    /// Drop every error `should_clear` admits, in parallel. Returns whether any
+    /// error was removed.
     fn clear_errors_where(
         &mut self,
-        resolver: &SafetyResolver,
-        should_clear: impl Fn(ErrorKind) -> bool + Sync,
+        should_clear: impl Fn(ModuleName, &CachedError) -> bool + Sync,
     ) -> bool {
         self.modules
             .par_iter_mut()
             .map(|module| {
+                let caller = module.name;
                 let CachedSafety::Ok(ref mut safety) = module.safety else {
                     return false;
                 };
-                retain_unverified_errors(safety, |error| {
-                    should_clear(error.kind) && resolver.is_error_verified_safe(error)
-                })
+                retain_unverified_errors(safety, |error| should_clear(caller, error))
             })
             .reduce(|| false, |any_cleared, cleared| any_cleared || cleared)
     }
@@ -920,6 +922,43 @@ impl<'a> SafetyResolver<'a> {
             .any(|fs| lookup_decorator_in_safety_map(func_name, fs))
     }
 
+    /// Whether a constructor-shaped call is verified safe for `caller_module`,
+    /// using the class's `__new__`/`__init__` verdicts rather than its aggregate
+    /// verdict. Walks past package parents to the concrete module entry. An
+    /// `UnsafeIfImported` constructor only clears within its own module.
+    fn is_constructor_call_verified_safe_for_caller(
+        &self,
+        caller_module: &ModuleName,
+        func_name: &str,
+    ) -> bool {
+        let fqn = ModuleName::from_str(func_name);
+        for (parent, dot_pos) in fqn.iter_parents() {
+            if self.modules.contains(&parent) {
+                let local_name = &func_name[dot_pos + 1..];
+                if let Some(verdict) = self
+                    .by_module
+                    .get(&parent)
+                    .and_then(|fs| constructor_verdict(local_name, fs))
+                {
+                    return verdict == FunctionSafety::Safe
+                        || (verdict == FunctionSafety::UnsafeIfImported
+                            && caller_module == &parent);
+                }
+            }
+        }
+        false
+    }
+
+    /// A class-decorator call verifies safe exactly when the decorated class's
+    /// constructor does.
+    fn is_class_decorator_call_verified_safe_for_caller(
+        &self,
+        caller_module: &ModuleName,
+        func_name: &str,
+    ) -> bool {
+        self.is_constructor_call_verified_safe_for_caller(caller_module, func_name)
+    }
+
     /// Dispatch a cached error to the right verified-safe check by kind. The
     /// callee `metadata` may render with trailing `()` suffixes; strip them here.
     ///
@@ -938,6 +977,32 @@ impl<'a> SafetyResolver<'a> {
                 self.is_call_verified_safe_no_unqualified(func_name)
             }
             _ => self.is_call_verified_safe(func_name),
+        }
+    }
+
+    /// Whether `error` in `caller` may be dropped. Constructor-shaped
+    /// `UnsafeFunctionCall` and class-decorator calls clear on their per-caller
+    /// static verdict, so they do not consult `kinds`; every other kind clears
+    /// only when `kinds` admits it and the general verdict verifies it.
+    fn clears_error(
+        &self,
+        caller: ModuleName,
+        error: &CachedError,
+        kinds: impl Fn(ErrorKind) -> bool,
+    ) -> bool {
+        let func_name = error.metadata.trim_end_matches("()");
+        match error.kind {
+            ErrorKind::UnsafeFunctionCall
+                if self.is_constructor_call_verified_safe_for_caller(&caller, func_name) =>
+            {
+                true
+            }
+            ErrorKind::UnsafeDecoratorCall
+                if self.is_class_decorator_call_verified_safe_for_caller(&caller, func_name) =>
+            {
+                true
+            }
+            kind => kinds(kind) && self.is_error_verified_safe(error),
         }
     }
 }
@@ -963,6 +1028,12 @@ fn lookup_decorator_in_safety_map(
     if !lookup_in_safety_map(local_name, fs) {
         return false;
     }
+    // A class decorator returns the class, so its constructor methods (not
+    // arbitrary nested defs) govern import-time safety; the aggregate-safe
+    // factory verdict already reflects them.
+    if is_class_like_entry(local_name, fs) {
+        return true;
+    }
     fs.iter().all(|(name, info)| {
         let is_immediate_child = name
             .strip_prefix(local_name)
@@ -970,6 +1041,29 @@ fn lookup_decorator_in_safety_map(
             .is_some_and(|child| !child.contains('.'));
         !is_immediate_child || info.verdict == FunctionSafety::Safe
     })
+}
+
+/// The `function_safety` entry names of `local_name`'s constructor methods.
+fn constructors(local_name: &str) -> impl Iterator<Item = String> + '_ {
+    ["__new__", "__init__"]
+        .into_iter()
+        .map(move |method| format!("{local_name}.{method}"))
+}
+
+/// Whether `local_name` names a class: it has a cached `__init__`/`__new__`.
+fn is_class_like_entry(local_name: &str, fs: &AHashMap<String, FunctionSafetyInfo>) -> bool {
+    constructors(local_name).any(|method| fs.contains_key(&method))
+}
+
+/// The combined `__new__`/`__init__` verdict of a class, or `None` if neither is
+/// cached (i.e. `local_name` is not a resolvable constructor).
+fn constructor_verdict(
+    local_name: &str,
+    fs: &AHashMap<String, FunctionSafetyInfo>,
+) -> Option<FunctionSafety> {
+    constructors(local_name)
+        .filter_map(|method| fs.get(&method).map(|info| info.verdict))
+        .reduce(|acc, verdict| acc | verdict)
 }
 
 /// Merge `incoming` into `fs[attr]`, inserting a clone if absent. Returns whether
@@ -1423,7 +1517,11 @@ mod tests {
             .num_threads(1)
             .build()
             .expect("should build test thread pool")
-            .install(|| cache.clear_errors_where(&resolver, |_| true));
+            .install(|| {
+                cache.clear_errors_where(|caller, error| {
+                    resolver.clears_error(caller, error, |_| true)
+                })
+            });
 
         assert!(
             cleared,

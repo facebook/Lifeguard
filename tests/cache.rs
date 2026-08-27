@@ -1545,6 +1545,309 @@ mod tests {
         );
     }
 
+    /// The state left behind when a constructor is promoted at reduce time:
+    /// `Widget.__init__` was cached `UnsafeMissingDep`, which failed the
+    /// constructor check and gave `app` its error, and `precompute_constructor_safety`
+    /// recorded the class-level `Widget` entry as hard `Unsafe`. Resolving the
+    /// missing dep promotes `Widget.__init__` to `Safe`, but the class-level entry
+    /// stays `Unsafe` because `can_promote` rejects hard `Unsafe`. Clearing the
+    /// error therefore has to read the constructor methods, not that entry.
+    #[test]
+    fn test_safe_constructor_error_clears_without_promotion() {
+        let mut cache = LibraryCache {
+            modules: vec![
+                CachedModule {
+                    name: mn("app"),
+                    safety: CachedSafety::Ok(CachedModuleSafety {
+                        errors: vec![CachedError {
+                            kind: ErrorKind::UnsafeFunctionCall,
+                            metadata: "dep.Widget".to_owned(),
+                            parameterized_decorator: false,
+                        }],
+                        ..Default::default()
+                    }),
+                    imports: [mn("dep")].into_iter().collect(),
+                    missing_imports: Default::default(),
+                    ambiguous_imports: Default::default(),
+                    side_effect_imports: Default::default(),
+                    function_safety: AHashMap::new(),
+                    mutation_candidates: Vec::new(),
+                },
+                CachedModule {
+                    name: mn("dep"),
+                    safety: CachedSafety::Ok(CachedModuleSafety::default()),
+                    imports: Default::default(),
+                    missing_imports: Default::default(),
+                    ambiguous_imports: Default::default(),
+                    side_effect_imports: Default::default(),
+                    function_safety: fsmap([unsafe_("Widget"), safe("Widget.__init__")]),
+                    mutation_candidates: Vec::new(),
+                },
+            ],
+            exports: empty_exports(),
+            class_bases: Vec::new(),
+        };
+
+        cache.resolve_cross_library_errors();
+
+        let app = cache
+            .modules
+            .iter()
+            .find(|x| x.name == mn("app"))
+            .expect("app module should be present");
+        assert!(app.is_safe(), "safe constructor call should be cleared");
+    }
+
+    #[test]
+    fn test_safe_constructor_error_uses_nested_module_parent() {
+        let mut cache = LibraryCache {
+            modules: vec![
+                CachedModule {
+                    name: mn("pkg"),
+                    safety: CachedSafety::Ok(CachedModuleSafety::default()),
+                    imports: Default::default(),
+                    missing_imports: Default::default(),
+                    ambiguous_imports: Default::default(),
+                    side_effect_imports: Default::default(),
+                    function_safety: AHashMap::new(),
+                    mutation_candidates: Vec::new(),
+                },
+                CachedModule {
+                    name: mn("pkg.debug"),
+                    safety: CachedSafety::Ok(CachedModuleSafety {
+                        errors: vec![CachedError {
+                            kind: ErrorKind::UnsafeFunctionCall,
+                            metadata: "pkg.debug.Printer".to_owned(),
+                            parameterized_decorator: false,
+                        }],
+                        ..Default::default()
+                    }),
+                    imports: Default::default(),
+                    missing_imports: Default::default(),
+                    ambiguous_imports: Default::default(),
+                    side_effect_imports: Default::default(),
+                    function_safety: fsmap([
+                        unsafe_("Printer"),
+                        safe("Printer.__init__"),
+                        (
+                            "Printer.__call__".to_owned(),
+                            FunctionSafetyInfo::new(FunctionSafety::UnsafeMissingDep),
+                        ),
+                    ]),
+                    mutation_candidates: Vec::new(),
+                },
+            ],
+            exports: empty_exports(),
+            class_bases: Vec::new(),
+        };
+
+        cache.resolve_cross_library_errors();
+
+        let debug = cache
+            .modules
+            .iter()
+            .find(|x| x.name == mn("pkg.debug"))
+            .expect("debug module should be present");
+        assert!(
+            debug.is_safe(),
+            "same-module constructor calls should use the concrete nested module and the constructor method verdict",
+        );
+    }
+
+    #[test]
+    fn test_safe_function_error_does_not_clear_without_promotion() {
+        let mut cache = LibraryCache {
+            modules: vec![
+                CachedModule {
+                    name: mn("app"),
+                    safety: CachedSafety::Ok(CachedModuleSafety {
+                        errors: vec![CachedError {
+                            kind: ErrorKind::UnsafeFunctionCall,
+                            metadata: "dep.helper".to_owned(),
+                            parameterized_decorator: false,
+                        }],
+                        ..Default::default()
+                    }),
+                    imports: [mn("dep")].into_iter().collect(),
+                    missing_imports: Default::default(),
+                    ambiguous_imports: Default::default(),
+                    side_effect_imports: Default::default(),
+                    function_safety: AHashMap::new(),
+                    mutation_candidates: Vec::new(),
+                },
+                CachedModule {
+                    name: mn("dep"),
+                    safety: CachedSafety::Ok(CachedModuleSafety::default()),
+                    imports: Default::default(),
+                    missing_imports: Default::default(),
+                    ambiguous_imports: Default::default(),
+                    side_effect_imports: Default::default(),
+                    function_safety: fsmap([safe("helper")]),
+                    mutation_candidates: Vec::new(),
+                },
+            ],
+            exports: empty_exports(),
+            class_bases: Vec::new(),
+        };
+
+        cache.resolve_cross_library_errors();
+
+        let app = cache
+            .modules
+            .iter()
+            .find(|x| x.name == mn("app"))
+            .expect("app module should be present");
+        assert!(
+            !app.is_safe(),
+            "ordinary safe function calls should not clear in the no-promotion pass",
+        );
+    }
+
+    #[test]
+    fn test_unsafe_if_imported_constructor_clears_for_same_module() {
+        let mut cache = LibraryCache {
+            modules: vec![CachedModule {
+                name: mn("dep"),
+                safety: CachedSafety::Ok(CachedModuleSafety {
+                    errors: vec![CachedError {
+                        kind: ErrorKind::UnsafeFunctionCall,
+                        metadata: "dep.Widget".to_owned(),
+                        parameterized_decorator: false,
+                    }],
+                    ..Default::default()
+                }),
+                imports: Default::default(),
+                missing_imports: Default::default(),
+                ambiguous_imports: Default::default(),
+                side_effect_imports: Default::default(),
+                function_safety: fsmap([
+                    unsafe_if_imported("Widget"),
+                    unsafe_if_imported("Widget.__init__"),
+                ]),
+                mutation_candidates: Vec::new(),
+            }],
+            exports: empty_exports(),
+            class_bases: Vec::new(),
+        };
+
+        cache.resolve_cross_library_errors();
+
+        let dep = cache
+            .modules
+            .iter()
+            .find(|x| x.name == mn("dep"))
+            .expect("dep module should be present");
+        assert!(
+            dep.is_safe(),
+            "UnsafeIfImported constructors are safe when called from their own module",
+        );
+    }
+
+    #[test]
+    fn test_unsafe_if_imported_constructor_stays_unsafe_cross_module() {
+        let mut cache = LibraryCache {
+            modules: vec![
+                CachedModule {
+                    name: mn("app"),
+                    safety: CachedSafety::Ok(CachedModuleSafety {
+                        errors: vec![CachedError {
+                            kind: ErrorKind::UnsafeFunctionCall,
+                            metadata: "dep.Widget".to_owned(),
+                            parameterized_decorator: false,
+                        }],
+                        ..Default::default()
+                    }),
+                    imports: [mn("dep")].into_iter().collect(),
+                    missing_imports: Default::default(),
+                    ambiguous_imports: Default::default(),
+                    side_effect_imports: Default::default(),
+                    function_safety: AHashMap::new(),
+                    mutation_candidates: Vec::new(),
+                },
+                CachedModule {
+                    name: mn("dep"),
+                    safety: CachedSafety::Ok(CachedModuleSafety::default()),
+                    imports: Default::default(),
+                    missing_imports: Default::default(),
+                    ambiguous_imports: Default::default(),
+                    side_effect_imports: Default::default(),
+                    function_safety: fsmap([
+                        unsafe_if_imported("Widget"),
+                        unsafe_if_imported("Widget.__init__"),
+                    ]),
+                    mutation_candidates: Vec::new(),
+                },
+            ],
+            exports: empty_exports(),
+            class_bases: Vec::new(),
+        };
+
+        cache.resolve_cross_library_errors();
+
+        let app = cache
+            .modules
+            .iter()
+            .find(|x| x.name == mn("app"))
+            .expect("app module should be present");
+        assert!(
+            !app.is_safe(),
+            "UnsafeIfImported constructors stay unsafe when called cross-module",
+        );
+    }
+
+    #[test]
+    fn test_class_decorator_error_uses_constructor_safety() {
+        let mut cache = LibraryCache {
+            modules: vec![
+                CachedModule {
+                    name: mn("app"),
+                    safety: CachedSafety::Ok(CachedModuleSafety {
+                        errors: vec![CachedError {
+                            kind: ErrorKind::UnsafeDecoratorCall,
+                            metadata: "dep.Decorator".to_owned(),
+                            parameterized_decorator: true,
+                        }],
+                        ..Default::default()
+                    }),
+                    imports: [mn("dep")].into_iter().collect(),
+                    missing_imports: Default::default(),
+                    ambiguous_imports: Default::default(),
+                    side_effect_imports: Default::default(),
+                    function_safety: AHashMap::new(),
+                    mutation_candidates: Vec::new(),
+                },
+                CachedModule {
+                    name: mn("dep"),
+                    safety: CachedSafety::Ok(CachedModuleSafety::default()),
+                    imports: Default::default(),
+                    missing_imports: Default::default(),
+                    ambiguous_imports: Default::default(),
+                    side_effect_imports: Default::default(),
+                    function_safety: fsmap([
+                        safe("Decorator"),
+                        safe("Decorator.__init__"),
+                        unsafe_("Decorator.helper"),
+                    ]),
+                    mutation_candidates: Vec::new(),
+                },
+            ],
+            exports: empty_exports(),
+            class_bases: Vec::new(),
+        };
+
+        cache.resolve_cross_library_errors();
+
+        let app = cache
+            .modules
+            .iter()
+            .find(|x| x.name == mn("app"))
+            .expect("app module should be present");
+        assert!(
+            app.is_safe(),
+            "class decorators should be verified from constructor safety, not class method safety",
+        );
+    }
+
     #[test]
     fn test_error_cleared_from_ambiguous_import() {
         let dep_cache = build_cache(&TestSources::new(&[
