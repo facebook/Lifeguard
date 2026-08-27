@@ -1043,9 +1043,12 @@ fn lookup_decorator_in_safety_map(
     })
 }
 
+/// The methods that run when a class is instantiated.
+pub(crate) const CONSTRUCTOR_METHODS: [&str; 2] = ["__new__", "__init__"];
+
 /// The `function_safety` entry names of `local_name`'s constructor methods.
 fn constructors(local_name: &str) -> impl Iterator<Item = String> + '_ {
-    ["__new__", "__init__"]
+    CONSTRUCTOR_METHODS
         .into_iter()
         .map(move |method| format!("{local_name}.{method}"))
 }

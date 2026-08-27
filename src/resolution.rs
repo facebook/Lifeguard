@@ -8,6 +8,7 @@
 use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
 
+use crate::cache::CONSTRUCTOR_METHODS;
 use crate::hasher::AHashMap;
 use crate::hasher::AHashSet;
 use crate::hasher::HashMapExt;
@@ -194,7 +195,7 @@ fn candidate_mutates(
     if callee_mutates(&candidate.callee, candidate.arg_offset) {
         return true;
     }
-    ["__init__", "__new__"].into_iter().any(|method| {
+    CONSTRUCTOR_METHODS.into_iter().any(|method| {
         callee_mutates(
             &candidate.callee.append_str(method),
             candidate.arg_offset + 1,

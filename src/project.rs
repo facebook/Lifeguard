@@ -24,6 +24,7 @@ use tracing::warn;
 
 use crate::analyzer;
 use crate::analyzer::AnalyzedModule;
+use crate::cache::CONSTRUCTOR_METHODS;
 use crate::class::Class;
 use crate::class::ClassTable;
 use crate::class::FieldKind;
@@ -983,7 +984,7 @@ fn constructor_method_names(
     let metaclass = classes.lookup(&cls_name).and_then(|cls| cls.metaclass);
     metaclass
         .into_iter()
-        .flat_map(|mcls| [mcls.append_str("__new__"), mcls.append_str("__init__")])
+        .flat_map(|mcls| CONSTRUCTOR_METHODS.map(|method| mcls.append_str(method)))
         .chain([
             cls_name.append_str("__init__"),
             cls_name.append_str("__post_init__"),
