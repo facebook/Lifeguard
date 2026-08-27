@@ -28,9 +28,9 @@ postcard = { version = "1.0.8", features = ["use-crc", "use-std"] }
 pyrefly_python = { path = "../pyrefly/crates/pyrefly_python" }
 pyrefly_util = { path = "../pyrefly/crates/pyrefly_util" }
 rayon = "1.11.0"
-ruff_python_ast = "0.0.8"
-ruff_python_parser = "0.0.8"
-ruff_text_size = "0.0.8"
+ruff_python_ast = "0.0.9"
+ruff_python_parser = "0.0.9"
+ruff_text_size = "0.0.9"
 serde = { version = "1.0.229", features = ["derive", "rc"] }
 serde_json = { version = "1.0.151", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
 starlark_map = "0.14.2"

@@ -820,7 +820,7 @@ impl<'a> DefinitionsBuilder<'a> {
         if let Some(imported_module) = import_module_state.match_call(call) {
             self.add_name(
                 &imported_module.first_component(),
-                call.range,
+                call.range(),
                 DefinitionStyle::ImportModule(imported_module),
             );
             return true;

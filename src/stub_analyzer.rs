@@ -14,6 +14,7 @@ use ruff_python_ast::Stmt;
 use ruff_python_ast::StmtClassDef;
 use ruff_python_ast::StmtFunctionDef;
 use ruff_python_ast::StmtIf;
+use ruff_text_size::Ranged as _;
 use tracing::trace;
 
 use crate::analyzer::AnalyzedModule;
@@ -96,7 +97,7 @@ impl<'a> StubAnalyzer<'a> {
             [] => Some(ModuleName::empty()),
             _ => None,
         }?;
-        Some(Effect::new(kind, arg, call.range))
+        Some(Effect::new(kind, arg, call.range()))
     }
 
     fn parse_call(&self, call: &ExprCall, output: &mut ModuleEffects) {
@@ -104,7 +105,7 @@ impl<'a> StubAnalyzer<'a> {
             output.add_effect(self.cursor.scope(), eff)
         } else {
             let err = format!("Could not parse effect {:?}", call);
-            output.add_file_error(err, call.range);
+            output.add_file_error(err, call.range());
         }
     }
 
