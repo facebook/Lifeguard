@@ -207,6 +207,28 @@ fn mark_called_imports(output: &mut ModuleEffects) {
     }
 }
 
+fn string_literal_module(expr: &Expr) -> Option<ModuleName> {
+    let Expr::StringLiteral(key) = expr else {
+        return None;
+    };
+    let key = key.value.to_str();
+    (!key.is_empty()).then(|| ModuleName::from_str(key))
+}
+
+/// The module a `sys.modules["a.b"]` read names. Writes are excluded: they
+/// register a module under a key rather than looking one up.
+fn sys_modules_key(e: &ExprSubscript) -> Option<ModuleName> {
+    if e.ctx != ExprContext::Load {
+        return None;
+    }
+    string_literal_module(&e.slice)
+}
+
+/// An expectation, not a guarantee like the self and ancestor cases: nothing restores
+/// a key another module deleted. Tolerated because only a module-scope read can be
+/// reordered past such a delete, and these keys are read from function bodies.
+const EXPECTED_IN_SYS_MODULES: &[&str] = &["__main__", "builtins", "sys"];
+
 fn is_builtin_literal(expr: &Expr) -> bool {
     matches!(
         expr,
@@ -962,6 +984,26 @@ impl<'a> SourceAnalyzer<'a> {
         false
     }
 
+    /// Python registers a module before running its body and imports every ancestor
+    /// package first, so the self and ancestor cases hold whatever the order.
+    fn sys_modules_read_likely_safe(&self, e: &ExprSubscript) -> bool {
+        let Some(key) = sys_modules_key(e) else {
+            return false;
+        };
+        let reader = self.info.module_name;
+        EXPECTED_IN_SYS_MODULES.contains(&key.as_str())
+            || reader == key
+            || reader.iter_parents().any(|(parent, _)| parent == key)
+    }
+
+    fn add_sys_modules_access(&self, range: TextRange, output: &mut ModuleEffects) {
+        let name = ModuleName::from_str("sys.modules");
+        self.add_effect(
+            Effect::new(EffectKind::SysModulesAccess, name, range),
+            output,
+        );
+    }
+
     fn check_sys_modules_access(
         &self,
         expr: &Expr,
@@ -969,16 +1011,17 @@ impl<'a> SourceAnalyzer<'a> {
         output: &mut ModuleEffects,
     ) -> bool {
         if self.is_sys_modules_access(expr) {
-            let name = ModuleName::from_str("sys.modules");
-            let eff = Effect::new(EffectKind::SysModulesAccess, name, range);
-            self.add_effect(eff, output);
+            self.add_sys_modules_access(range, output);
             return true;
         }
         false
     }
 
     fn check_subscript(&self, e: &ExprSubscript, output: &mut ModuleEffects) {
-        if self.check_sys_modules_access(&e.value, e.range(), output) {
+        if self.is_sys_modules_access(&e.value) {
+            if !self.sys_modules_read_likely_safe(e) {
+                self.add_sys_modules_access(e.range(), output);
+            }
             return;
         }
 
