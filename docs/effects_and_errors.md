@@ -93,6 +93,7 @@ pub struct SafetyError {
 | `ImportedModuleAssignment` | Assigning to an imported module's attribute |
 | `ImportedVarArgument` | Passing imported var to a function that mutates params |
 | `UnknownEffects` | Stub declares unknown effects |
+| `TooManyArgs` | Call exceeds `MAX_ARGS` (64) positional args, overflowing the tracking bitset — unless the callee resolves and a stub supplies its effect, which then governs |
 
 ### ModuleSafety (`module_safety.rs`)
 
@@ -103,11 +104,17 @@ pub struct ModuleSafety {
     pub errors: Vec<SafetyError>,
     pub force_imports_eager_overrides: Vec<SafetyError>,
     pub implicit_imports: Vec<ModuleName>,
+    pub function_safety: AHashMap<String, FunctionSafetyInfo>,
+    pub mutation_candidates: Vec<MutationCandidate>,
 }
 ```
 
 - A module `is_safe()` when `errors` is empty.
 - A module `should_load_imports_eagerly()` when `force_imports_eager_overrides` is non-empty (only `CustomFinalizer`, `ExecCall`, `SysModulesAccess`).
+- `function_safety` and `mutation_candidates` carry per-function safety and
+  unresolved-callee mutation candidates for `resolve_program` to settle. This matters most
+  incrementally, where a library analyzed on its own cannot see into its dependencies, but
+  the whole-program path in `project.rs` populates and resolves them too.
 
 `SafetyResult` wraps either `Ok(ModuleSafety)` or `AnalysisError(anyhow::Error)`.
 
@@ -193,4 +200,5 @@ LifeGuardOutput (lazy_eligible dict + load_imports_eagerly set)
 | `project.rs` | Converts effects to errors via call graph analysis |
 | `output.rs` | Converts safety map to final output |
 | `cursor.rs` | Tracks scope during AST traversal (determines where effects are recorded) |
-| `bin/show_effects.rs` | CLI tool to dump effects for a single file |
+| `commands/show_effects.rs` | `show-effects` subcommand — dumps effects for a single file |
+| `resolution.rs` | Settles `function_safety` and mutation candidates across libraries during the reduce |

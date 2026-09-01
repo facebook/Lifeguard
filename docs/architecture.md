@@ -2,7 +2,7 @@
 
 ### Analysis Pipeline
 
-The pipeline is orchestrated through `runner::process_source_map()` (shared by `main.rs` and `commands/run_tree.rs`):
+The pipeline is orchestrated through `runner::process_source_map()` (shared by `commands/analyze.rs` and `commands/run_tree.rs`):
 
 1. **Load sources** - Parse the source DB JSON, load stubs, build `Sources` (`source_map.rs`)
 2. **Build import graph + exports** - Extract import relationships and module exports in a single pass (`ImportGraph::make_with_exports`)
@@ -18,13 +18,34 @@ AST parsing is on-demand — modules are parsed as needed during import graph co
 - `project.rs` runs parallel per-module analysis (dispatching through `analyzer.rs` to `source_analyzer.rs` or `stub_analyzer.rs`), then merges results into `ProjectInfo` and computes safety verdicts
 - `output.rs` walks the import graph to build the final `LifeGuardOutput` (lazy_eligible dict + load_imports_eagerly set)
 
+### Incremental (map/reduce) Analysis
+
+The pipeline above analyzes a program's whole transitive source DB in one pass. The same
+verdicts can also be produced incrementally, so that editing one library does not force a
+re-analysis of everything:
+
+- **Map** — `analyze-library` analyzes a single library against its own sources and writes
+  a binary cache file (`commands/analyze_library.rs`, `cache.rs`, `cache_wire.rs`).
+- **Reduce** — `analyze-binary` merges the per-library caches, resolves cross-library
+  function safety, and emits the same final output (`commands/analyze_binary.rs`,
+  `resolution.rs`).
+
+The map phase cannot see other libraries, so a call it could not resolve is recorded as a
+candidate rather than a verdict; the reduce phase resolves those against the merged program
+(`ErrorKind::could_be_caused_by_missing_import` marks the kinds that can be false positives
+without dependencies). Because the two paths can drift, `compare-paths`
+(`commands/compare_paths.rs`) runs both against one source DB in a single process and fails
+when they disagree on more modules than `--max-divergent-modules` allows.
+
 ### Key Modules
 
 **Analysis core**:
 - `source_analyzer.rs` - Main analysis engine for `.py` files, side-effect detection
 - `stub_analyzer.rs` - Analyzer for `.pyi` stub files, parses effect annotations
+- `analyzer.rs` - Dispatches a module to the source or stub analyzer (`AnalyzedModule`)
 - `project.rs` - Global analysis coordination, call graph traversal, safety verdicts
 - `module_info.rs` - Combined DefinitionTable + ClassTable construction (single AST pass optimization)
+- `mro.rs` - C3 linearization, so an inherited method resolves to the same definition CPython would pick
 
 **Pipeline orchestration**:
 - `runner.rs` - Shared pipeline orchestration used by `main.rs` and `commands/run_tree.rs`
@@ -40,7 +61,8 @@ AST parsing is on-demand — modules are parsed as needed during import graph co
 
 **Error and formatting**:
 - `errors.rs` - Safety error types. These represent incompatibilities with Lazy Imports
-- `module_safety.rs` - Per-module safety results (errors, force_imports_eager_overrides, implicit_imports)
+- `module_safety.rs` - Per-module safety results (errors, force_imports_eager_overrides, implicit_imports, per-function safety, mutation candidates)
+- `format.rs` - Error and expression rendering
 
 **Supporting infrastructure**:
 - `source_map.rs` - Buck source DB loading, parallel AST parsing with rayon
@@ -49,19 +71,32 @@ AST parsing is on-demand — modules are parsed as needed during import graph co
 - `stubs.rs` - Bundled stub file support
 - `output.rs` - `LifeGuardOutput` and `LifeGuardAnalysis` construction
 
+**Incremental analysis**:
+- `cache.rs` - Per-library cache model (`LibraryCache`, `CachedModule`, `CachedExports`)
+- `cache_wire.rs` - On-disk cache format, read and write
+- `resolution.rs` - Function-safety resolution (`resolve_program`); used by the reduce and by the whole-program path in `project.rs`
+
 **Utilities**:
 - `builtins.rs` - Builtin function resolution (e.g., `list`, `open`, `eval`)
 - `graph.rs` - Generic directed graph wrapping `petgraph::DiGraph`, cycle detection via Tarjan's SCC
-- `manual_override.rs` - Hardcoded list of functions declared safe
+- `csr_graph.rs` - Compact CSR graph with an allocation-light iterative Tarjan, for million-node graphs
+- `manual_override.rs` - Hardcoded list of functions declared safe (`SAFE_FUNCTIONS_ARRAY`)
 - `module_parser.rs` - Module parsing abstraction
+- `config.rs` - Analysis configuration (`AnalysisConfig`)
+- `hasher.rs` - Fixed-seed hashing, so the analyzer's many small maps produce deterministic output
 - `tracing.rs` - Simple timing utility
+- `debug.rs` - Dump helpers for exports, import cycles, and the module imports map
 - `traits.rs` - Extension traits bridging lifeguard with pyrefly types
 - `find_sources.rs` - Seeds from `.py` files under a directory and follows imports (optionally into site-packages); shared by `run-tree` and `gen-source-db`
 
-**Binary utilities**:
-- `commands/run_tree.rs` - Subcommand to analyze a directory tree without Buck
-- `commands/show_effects.rs` - Subcommand to dump effects for a single Python file
-- `commands/gen_source_db.rs` - Subcommand to generate a source DB from a directory tree
+**Subcommands** (`src/main.rs` dispatches these; `analyze` is the default):
+- `commands/analyze.rs` - Whole-program analysis of a source DB
+- `commands/analyze_library.rs` - Map phase: one library to a cache file
+- `commands/analyze_binary.rs` - Reduce phase: merge caches into the final output
+- `commands/compare_paths.rs` - Whole-program vs incremental parity check
+- `commands/run_tree.rs` - Analyze a directory tree without a build system
+- `commands/show_effects.rs` - Dump effects for a single Python file
+- `commands/gen_source_db.rs` - Generate a source DB from a directory tree
 
 **Local pyrefly forks**:
 - `pyrefly/definitions.rs` - Local fork of pyrefly's definitions module (with `LIFEGUARD:` markers)
