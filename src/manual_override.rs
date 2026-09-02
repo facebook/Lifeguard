@@ -61,6 +61,7 @@ const SAFE_FUNCTIONS_ARRAY: &[&str] = &[
     // returns a functools.wraps closure. No I/O or state mutation at decoration time.
     "libfb.py.asyncio.decorators.retryable",
     "libfb.py.asyncio.decorators.memoize_timed",
+    "libfb.py.asyncio.decorators.concurrent_memoize",
     // Constructs SpanScope storing name + deferred tracer lambda, wraps with
     // functools.wraps. Span is only started at call time. Explicitly designed
     // for module-level decoration before configure() is called.
