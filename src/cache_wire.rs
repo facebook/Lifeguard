@@ -39,10 +39,6 @@ use crate::module_safety::ParamPosition;
 
 type NameId = u32;
 
-/// Magic header identifying the cache wire format, so a corrupt or wrong-format
-/// file fails with a clear error instead of an opaque decode error.
-const MAGIC: &[u8; 8] = b"LGCACHE2";
-
 /// Write buffer for the cache: caches are O(hundreds of MB), so a large buffer
 /// minimizes write syscalls (matches the JSON writers in `commands`).
 const WRITE_BUFFER_CAPACITY: usize = 1 << 20;
@@ -243,7 +239,6 @@ pub(crate) fn write(cache: &LibraryCache, path: &Path) -> Result<()> {
 
     let file = File::create(path)?;
     let mut writer = BufWriter::with_capacity(WRITE_BUFFER_CAPACITY, file);
-    writer.write_all(MAGIC)?;
     write_len(&mut writer, header_bytes.len())?;
     writer.write_all(&header_bytes)?;
     write_len(&mut writer, module_blobs.len())?;
@@ -257,11 +252,7 @@ pub(crate) fn write(cache: &LibraryCache, path: &Path) -> Result<()> {
 
 pub(crate) fn read(path: &Path) -> Result<LibraryCache> {
     let bytes = std::fs::read(path)?;
-    ensure!(
-        bytes.starts_with(MAGIC),
-        "unsupported Lifeguard cache format"
-    );
-    let mut offset = MAGIC.len();
+    let mut offset = 0;
     let header_len = read_len(&bytes, &mut offset)?;
     let header_end = offset
         .checked_add(header_len)
