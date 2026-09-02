@@ -155,15 +155,17 @@ fn run_single_pass(
 ) -> Result<PathResult> {
     let result = run_pipeline(src_map, root_dir, ExecutionMode::WholeProgram, options)?;
     let errors = if compute_errors {
-        post_resolution_errors(
-            LibraryCache::build(
-                &result.safety_map,
-                &result.import_graph,
-                &result.exports,
-                &result.side_effect_imports,
-            ),
-            options,
-        )
+        let mut cache = LibraryCache::build(
+            &result.safety_map,
+            &result.import_graph,
+            &result.exports,
+            &result.side_effect_imports,
+        );
+        // Both paths have to see the same class facts, or the comparison reports
+        // divergence that is an artifact of how the two caches were built.
+        cache.set_class_bases(result.class_bases.clone());
+        cache.set_constructor_callees(result.constructor_callees.clone());
+        post_resolution_errors(cache, options)
     } else {
         HashMap::new()
     };
@@ -198,6 +200,7 @@ fn run_incremental(
         &result.side_effect_imports,
     );
     cache.set_class_bases(result.class_bases);
+    cache.set_constructor_callees(result.constructor_callees);
     // Per-library caches drop stub-only modules; the reduce re-adds them.
     let graph_only_stubs = cache.inject_bundled_stub_graph(options.python_version);
     let analysis = LifeGuardAnalysis::from_cache(&mut cache, &graph_only_stubs, options);
@@ -624,7 +627,7 @@ mod tests {
                 },
             ],
             exports: empty_exports(),
-            class_bases: Vec::new(),
+            ..Default::default()
         };
 
         assert_eq!(

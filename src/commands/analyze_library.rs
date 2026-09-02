@@ -152,6 +152,7 @@ pub fn run(args: AnalyzeLibraryArgs) -> Result<()> {
             )
         });
         cache.set_class_bases(result.class_bases);
+        cache.set_constructor_callees(result.constructor_callees);
         cache
     };
 

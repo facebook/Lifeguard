@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use pyrefly_python::module_name::ModuleName;
 
+use crate::cache::ConstructorCallees;
 use crate::config::AnalysisConfig;
 use crate::debug::report_memory;
 use crate::imports::ImportGraph;
@@ -90,6 +91,7 @@ pub struct PipelineResult {
     pub exports: crate::exports::Exports,
     pub side_effect_imports: project::SideEffectMap,
     pub class_bases: Vec<(ModuleName, Vec<ModuleName>)>,
+    pub constructor_callees: Vec<(ModuleName, ConstructorCallees)>,
 }
 
 /// Run the analysis pipeline up to (but not including) final output generation.
@@ -134,6 +136,7 @@ pub fn run_pipeline(
         exports,
         side_effect_imports: output.side_effect_imports,
         class_bases: output.class_bases,
+        constructor_callees: output.constructor_callees,
     })
 }
 
@@ -151,6 +154,7 @@ pub fn process_source_map(
         exports,
         side_effect_imports,
         class_bases: _,
+        constructor_callees: _,
     } = result;
 
     if let Some(out) = &options.verbose_output_path {

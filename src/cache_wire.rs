@@ -24,6 +24,7 @@ use crate::cache::CachedModule;
 use crate::cache::CachedModuleSafety;
 use crate::cache::CachedReExport;
 use crate::cache::CachedSafety;
+use crate::cache::ConstructorCallees;
 use crate::cache::LibraryCache;
 use crate::effects::ImportedArgs;
 use crate::hasher::AHashMap;
@@ -40,7 +41,7 @@ type NameId = u32;
 
 /// Magic header identifying the cache wire format, so a corrupt or wrong-format
 /// file fails with a clear error instead of an opaque decode error.
-const MAGIC: &[u8; 8] = b"LGCACHE1";
+const MAGIC: &[u8; 8] = b"LGCACHE2";
 
 /// Write buffer for the cache: caches are O(hundreds of MB), so a large buffer
 /// minimizes write syscalls (matches the JSON writers in `commands`).
@@ -51,6 +52,10 @@ struct WireHeader {
     names: Vec<ModuleName>,
     exports: Vec<WireReExport>,
     class_bases: Vec<(NameId, Vec<NameId>)>,
+    /// Class id, its metaclass id when a metaclass bit is set, and the callee
+    /// mask. The callee FQNs themselves are reconstructible from these, so they
+    /// stay out of the name table entirely.
+    constructor_callees: Vec<(NameId, Option<NameId>, u8, Vec<NameId>)>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -139,6 +144,11 @@ impl NameTable {
             unique.insert(*class);
             unique.extend(bases.iter().copied());
         }
+        for (class, recorded) in &cache.constructor_callees {
+            unique.insert(*class);
+            unique.extend(recorded.metaclass);
+            unique.extend(recorded.extra.iter().copied());
+        }
 
         ensure!(
             unique.len() <= NameId::MAX as usize,
@@ -211,10 +221,23 @@ pub(crate) fn write(cache: &LibraryCache, path: &Path) -> Result<()> {
             )
         })
         .collect();
+    let constructor_callees = cache
+        .constructor_callees
+        .iter()
+        .map(|(class, recorded)| {
+            (
+                table.id(*class),
+                recorded.metaclass.map(|metaclass| table.id(metaclass)),
+                recorded.mask,
+                recorded.extra.iter().map(|c| table.id(*c)).collect(),
+            )
+        })
+        .collect();
     let header = WireHeader {
         names: table.names,
         exports,
         class_bases,
+        constructor_callees,
     };
     let header_bytes = postcard::to_allocvec(&header)?;
 
@@ -294,10 +317,28 @@ pub(crate) fn read(path: &Path) -> Result<LibraryCache> {
             ))
         })
         .collect::<Result<_>>()?;
+    let constructor_callees = header
+        .constructor_callees
+        .into_iter()
+        .map(|(class, metaclass, mask, extra)| {
+            Ok((
+                decode_name(&header.names, class)?,
+                ConstructorCallees {
+                    metaclass: metaclass
+                        .map(|id| decode_name(&header.names, id))
+                        .transpose()?,
+                    mask,
+                    extra: decode_names(&header.names, extra)?,
+                },
+            ))
+        })
+        .collect::<Result<_>>()?;
     Ok(LibraryCache {
         modules,
         exports,
         class_bases,
+        constructor_callees,
+        ..Default::default()
     })
 }
 

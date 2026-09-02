@@ -17,6 +17,7 @@ mod tests {
     use lifeguard::cache::CachedModuleSafety;
     use lifeguard::cache::CachedReExport;
     use lifeguard::cache::CachedSafety;
+    use lifeguard::cache::ConstructorCallees;
     use lifeguard::cache::LibraryCache;
     use lifeguard::cache::dedupe_implicit_imports;
     use lifeguard::cache::is_call_verified_safe;
@@ -45,6 +46,23 @@ mod tests {
     use lifeguard::runner::Options;
     use lifeguard::runner::default_python_version;
     use lifeguard::test_lib::TestSources;
+
+    /// A record whose only callee is the class's own `__init__`.
+    fn own_init() -> ConstructorCallees {
+        ConstructorCallees {
+            mask: lifeguard::cache::own_constructor_bit("__init__"),
+            ..Default::default()
+        }
+    }
+
+    /// A record whose only callee is a constructor the mask cannot name, i.e. one
+    /// owned by neither the class nor its metaclass.
+    fn inherited(callee: ModuleName) -> ConstructorCallees {
+        ConstructorCallees {
+            extra: vec![callee],
+            ..Default::default()
+        }
+    }
 
     fn mn(s: &str) -> ModuleName {
         ModuleName::from_str(s)
@@ -163,12 +181,17 @@ mod tests {
             project::ExecutionMode::Incremental,
             &in_scope,
         );
-        LibraryCache::build(
+        let mut cache = LibraryCache::build(
             &output.safety_map,
             &import_graph,
             &exports,
             &output.side_effect_imports,
-        )
+        );
+        // Mirror what `analyze-library` attaches, so these tests exercise the
+        // recorded class facts rather than an empty cache.
+        cache.set_class_bases(output.class_bases);
+        cache.set_constructor_callees(output.constructor_callees);
+        cache
     }
 
     fn resolved_cache(own: &[(&str, &str)], dependencies: &[(&str, &str)]) -> LibraryCache {
@@ -246,7 +269,13 @@ mod tests {
     #[test]
     #[cfg(target_pointer_width = "64")]
     fn test_cached_struct_sizes() {
-        assert_eq!(std::mem::size_of::<LibraryCache>(), 72);
+        // Two reduce-side accumulator maps beyond the wire fields; one instance
+        // per cache, not per entry.
+        assert_eq!(std::mem::size_of::<LibraryCache>(), 192);
+        assert_eq!(
+            std::mem::size_of::<lifeguard::cache::ConstructorCallees>(),
+            40,
+        );
         assert_eq!(std::mem::size_of::<CachedModule>(), 264);
         assert_eq!(std::mem::size_of::<CachedSafety>(), 72);
         assert_eq!(std::mem::size_of::<CachedModuleSafety>(), 72);
@@ -347,6 +376,11 @@ mod tests {
                 }],
             },
             class_bases: vec![(mn("package.Derived"), vec![mn("package.Base")])],
+            constructor_callees: vec![(
+                mn("package.Derived"),
+                inherited(mn("package.Base.__init__")),
+            )],
+            ..Default::default()
         };
 
         let loaded = round_trip(&cache);
@@ -356,6 +390,14 @@ mod tests {
         assert_eq!(re_export.exported_attr, "public_name");
         assert_eq!(re_export.imported_module, mn("implementation"));
         assert_eq!(re_export.imported_attr, "private_name");
+        assert_eq!(
+            loaded.constructor_callees,
+            vec![(
+                mn("package.Derived"),
+                inherited(mn("package.Base.__init__"))
+            )],
+            "constructor callees must survive the wire round trip",
+        );
         assert_eq!(
             loaded.class_bases,
             vec![(mn("package.Derived"), vec![mn("package.Base")])],
@@ -401,7 +443,7 @@ mod tests {
             exports: CachedExports {
                 re_exports: Vec::new(),
             },
-            class_bases: Vec::new(),
+            ..Default::default()
         };
 
         let loaded = round_trip(&cache);
@@ -425,7 +467,7 @@ mod tests {
             exports: CachedExports {
                 re_exports: Vec::new(),
             },
-            class_bases: Vec::new(),
+            ..Default::default()
         };
         let path = temp_cache_path("corrupt");
         cache
@@ -1528,6 +1570,147 @@ mod tests {
         );
     }
 
+    /// Reduce must use the constructor callees the map phase recorded, not the
+    /// set it would derive itself.
+    #[test]
+    fn test_recorded_constructor_callees_outrank_derived_ones() {
+        let mut cache = LibraryCache {
+            modules: vec![
+                cached_module("app")
+                    .errors(vec![cached_error(
+                        ErrorKind::UnknownFunctionCall,
+                        "sub.Sentinel",
+                    )])
+                    .imports(&["sub"])
+                    .build(),
+                cached_module("sub")
+                    .function_safety([safe("Sentinel")])
+                    .build(),
+                cached_module("base")
+                    .function_safety([unsafe_("Base.__init__")])
+                    .build(),
+            ],
+            exports: empty_exports(),
+            class_bases: Vec::new(),
+            constructor_callees: vec![(mn("sub.Sentinel"), inherited(mn("base.Base.__init__")))],
+            ..Default::default()
+        };
+
+        cache.resolve_cross_library_errors();
+
+        let app = module(&cache, "app");
+        assert!(
+            !app.is_safe(),
+            "an inherited Unsafe constructor recorded by the map phase must keep the call unsafe",
+        );
+    }
+
+    /// A recorded callee that is `Safe` clears the call, so the test is
+    /// pinning the verdict rather than the mere presence of a recorded entry.
+    #[test]
+    fn test_recorded_safe_constructor_callee_clears() {
+        let mut cache = LibraryCache {
+            modules: vec![
+                cached_module("app")
+                    .errors(vec![cached_error(
+                        ErrorKind::UnknownFunctionCall,
+                        "sub.Sentinel",
+                    )])
+                    .imports(&["sub"])
+                    .build(),
+                cached_module("sub")
+                    .function_safety([safe("Sentinel")])
+                    .build(),
+                cached_module("base")
+                    .function_safety([safe("Base.__init__")])
+                    .build(),
+            ],
+            exports: empty_exports(),
+            class_bases: Vec::new(),
+            constructor_callees: vec![(mn("sub.Sentinel"), inherited(mn("base.Base.__init__")))],
+            ..Default::default()
+        };
+
+        cache.resolve_cross_library_errors();
+
+        let app = module(&cache, "app");
+        assert!(
+            app.is_safe(),
+            "a recorded constructor callee that is Safe should clear the call",
+        );
+    }
+
+    /// End-to-end cover for the inherited case `extra` exists to carry: `Sentinel`
+    /// defines no constructor, so the map phase walks its MRO and records
+    /// `base.Base.__init__` as the callee. That callee has an import-time side
+    /// effect, so instantiating `Sentinel` from another library must stay unsafe
+    /// -- the aggregate `Sentinel` verdict alone would clear it.
+    #[test]
+    fn test_cross_library_inherited_constructor_stays_unsafe() {
+        let cache = resolved_cache(
+            &[(
+                "caller",
+                "from sub import Sentinel\n\
+                 instance = Sentinel()\n",
+            )],
+            &[
+                (
+                    "base",
+                    "import base_state\n\
+                     class Base:\n\
+                     \x20   def __init__(self):\n\
+                     \x20       base_state.counter = base_state.counter + 1\n",
+                ),
+                ("base_state", "counter = 0\n"),
+                (
+                    "sub",
+                    "from base import Base\n\
+                     class Sentinel(Base):\n\
+                     \x20   pass\n",
+                ),
+            ],
+        );
+
+        let caller = module(&cache, "caller");
+        assert!(
+            !caller.is_safe(),
+            "an inherited constructor with a side effect must keep the call unsafe",
+        );
+    }
+
+    /// The safe counterpart, so the inherited path is pinned to the callee's
+    /// verdict rather than to the mere presence of an inherited constructor.
+    #[test]
+    fn test_cross_library_inherited_safe_constructor_clears() {
+        let cache = resolved_cache(
+            &[(
+                "caller",
+                "from sub import Sentinel\n\
+                 instance = Sentinel()\n",
+            )],
+            &[
+                (
+                    "base",
+                    "class Base:\n\
+                     \x20   def __init__(self):\n\
+                     \x20       self.value = 0\n",
+                ),
+                (
+                    "sub",
+                    "from base import Base\n\
+                     class Sentinel(Base):\n\
+                     \x20   pass\n",
+                ),
+            ],
+        );
+
+        let caller = module(&cache, "caller");
+        assert!(
+            caller.is_safe(),
+            "an inherited constructor with no side effect should clear the call",
+        );
+    }
+
     /// The state left behind when a constructor is promoted at reduce time:
     /// `Widget.__init__` was cached `UnsafeMissingDep`, which failed the
     /// constructor check and gave `app` its error, and `precompute_constructor_safety`
@@ -1552,6 +1735,8 @@ mod tests {
             ],
             exports: empty_exports(),
             class_bases: Vec::new(),
+            constructor_callees: vec![(mn("dep.Widget"), own_init())],
+            ..Default::default()
         };
 
         cache.resolve_cross_library_errors();
@@ -1582,6 +1767,8 @@ mod tests {
             ],
             exports: empty_exports(),
             class_bases: Vec::new(),
+            constructor_callees: vec![(mn("pkg.debug.Printer"), own_init())],
+            ..Default::default()
         };
 
         cache.resolve_cross_library_errors();
@@ -1609,7 +1796,7 @@ mod tests {
                     .build(),
             ],
             exports: empty_exports(),
-            class_bases: Vec::new(),
+            ..Default::default()
         };
 
         cache.resolve_cross_library_errors();
@@ -1638,6 +1825,8 @@ mod tests {
             ],
             exports: empty_exports(),
             class_bases: Vec::new(),
+            constructor_callees: vec![(mn("dep.Widget"), own_init())],
+            ..Default::default()
         };
 
         cache.resolve_cross_library_errors();
@@ -1669,6 +1858,8 @@ mod tests {
             ],
             exports: empty_exports(),
             class_bases: Vec::new(),
+            constructor_callees: vec![(mn("dep.Widget"), own_init())],
+            ..Default::default()
         };
 
         cache.resolve_cross_library_errors();
@@ -1698,6 +1889,8 @@ mod tests {
             ],
             exports: empty_exports(),
             class_bases: Vec::new(),
+            constructor_callees: vec![(mn("dep.Decorator"), own_init())],
+            ..Default::default()
         };
 
         cache.resolve_cross_library_errors();
@@ -1921,7 +2114,7 @@ mod tests {
                 },
             ],
             exports: empty_exports(),
-            class_bases: Vec::new(),
+            ..Default::default()
         };
 
         cache.resolve_cross_library_errors();
@@ -1978,7 +2171,7 @@ mod tests {
                 },
             ],
             exports: empty_exports(),
-            class_bases: Vec::new(),
+            ..Default::default()
         };
 
         cache.resolve_cross_library_errors();
@@ -2033,7 +2226,7 @@ mod tests {
                 },
             ],
             exports: empty_exports(),
-            class_bases: Vec::new(),
+            ..Default::default()
         };
 
         cache.resolve_cross_library_errors();
@@ -2084,7 +2277,7 @@ mod tests {
                 },
             ],
             exports: empty_exports(),
-            class_bases: Vec::new(),
+            ..Default::default()
         };
 
         cache.resolve_cross_library_errors();
@@ -2289,7 +2482,7 @@ mod tests {
                 },
             ],
             exports: empty_exports(),
-            class_bases: Vec::new(),
+            ..Default::default()
         };
 
         cache.resolve_cross_library_errors();
@@ -2333,7 +2526,7 @@ mod tests {
                 mutation_candidates: Vec::new(),
             }],
             exports: empty_exports(),
-            class_bases: Vec::new(),
+            ..Default::default()
         };
 
         cache.resolve_cross_library_errors();
@@ -2385,7 +2578,7 @@ mod tests {
                 },
             ],
             exports: empty_exports(),
-            class_bases: Vec::new(),
+            ..Default::default()
         };
 
         cache.resolve_cross_library_errors();

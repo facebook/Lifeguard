@@ -25,6 +25,10 @@ use tracing::warn;
 use crate::analyzer;
 use crate::analyzer::AnalyzedModule;
 use crate::cache::CONSTRUCTOR_METHODS;
+use crate::cache::ConstructorCallees;
+use crate::cache::INHERITABLE_CONSTRUCTOR_METHODS;
+use crate::cache::OWN_CONSTRUCTOR_METHODS;
+use crate::cache::constructor_mask_bits;
 use crate::class::Class;
 use crate::class::ClassTable;
 use crate::class::FieldKind;
@@ -305,6 +309,9 @@ pub struct AnalysisOutput {
     /// Class FQN -> base-class FQNs, for reduce-time MRO resolution of inherited
     /// `Class.method` calls.
     pub class_bases: Vec<(ModuleName, Vec<ModuleName>)>,
+    /// Class FQN -> the functions a constructor call to it dispatches to,
+    /// resolved here where the class table is complete.
+    pub constructor_callees: Vec<(ModuleName, ConstructorCallees)>,
 }
 
 // Collects whole-project analysis output, as well as any global state that is required while
@@ -482,6 +489,9 @@ pub fn run_analysis(
             })
             .collect()
     });
+    let constructor_callees = time("  Resolving constructor callees", || {
+        info.resolved_constructor_callees()
+    });
 
     // Deallocating ProjectInfo takes seconds on large projects. Hand it to a
     // dedicated background thread so the dealloc is non-blocking
@@ -492,6 +502,7 @@ pub fn run_analysis(
         side_effect_imports,
         parse_errors,
         class_bases,
+        constructor_callees,
     }
 }
 
@@ -1906,6 +1917,56 @@ impl ProjectInfo {
             ret &= child_ret;
         }
         Ok(ret)
+    }
+
+    /// Every class paired with the functions its constructor call dispatches to,
+    /// keeping only those that resolve to something this analysis can see. An
+    /// entry with no resolvable callee is dropped: reduce must fall back to its
+    /// own lookup there rather than read the empty list as "nothing runs".
+    fn resolved_constructor_callees(&self) -> Vec<(ModuleName, ConstructorCallees)> {
+        self.classes
+            .par_keys()
+            .filter_map(|cls_name| {
+                let recorded = self.resolve_constructor_callees(*cls_name);
+                (!recorded.is_empty()).then_some((*cls_name, recorded))
+            })
+            .collect()
+    }
+
+    /// Which of `cls_name`'s candidate constructor callees resolve to something
+    /// this analysis can see. The metaclass is recorded only when one of its
+    /// methods resolved, so an entry never carries a name none of its bits use.
+    fn resolve_constructor_callees(&self, cls_name: ModuleName) -> ConstructorCallees {
+        let metaclass = self.classes.lookup(&cls_name).and_then(|cls| cls.metaclass);
+        let metaclass_mask = metaclass.map_or(0, |mcls| {
+            constructor_mask_bits(mcls, 0, &CONSTRUCTOR_METHODS, |m| self.contains_callable(m))
+        });
+        let own_mask = constructor_mask_bits(
+            cls_name,
+            CONSTRUCTOR_METHODS.len(),
+            &OWN_CONSTRUCTOR_METHODS,
+            |m| self.contains_callable(m),
+        );
+        ConstructorCallees {
+            metaclass: (metaclass_mask != 0).then_some(metaclass).flatten(),
+            mask: metaclass_mask | own_mask,
+            extra: self.inherited_constructor_callees(cls_name),
+        }
+    }
+
+    /// The constructor callees the mask cannot name: the ones a class inherits,
+    /// whose owner is neither the class nor its metaclass. `resolve_callable`
+    /// walks the MRO, so this names the ancestor that actually defines the
+    /// method rather than the first base that mentions it.
+    fn inherited_constructor_callees(&self, cls_name: ModuleName) -> Vec<ModuleName> {
+        INHERITABLE_CONSTRUCTOR_METHODS
+            .iter()
+            .filter_map(|method| {
+                let own = cls_name.append_str(method);
+                let resolved = self.resolve_callable(&own)?;
+                (resolved != own).then_some(resolved)
+            })
+            .collect()
     }
 
     fn constructor_methods(&self, cls_name: ModuleName) -> impl Iterator<Item = ModuleName> {

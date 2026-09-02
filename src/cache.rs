@@ -47,7 +47,7 @@ use crate::traits::ModuleNameExt;
 /// Cached analysis results for a single Python library.
 /// Contains all information needed to merge with other libraries
 /// in a map-reduce analysis pipeline.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Default)]
 pub struct LibraryCache {
     pub modules: Vec<CachedModule>,
     pub exports: CachedExports,
@@ -55,6 +55,134 @@ pub struct LibraryCache {
     /// `Class.method` calls.
     #[serde(default)]
     pub class_bases: Vec<(ModuleName, Vec<ModuleName>)>,
+    /// Class FQN -> the functions a constructor call to it dispatches to, as
+    /// resolved by the map phase.
+    #[serde(default)]
+    pub constructor_callees: Vec<(ModuleName, ConstructorCallees)>,
+    /// Reduce-side accumulators. Dependency caches fold into these as they are
+    /// consumed, so the un-deduplicated concatenation of every dep's entries
+    /// never exists (memory optimisation).
+    #[serde(skip)]
+    pub merged_class_bases: HashMap<ModuleName, Vec<ModuleName>>,
+    #[serde(skip)]
+    pub merged_constructor_callees: HashMap<ModuleName, ConstructorCallees>,
+}
+
+/// The methods a class's own FQN can carry as constructor callees, in bit order
+/// after `CONSTRUCTOR_METHODS`.
+// TODO: Deliberately excludes the class's own `__new__` to preserve existing behaviour.
+pub(crate) const OWN_CONSTRUCTOR_METHODS: [&str; 2] = ["__init__", "__post_init__"];
+
+/// Which of a class's candidate constructor callees the map phase resolved.
+///
+/// The candidate set is fixed — `CONSTRUCTOR_METHODS` on the metaclass, then
+/// `OWN_CONSTRUCTOR_METHODS` on the class itself — so a mask over that set plus
+/// the metaclass name reconstructs every callee FQN.
+///
+/// NOTE: Storing the mask instead of the names keeps the callee FQNs out of both
+/// the cache's name table and the process-wide `ModuleName` interner, neither of
+/// which ever gives the memory back.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ConstructorCallees {
+    /// The metaclass the `CONSTRUCTOR_METHODS` bits are relative to. `None` when
+    /// no metaclass bit is set, so that two libraries disagreeing about a class's
+    /// metaclass cannot be merged into a callee set neither of them recorded.
+    pub metaclass: Option<ModuleName>,
+    /// Bit `i` for `CONSTRUCTOR_METHODS[i]` on `metaclass`, then bit
+    /// `CONSTRUCTOR_METHODS.len() + i` for `OWN_CONSTRUCTOR_METHODS[i]` on the
+    /// class.
+    pub mask: u8,
+    /// Callees the mask cannot name: a constructor inherited from a base class,
+    /// whose owner is neither the class nor its metaclass.
+    #[serde(default)]
+    pub extra: Vec<ModuleName>,
+}
+
+impl ConstructorCallees {
+    /// Bits covering `OWN_CONSTRUCTOR_METHODS`, which need no metaclass.
+    const OWN_BITS: u8 =
+        ((1 << OWN_CONSTRUCTOR_METHODS.len()) - 1) << (CONSTRUCTOR_METHODS.len() as u8);
+
+    /// A record naming no callee at all, which reduce must not read as "nothing
+    /// runs" — it means the map phase resolved nothing, so the call cannot clear.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.mask == 0 && self.extra.is_empty()
+    }
+
+    /// Union two libraries' records for the same class. Conflicting metaclasses
+    /// drop to the own-class bits.
+    fn merged_with(self, other: Self) -> Self {
+        let metaclass = match (self.metaclass, other.metaclass) {
+            (Some(a), Some(b)) if a != b => None,
+            (a, b) => a.or(b),
+        };
+        let mut mask = self.mask | other.mask;
+        if metaclass.is_none() {
+            mask &= Self::OWN_BITS;
+        }
+        let mut extra = self.extra;
+        for callee in other.extra {
+            if !extra.contains(&callee) {
+                extra.push(callee);
+            }
+        }
+        Self {
+            metaclass,
+            mask,
+            extra,
+        }
+    }
+
+    /// Each recorded callee as the FQN that owns it paired with the method name,
+    /// which together rebuild the callee without allocating an interned FQN.
+    fn iter(&self, class_fqn: ModuleName) -> impl Iterator<Item = (ModuleName, &'static str)> {
+        let metaclass_callees = self.metaclass.into_iter().flat_map(move |metaclass| {
+            Self::selected(self.mask, 0, &CONSTRUCTOR_METHODS).map(move |m| (metaclass, m))
+        });
+        let own_callees = Self::selected(
+            self.mask,
+            CONSTRUCTOR_METHODS.len(),
+            &OWN_CONSTRUCTOR_METHODS,
+        )
+        .map(move |m| (class_fqn, m));
+        metaclass_callees.chain(own_callees)
+    }
+
+    fn selected(
+        mask: u8,
+        base_bit: usize,
+        methods: &'static [&'static str],
+    ) -> impl Iterator<Item = &'static str> {
+        methods
+            .iter()
+            .enumerate()
+            .filter(move |(i, _)| mask & (1 << (base_bit + i)) != 0)
+            .map(|(_, method)| *method)
+    }
+}
+
+/// The mask bit naming `method` on the class itself.
+pub fn own_constructor_bit(method: &str) -> u8 {
+    let index = OWN_CONSTRUCTOR_METHODS
+        .iter()
+        .position(|m| *m == method)
+        .expect("should name one of OWN_CONSTRUCTOR_METHODS");
+    1 << (CONSTRUCTOR_METHODS.len() + index)
+}
+
+/// Set the bit for `methods[i]` when `resolves` accepts `owner`.`methods[i]`.
+pub(crate) fn constructor_mask_bits(
+    owner: ModuleName,
+    base_bit: usize,
+    methods: &[&str],
+    mut resolves: impl FnMut(&ModuleName) -> bool,
+) -> u8 {
+    methods
+        .iter()
+        .enumerate()
+        .filter(|(_, method)| resolves(&owner.append_str(method)))
+        .map(|(i, _)| 1u8 << (base_bit + i))
+        .fold(0u8, |mask, bit| mask | bit)
 }
 
 /// Cached analysis for a single module within a library.
@@ -105,7 +233,7 @@ pub struct CachedError {
 /// Cached re-export information for a library. Only re-exports are consumed by
 /// the reduce (`analyze-binary`); the map phase's other export tables
 /// (definitions/`__all__`/return types) are not, so they are not cached.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Default)]
 pub struct CachedExports {
     pub re_exports: Vec<CachedReExport>,
 }
@@ -174,7 +302,7 @@ impl LibraryCache {
             exports: CachedExports {
                 re_exports: Vec::new(),
             },
-            class_bases: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -232,7 +360,7 @@ impl LibraryCache {
         LibraryCache {
             modules,
             exports,
-            class_bases: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -240,6 +368,15 @@ impl LibraryCache {
     /// the reduce step. Populated by the map phase (`analyze-library`).
     pub fn set_class_bases(&mut self, class_bases: Vec<(ModuleName, Vec<ModuleName>)>) {
         self.class_bases = class_bases;
+    }
+
+    /// Attach the map phase's resolved constructor callees (class FQN -> the
+    /// functions its instantiation runs).
+    pub fn set_constructor_callees(
+        &mut self,
+        constructor_callees: Vec<(ModuleName, ConstructorCallees)>,
+    ) {
+        self.constructor_callees = constructor_callees;
     }
 
     /// Write the cache using the indexed wire format.
@@ -270,7 +407,11 @@ impl LibraryCache {
         for dep in dep_caches {
             self.modules.extend(dep.modules);
             re_export_batches.push(dep.exports.re_exports);
-            self.class_bases.extend(dep.class_bases);
+            fold_fqn_lists(&mut self.merged_class_bases, dep.class_bases);
+            fold_constructor_callees(
+                &mut self.merged_constructor_callees,
+                dep.constructor_callees,
+            );
         }
 
         // A module's re-exports recur across many caches, far outnumbering the
@@ -386,6 +527,7 @@ impl LibraryCache {
         func_safety_by_module: &AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
         outcome: &ResolutionOutcome,
         class_bases: &HashMap<ModuleName, Vec<ModuleName>>,
+        constructor_callees: &HashMap<ModuleName, ConstructorCallees>,
     ) {
         let decorator_scan_cache: DashMap<String, bool, FixedState> = DashMap::default();
         if !outcome.promoted.is_empty() || outcome.resolved_to_safe {
@@ -397,7 +539,8 @@ impl LibraryCache {
                 &outcome.globally_safe,
             )
             .with_decorator_cache(&decorator_scan_cache)
-            .with_class_bases(class_bases);
+            .with_class_bases(class_bases)
+            .with_constructor_callees(constructor_callees);
             self.clear_errors_where(|caller, error| resolver.clears_error(caller, error, |_| true));
         } else {
             // Without promotion evidence, clear only static-safe kinds:
@@ -409,7 +552,8 @@ impl LibraryCache {
             let resolver =
                 SafetyResolver::with_safe_index(module_names, func_safety_by_module, &empty)
                     .with_decorator_cache(&decorator_scan_cache)
-                    .with_class_bases(class_bases);
+                    .with_class_bases(class_bases)
+                    .with_constructor_callees(constructor_callees);
             self.clear_errors_where(|caller, error| {
                 resolver.clears_error(caller, error, |kind| kind == ErrorKind::UnsafeDecoratorCall)
             });
@@ -464,7 +608,13 @@ impl LibraryCache {
         let module_names: AHashSet<ModuleName> = self.modules.iter().map(|m| m.name).collect();
         let ambiguous_resolved = self.resolve_ambiguous_imports(&module_names);
 
-        let class_bases = merge_class_bases(std::mem::take(&mut self.class_bases));
+        let mut class_bases = std::mem::take(&mut self.merged_class_bases);
+        fold_fqn_lists(&mut class_bases, std::mem::take(&mut self.class_bases));
+        let mut constructor_callees = std::mem::take(&mut self.merged_constructor_callees);
+        fold_constructor_callees(
+            &mut constructor_callees,
+            std::mem::take(&mut self.constructor_callees),
+        );
 
         self.propagate_re_export_safety();
 
@@ -512,10 +662,18 @@ impl LibraryCache {
 
             module.missing_imports = still_missing;
 
+            let caller = module.name;
             if let CachedSafety::Ok(ref mut safety) = module.safety {
                 let resolver = SafetyResolver::new(&resolved_modules, &func_safety_by_module)
-                    .with_class_bases(&class_bases);
-                retain_unverified_errors(safety, |error| resolver.is_error_verified_safe(error));
+                    .with_class_bases(&class_bases)
+                    .with_constructor_callees(&constructor_callees);
+                // Same decision as the final clear: this pass has no promotion
+                // evidence to gate on, but a recorded constructor callee still
+                // has to outrank the class's aggregate verdict here, or the
+                // error is gone before `finalize_resolution` ever sees it.
+                retain_unverified_errors(safety, |error| {
+                    resolver.clears_error(caller, error, |_| true)
+                });
             }
         });
 
@@ -552,6 +710,7 @@ impl LibraryCache {
             &func_safety_by_module,
             &outcome,
             &class_bases,
+            &constructor_callees,
         );
 
         // Return the verdicts taken at the top; resolution needed them in one flat
@@ -723,15 +882,15 @@ fn retain_unverified_errors(
     safety.errors.len() < before
 }
 
-/// Fold accumulated `(class FQN, bases)` pairs into a lookup map, merging any
+/// Fold one library's `(class FQN, bases)` pairs into a lookup map, merging any
 /// FQN contributed by more than one library (e.g. a stub and the real module,
 /// or overlapping targets). Bases are unioned preserving first-seen order so the
-/// result is independent of dep-cache append order — a bare `collect()` would
+/// result is independent of dep-cache fold order — a bare `collect()` would
 /// instead keep whichever tuple landed last.
-fn merge_class_bases(
+fn fold_fqn_lists(
+    merged: &mut HashMap<ModuleName, Vec<ModuleName>>,
     entries: Vec<(ModuleName, Vec<ModuleName>)>,
-) -> HashMap<ModuleName, Vec<ModuleName>> {
-    let mut merged: HashMap<ModuleName, Vec<ModuleName>> = HashMap::with_capacity(entries.len());
+) {
     for (class_fqn, bases) in entries {
         let existing = merged.entry(class_fqn).or_default();
         for base in bases {
@@ -740,7 +899,31 @@ fn merge_class_bases(
             }
         }
     }
-    merged
+}
+
+/// Fold one library's constructor-callee records into a lookup map, unioning any
+/// class recorded by more than one library.
+fn fold_constructor_callees(
+    merged: &mut HashMap<ModuleName, ConstructorCallees>,
+    entries: Vec<(ModuleName, ConstructorCallees)>,
+) {
+    for (class_fqn, recorded) in entries {
+        match merged.entry(class_fqn) {
+            Entry::Occupied(mut slot) => {
+                let combined = std::mem::take(slot.get_mut()).merged_with(recorded);
+                if combined.is_empty() {
+                    slot.remove();
+                } else {
+                    slot.insert(combined);
+                }
+            }
+            Entry::Vacant(slot) => {
+                if !recorded.is_empty() {
+                    slot.insert(recorded);
+                }
+            }
+        }
+    }
 }
 
 /// Whether `local_name` is cached `Safe` in `fs`.
@@ -769,6 +952,9 @@ struct SafetyResolver<'a> {
     /// Class FQN -> base FQNs, enabling MRO resolution of inherited
     /// `Class.method` calls when there is no exact method verdict.
     class_bases: Option<&'a HashMap<ModuleName, Vec<ModuleName>>>,
+    /// Map-phase-resolved constructor callees, keyed by class FQN. When present
+    /// for a class, these replace re-deriving its constructor method set.
+    constructor_callees: Option<&'a HashMap<ModuleName, ConstructorCallees>>,
 }
 
 impl<'a> SafetyResolver<'a> {
@@ -783,6 +969,7 @@ impl<'a> SafetyResolver<'a> {
             globally_safe: None,
             decorator_scan_cache: None,
             class_bases: None,
+            constructor_callees: None,
         }
     }
 
@@ -798,6 +985,7 @@ impl<'a> SafetyResolver<'a> {
             globally_safe: Some(globally_safe),
             decorator_scan_cache: None,
             class_bases: None,
+            constructor_callees: None,
         }
     }
 
@@ -809,6 +997,15 @@ impl<'a> SafetyResolver<'a> {
     /// Attach class base edges.
     fn with_class_bases(mut self, class_bases: &'a HashMap<ModuleName, Vec<ModuleName>>) -> Self {
         self.class_bases = Some(class_bases);
+        self
+    }
+
+    /// Attach the map phase's resolved constructor callees.
+    fn with_constructor_callees(
+        mut self,
+        constructor_callees: &'a HashMap<ModuleName, ConstructorCallees>,
+    ) -> Self {
+        self.constructor_callees = Some(constructor_callees);
         self
     }
 
@@ -922,41 +1119,57 @@ impl<'a> SafetyResolver<'a> {
             .any(|fs| lookup_decorator_in_safety_map(func_name, fs))
     }
 
-    /// Whether a constructor-shaped call is verified safe for `caller_module`,
-    /// using the class's `__new__`/`__init__` verdicts rather than its aggregate
-    /// verdict. Walks past package parents to the concrete module entry. An
-    /// `UnsafeIfImported` constructor only clears within its own module.
-    fn is_constructor_call_verified_safe_for_caller(
-        &self,
-        caller_module: &ModuleName,
-        func_name: &str,
-    ) -> bool {
-        let fqn = ModuleName::from_str(func_name);
-        for (parent, dot_pos) in fqn.iter_parents() {
-            if self.modules.contains(&parent) {
-                let local_name = &func_name[dot_pos + 1..];
-                if let Some(verdict) = self
-                    .by_module
-                    .get(&parent)
-                    .and_then(|fs| constructor_verdict(local_name, fs))
-                {
-                    return verdict == FunctionSafety::Safe
-                        || (verdict == FunctionSafety::UnsafeIfImported
-                            && caller_module == &parent);
-                }
-            }
-        }
-        false
+    /// The combined verdict of the constructor callees the map phase recorded for
+    /// `class_fqn`, or `None` when it recorded none (i.e. no visible constructor methods).
+    fn recorded_constructor_verdict(&self, class_fqn: &ModuleName) -> Option<FunctionSafety> {
+        let recorded = self.constructor_callees?.get(class_fqn)?;
+        let derived = recorded
+            .iter(*class_fqn)
+            .map(|(owner, method)| self.callee_verdict(&owner, method));
+        let extra = recorded
+            .extra
+            .iter()
+            .map(|callee| self.recorded_callee_verdict(callee));
+        derived.chain(extra).reduce(|acc, verdict| acc | verdict)
     }
 
-    /// A class-decorator call verifies safe exactly when the decorated class's
-    /// constructor does.
-    fn is_class_decorator_call_verified_safe_for_caller(
+    /// The verdict of a callee recorded by its full FQN, resolved the same way
+    /// `callee_verdict` resolves a derived one.
+    fn recorded_callee_verdict(&self, callee: &ModuleName) -> FunctionSafety {
+        self.split_at_module(callee.as_str())
+            .and_then(|(module, local)| self.own_verdict(&module, local))
+            .unwrap_or(FunctionSafety::Unsafe)
+    }
+
+    /// A recorded callee's verdict, treating one that no longer resolves as
+    /// `Unsafe`: the map phase saw it run, so losing sight of it is not evidence
+    /// that it is safe. The callee's own FQN is never built as a `ModuleName`,
+    /// since interning it would outlive the lookup.
+    fn callee_verdict(&self, owner: &ModuleName, method: &str) -> FunctionSafety {
+        self.split_at_module(owner.as_str())
+            .and_then(|(module, local)| self.own_verdict(&module, &format!("{local}.{method}")))
+            .unwrap_or(FunctionSafety::Unsafe)
+    }
+
+    /// Whether a constructor verdict lets its call clear. `UnsafeIfImported`
+    /// means safe only within the defining module, so it clears only when the
+    /// caller is that module.
+    fn constructor_verdict_clears(
         &self,
+        verdict: FunctionSafety,
         caller_module: &ModuleName,
-        func_name: &str,
+        class_fqn: &ModuleName,
     ) -> bool {
-        self.is_constructor_call_verified_safe_for_caller(caller_module, func_name)
+        if verdict == FunctionSafety::Safe {
+            return true;
+        }
+        // Only the module that defines the class may clear an `UnsafeIfImported`
+        // constructor. Matching any ancestor package would let the importing
+        // module clear it too, which is the opposite of what the verdict means.
+        verdict == FunctionSafety::UnsafeIfImported
+            && self
+                .split_at_module(class_fqn.as_str())
+                .is_some_and(|(defining, _)| &defining == caller_module)
     }
 
     /// Dispatch a cached error to the right verified-safe check by kind. The
@@ -980,29 +1193,46 @@ impl<'a> SafetyResolver<'a> {
         }
     }
 
-    /// Whether `error` in `caller` may be dropped. Constructor-shaped
-    /// `UnsafeFunctionCall` and class-decorator calls clear on their per-caller
-    /// static verdict, so they do not consult `kinds`; every other kind clears
-    /// only when `kinds` admits it and the general verdict verifies it.
+    /// Whether `error` in `caller` may be dropped.
+    ///
+    /// A call to a class the map phase recorded constructor callees for is
+    /// decided by those callees alone. Such a call also does not consult `kinds`;
+    /// its answer follows from static verdicts, with no promotion evidence needed.
+    ///
+    /// Every other error clears only when `kinds` admits it and the general
+    /// verdict verifies it.
     fn clears_error(
         &self,
         caller: ModuleName,
         error: &CachedError,
         kinds: impl Fn(ErrorKind) -> bool,
     ) -> bool {
-        let func_name = error.metadata.trim_end_matches("()");
+        if let Some(cleared) = self.recorded_constructor_clears(caller, error) {
+            return cleared;
+        }
+        kinds(error.kind) && self.is_error_verified_safe(error)
+    }
+
+    /// `Some(cleared)` when `error` is a call to a class with recorded
+    /// constructor callees, `None` when no record applies and the general path
+    /// decides.
+    ///
+    /// `Unknown*` kinds are included because they are what the map emits
+    /// for a class it could not bind -- the cross-library instantiation the
+    /// recorded callees exist to answer. The lookup is an exact match on a
+    /// recorded class FQN, so an unbound short name still cannot clear here.
+    fn recorded_constructor_clears(&self, caller: ModuleName, error: &CachedError) -> Option<bool> {
         match error.kind {
             ErrorKind::UnsafeFunctionCall
-                if self.is_constructor_call_verified_safe_for_caller(&caller, func_name) =>
-            {
-                true
+            | ErrorKind::UnknownFunctionCall
+            | ErrorKind::UnsafeDecoratorCall
+            | ErrorKind::UnknownDecoratorCall => {
+                let func_name = error.metadata.trim_end_matches("()");
+                let fqn = ModuleName::from_str(func_name);
+                let verdict = self.recorded_constructor_verdict(&fqn)?;
+                Some(self.constructor_verdict_clears(verdict, &caller, &fqn))
             }
-            ErrorKind::UnsafeDecoratorCall
-                if self.is_class_decorator_call_verified_safe_for_caller(&caller, func_name) =>
-            {
-                true
-            }
-            kind => kinds(kind) && self.is_error_verified_safe(error),
+            _ => None,
         }
     }
 }
@@ -1046,6 +1276,13 @@ fn lookup_decorator_in_safety_map(
 /// The methods that run when a class is instantiated.
 pub(crate) const CONSTRUCTOR_METHODS: [&str; 2] = ["__new__", "__init__"];
 
+/// Every method an instantiation can dispatch to on the class side, whether the
+/// class defines it or inherits it. The union of `CONSTRUCTOR_METHODS` and
+/// `OWN_CONSTRUCTOR_METHODS`: the mask names only the own definitions, so the
+/// inherited ones have to be resolved by FQN into `ConstructorCallees::extra`.
+pub(crate) const INHERITABLE_CONSTRUCTOR_METHODS: [&str; 3] =
+    ["__new__", "__init__", "__post_init__"];
+
 /// The `function_safety` entry names of `local_name`'s constructor methods.
 fn constructors(local_name: &str) -> impl Iterator<Item = String> + '_ {
     CONSTRUCTOR_METHODS
@@ -1056,17 +1293,6 @@ fn constructors(local_name: &str) -> impl Iterator<Item = String> + '_ {
 /// Whether `local_name` names a class: it has a cached `__init__`/`__new__`.
 fn is_class_like_entry(local_name: &str, fs: &AHashMap<String, FunctionSafetyInfo>) -> bool {
     constructors(local_name).any(|method| fs.contains_key(&method))
-}
-
-/// The combined `__new__`/`__init__` verdict of a class, or `None` if neither is
-/// cached (i.e. `local_name` is not a resolvable constructor).
-fn constructor_verdict(
-    local_name: &str,
-    fs: &AHashMap<String, FunctionSafetyInfo>,
-) -> Option<FunctionSafety> {
-    constructors(local_name)
-        .filter_map(|method| fs.get(&method).map(|info| info.verdict))
-        .reduce(|acc, verdict| acc | verdict)
 }
 
 /// Merge `incoming` into `fs[attr]`, inserting a clone if absent. Returns whether
@@ -1425,7 +1651,9 @@ mod tests {
         let base_b = ModuleName::from_str("pkg.mod.B");
 
         // Two libraries contribute `pkg.mod.C`: a duplicate base and a new one.
-        let merged = merge_class_bases(vec![(c, vec![base_a]), (c, vec![base_a, base_b])]);
+        let mut merged = HashMap::new();
+        fold_fqn_lists(&mut merged, vec![(c, vec![base_a])]);
+        fold_fqn_lists(&mut merged, vec![(c, vec![base_a, base_b])]);
 
         assert_eq!(
             merged.get(&c),
@@ -1483,7 +1711,7 @@ mod tests {
             exports: CachedExports {
                 re_exports: Vec::new(),
             },
-            class_bases: Vec::new(),
+            ..Default::default()
         };
 
         let module_names: AHashSet<ModuleName> = [module_a, module_b].into_iter().collect();
