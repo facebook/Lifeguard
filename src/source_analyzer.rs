@@ -5,9 +5,12 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::cell::OnceCell;
+
 use pyrefly_python::module_name::ModuleName;
 use pyrefly_util::visit::Visit;
 use ruff_python_ast::Arguments;
+use ruff_python_ast::CmpOp;
 use ruff_python_ast::Decorator;
 use ruff_python_ast::ExceptHandler;
 use ruff_python_ast::Expr;
@@ -18,6 +21,7 @@ use ruff_python_ast::ExprContext;
 use ruff_python_ast::ExprLambda;
 use ruff_python_ast::ExprSubscript;
 use ruff_python_ast::Identifier;
+use ruff_python_ast::ModModule;
 use ruff_python_ast::Parameters;
 use ruff_python_ast::PySourceType;
 use ruff_python_ast::Stmt;
@@ -207,6 +211,44 @@ fn mark_called_imports(output: &mut ModuleEffects) {
     }
 }
 
+fn modules_attr_receiver(expr: &Expr) -> Option<&Expr> {
+    match expr {
+        Expr::Attribute(ExprAttribute { value, attr, .. }) if attr.as_str() == "modules" => {
+            Some(value)
+        }
+        _ => None,
+    }
+}
+
+/// Matched by name: `sys_modules_probed_keys` scans the AST with no cursor to resolve
+/// against, so an alias (`import sys as s`) is missed; any `<x>.modules` would be unsound.
+fn is_sys_modules_expr(expr: &Expr) -> bool {
+    modules_attr_receiver(expr)
+        .is_some_and(|value| matches!(value, Expr::Name(name) if name.id.as_str() == "sys"))
+}
+
+/// The keys this module tests with `"x" in sys.modules`. Collected per module,
+/// because the test and the read are routinely in different places.
+fn sys_modules_probed_keys(ast: &ModModule) -> AHashSet<ModuleName> {
+    fn from_expr(x: &Expr, keys: &mut AHashSet<ModuleName>) {
+        // Exactly `"x" in sys.modules`; in `"x" in y in sys.modules` the key was
+        // tested against `y`.
+        if let Expr::Compare(cmp) = x
+            && matches!(cmp.ops.as_ref(), [CmpOp::In] | [CmpOp::NotIn])
+            && cmp.comparators.first().is_some_and(is_sys_modules_expr)
+        {
+            keys.extend(string_literal_module(&cmp.left));
+        }
+        // `Visit<Expr>` yields statement-position expressions only, so a nested
+        // test is reached by recursing.
+        x.recurse(&mut |c| from_expr(c, keys));
+    }
+
+    let mut keys = AHashSet::new();
+    ast.visit(&mut |e: &Expr| from_expr(e, &mut keys));
+    keys
+}
+
 fn string_literal_module(expr: &Expr) -> Option<ModuleName> {
     let Expr::StringLiteral(key) = expr else {
         return None;
@@ -254,6 +296,8 @@ pub struct SourceAnalyzer<'a> {
     info: ModuleInfo<'a>,
     import_graph: &'a ImportGraph,
     cursor: Cursor,
+    /// Module names probed as `sys.modules` keys within this module.
+    sys_modules_probed_keys: OnceCell<AHashSet<ModuleName>>,
 }
 
 impl<'a> SourceAnalyzer<'a> {
@@ -974,14 +1018,9 @@ impl<'a> SourceAnalyzer<'a> {
     }
 
     fn is_sys_modules_access(&self, expr: &Expr) -> bool {
-        if let Expr::Attribute(ExprAttribute { value, attr, .. }) = expr {
-            if attr.as_str() == "modules" {
-                if let Some(res) = self.info.resolve(&self.cursor, value) {
-                    return res.is_import() && res.name.as_str() == "sys";
-                }
-            }
-        }
-        false
+        modules_attr_receiver(expr)
+            .and_then(|value| self.info.resolve(&self.cursor, value))
+            .is_some_and(|res| res.is_import() && res.name.as_str() == "sys")
     }
 
     /// Python registers a module before running its body and imports every ancestor
@@ -991,9 +1030,20 @@ impl<'a> SourceAnalyzer<'a> {
             return false;
         };
         let reader = self.info.module_name;
-        EXPECTED_IN_SYS_MODULES.contains(&key.as_str())
+        if EXPECTED_IN_SYS_MODULES.contains(&key.as_str())
             || reader == key
             || reader.iter_parents().any(|(parent, _)| parent == key)
+        {
+            return true;
+        }
+        // Checking first says the code copes with the module being absent. A
+        // catch-all does not: it survives the error without expecting it.
+        self.cursor
+            .names_exception(&ModuleName::from_str("KeyError"))
+            || self
+                .sys_modules_probed_keys
+                .get_or_init(|| sys_modules_probed_keys(&self.parsed_module.ast))
+                .contains(&key)
     }
 
     fn add_sys_modules_access(&self, range: TextRange, output: &mut ModuleEffects) {
@@ -1810,6 +1860,7 @@ impl<'a> Analyzer<'a> for SourceAnalyzer<'a> {
             info,
             import_graph,
             cursor: Cursor::new(),
+            sys_modules_probed_keys: OnceCell::new(),
         }
     }
 

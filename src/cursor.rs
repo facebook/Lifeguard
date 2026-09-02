@@ -51,6 +51,16 @@ impl TryHandler {
             Self::Multiple(names) => names.iter().any(|n| exception_matches(n, exc_name)),
         }
     }
+
+    /// Whether the handler names `exc_name` itself. Unlike [`Self::catches`], a
+    /// catch-all does not count: naming the error says the code expected it.
+    pub fn names(&self, exc_name: &ModuleName) -> bool {
+        match self {
+            Self::Bare => false,
+            Self::Single(n) => n == exc_name,
+            Self::Multiple(names) => names.contains(exc_name),
+        }
+    }
 }
 
 /// A kind of block that encloses an AST node.
@@ -77,6 +87,13 @@ impl BlockStack {
     pub fn catches_exception(&self, exc_name: &ModuleName) -> bool {
         self.stack.iter().rev().any(|block| match block {
             Block::TryBody(handlers) => handlers.iter().any(|h| h.catches(exc_name)),
+        })
+    }
+
+    /// Whether an enclosing try block names `exc_name` itself; a catch-all does not.
+    pub fn names_exception(&self, exc_name: &ModuleName) -> bool {
+        self.stack.iter().rev().any(|block| match block {
+            Block::TryBody(handlers) => handlers.iter().any(|h| h.names(exc_name)),
         })
     }
 
@@ -156,6 +173,11 @@ impl Cursor {
 
     pub fn catches_exception(&self, exc_name: &ModuleName) -> bool {
         self.block_stack.catches_exception(exc_name)
+    }
+
+    /// Whether an enclosing try block names `exc_name` itself; a catch-all does not.
+    pub fn names_exception(&self, exc_name: &ModuleName) -> bool {
+        self.block_stack.names_exception(exc_name)
     }
 
     /// Iterate over all try handlers from enclosing try blocks (for annotating call effects).
