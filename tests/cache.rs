@@ -19,6 +19,7 @@ mod tests {
     use lifeguard::cache::CachedSafety;
     use lifeguard::cache::ConstructorCallees;
     use lifeguard::cache::LibraryCache;
+    use lifeguard::cache::MergedClassFacts;
     use lifeguard::cache::dedupe_implicit_imports;
     use lifeguard::cache::is_call_verified_safe;
     use lifeguard::config::AnalysisConfig;
@@ -46,6 +47,7 @@ mod tests {
     use lifeguard::runner::Options;
     use lifeguard::runner::default_python_version;
     use lifeguard::test_lib::TestSources;
+    use lifeguard::test_lib::reduce_workspace_from_merged;
 
     /// A record whose only callee is the class's own `__init__`.
     fn own_init() -> ConstructorCallees {
@@ -200,8 +202,8 @@ mod tests {
     }
 
     fn merge_and_resolve(mut cache: LibraryCache, dep_cache: LibraryCache) -> LibraryCache {
-        cache.merge_dep_caches(vec![dep_cache]);
-        cache.resolve_cross_library_errors();
+        let merged_facts = cache.merge_dep_caches(vec![dep_cache]);
+        cache.resolve_cross_library_errors(merged_facts);
         cache
     }
 
@@ -269,9 +271,8 @@ mod tests {
     #[test]
     #[cfg(target_pointer_width = "64")]
     fn test_cached_struct_sizes() {
-        // Two reduce-side accumulator maps beyond the wire fields; one instance
-        // per cache, not per entry.
-        assert_eq!(std::mem::size_of::<LibraryCache>(), 192);
+        // Wire fields only: the reduce-side accumulators live on `ReduceWorkspace`.
+        assert_eq!(std::mem::size_of::<LibraryCache>(), 96);
         assert_eq!(
             std::mem::size_of::<lifeguard::cache::ConstructorCallees>(),
             40,
@@ -1214,7 +1215,7 @@ mod tests {
         let mut cache = LibraryCache::empty();
         cache.modules = vec![models, helpers];
 
-        cache.resolve_cross_library_errors();
+        cache.resolve_cross_library_errors(MergedClassFacts::default());
 
         let models = cache
             .modules
@@ -1561,7 +1562,7 @@ mod tests {
             "no missing imports",
         );
 
-        cache.resolve_cross_library_errors();
+        cache.resolve_cross_library_errors(MergedClassFacts::default());
 
         let caller = module(&cache, "caller");
         assert!(
@@ -1596,7 +1597,7 @@ mod tests {
             ..Default::default()
         };
 
-        cache.resolve_cross_library_errors();
+        cache.resolve_cross_library_errors(MergedClassFacts::default());
 
         let app = module(&cache, "app");
         assert!(
@@ -1631,7 +1632,7 @@ mod tests {
             ..Default::default()
         };
 
-        cache.resolve_cross_library_errors();
+        cache.resolve_cross_library_errors(MergedClassFacts::default());
 
         let app = module(&cache, "app");
         assert!(
@@ -1773,7 +1774,7 @@ mod tests {
             ..Default::default()
         };
 
-        cache.resolve_cross_library_errors();
+        cache.resolve_cross_library_errors(MergedClassFacts::default());
 
         let app = module(&cache, "app");
         assert!(app.is_safe(), "safe constructor call should be cleared");
@@ -1805,7 +1806,7 @@ mod tests {
             ..Default::default()
         };
 
-        cache.resolve_cross_library_errors();
+        cache.resolve_cross_library_errors(MergedClassFacts::default());
 
         let debug = module(&cache, "pkg.debug");
         assert!(
@@ -1833,7 +1834,7 @@ mod tests {
             ..Default::default()
         };
 
-        cache.resolve_cross_library_errors();
+        cache.resolve_cross_library_errors(MergedClassFacts::default());
 
         let app = module(&cache, "app");
         assert!(
@@ -1863,7 +1864,7 @@ mod tests {
             ..Default::default()
         };
 
-        cache.resolve_cross_library_errors();
+        cache.resolve_cross_library_errors(MergedClassFacts::default());
 
         let dep = module(&cache, "dep");
         assert!(
@@ -1896,7 +1897,7 @@ mod tests {
             ..Default::default()
         };
 
-        cache.resolve_cross_library_errors();
+        cache.resolve_cross_library_errors(MergedClassFacts::default());
 
         let app = module(&cache, "app");
         assert!(
@@ -1927,7 +1928,7 @@ mod tests {
             ..Default::default()
         };
 
-        cache.resolve_cross_library_errors();
+        cache.resolve_cross_library_errors(MergedClassFacts::default());
 
         let app = module(&cache, "app");
         assert!(
@@ -1979,8 +1980,8 @@ mod tests {
             ("caller_two", "from pkg import two\nx = two.helper()\n"),
         ]));
 
-        own_cache.merge_dep_caches(vec![dep_cache]);
-        own_cache.resolve_cross_library_errors();
+        let merged_facts = own_cache.merge_dep_caches(vec![dep_cache]);
+        own_cache.resolve_cross_library_errors(merged_facts);
 
         for (caller_name, imported_name) in [("caller_one", "pkg.one"), ("caller_two", "pkg.two")] {
             let caller = own_cache
@@ -2151,7 +2152,7 @@ mod tests {
             ..Default::default()
         };
 
-        cache.resolve_cross_library_errors();
+        cache.resolve_cross_library_errors(MergedClassFacts::default());
 
         let app = module(&cache, "app");
         let CachedSafety::Ok(safety) = &app.safety else {
@@ -2208,7 +2209,7 @@ mod tests {
             ..Default::default()
         };
 
-        cache.resolve_cross_library_errors();
+        cache.resolve_cross_library_errors(MergedClassFacts::default());
 
         let app = module(&cache, "app");
         let CachedSafety::Ok(safety) = &app.safety else {
@@ -2263,7 +2264,7 @@ mod tests {
             ..Default::default()
         };
 
-        cache.resolve_cross_library_errors();
+        cache.resolve_cross_library_errors(MergedClassFacts::default());
 
         let app = module(&cache, "app");
         let CachedSafety::Ok(safety) = &app.safety else {
@@ -2314,7 +2315,7 @@ mod tests {
             ..Default::default()
         };
 
-        cache.resolve_cross_library_errors();
+        cache.resolve_cross_library_errors(MergedClassFacts::default());
 
         let app = module(&cache, "app");
         let CachedSafety::Ok(safety) = &app.safety else {
@@ -2343,7 +2344,7 @@ mod tests {
         let mut cache = LibraryCache::empty();
         cache.modules = vec![app, dep];
 
-        cache.resolve_cross_library_errors();
+        cache.resolve_cross_library_errors(MergedClassFacts::default());
 
         assert_eq!(
             cache.modules[0]
@@ -2371,7 +2372,7 @@ mod tests {
         let mut cache = LibraryCache::empty();
         cache.modules = vec![app, dep];
 
-        cache.resolve_cross_library_errors();
+        cache.resolve_cross_library_errors(MergedClassFacts::default());
 
         let CachedSafety::Ok(safety) = &cache.modules[0].safety else {
             panic!("app should have cached module safety");
@@ -2403,7 +2404,7 @@ mod tests {
         let mut cache = LibraryCache::empty();
         cache.modules = vec![app, dep];
 
-        cache.resolve_cross_library_errors();
+        cache.resolve_cross_library_errors(MergedClassFacts::default());
 
         let CachedSafety::Ok(safety) = &cache.modules[0].safety else {
             panic!("app should have cached module safety");
@@ -2458,7 +2459,8 @@ mod tests {
             !graph_only_stubs.contains(&mn("typing_extensions")),
             "an already-present real module must not be overwritten by the stub graph",
         );
-        let analysis = LifeGuardAnalysis::from_cache(&mut with, &graph_only_stubs, &options);
+        let resolved = reduce_workspace_from_merged(with, graph_only_stubs.clone()).resolve();
+        let analysis = LifeGuardAnalysis::from_resolved_cache(&resolved, &options);
         assert!(
             te_inherits_typing(&analysis),
             "with stub injection, typing_extensions should inherit `typing` via the rebuilt stub cycle",
@@ -2471,8 +2473,9 @@ mod tests {
         // Without injection: `typing` is not a node, so no propagation.
         let mut empty = graph_only_stubs;
         empty.clear();
-        let mut without = make_cache();
-        let analysis = LifeGuardAnalysis::from_cache(&mut without, &empty, &options);
+        let without = make_cache();
+        let resolved = reduce_workspace_from_merged(without, empty).resolve();
+        let analysis = LifeGuardAnalysis::from_resolved_cache(&resolved, &options);
         assert!(
             !te_inherits_typing(&analysis),
             "without stub injection, typing_extensions should not inherit `typing`",
@@ -2519,7 +2522,7 @@ mod tests {
             ..Default::default()
         };
 
-        cache.resolve_cross_library_errors();
+        cache.resolve_cross_library_errors(MergedClassFacts::default());
 
         let app = module(&cache, "app");
         let CachedSafety::Ok(safety) = &app.safety else {
@@ -2563,7 +2566,7 @@ mod tests {
             ..Default::default()
         };
 
-        cache.resolve_cross_library_errors();
+        cache.resolve_cross_library_errors(MergedClassFacts::default());
 
         let app = module(&cache, "app");
         let CachedSafety::Ok(safety) = &app.safety else {
@@ -2615,7 +2618,7 @@ mod tests {
             ..Default::default()
         };
 
-        cache.resolve_cross_library_errors();
+        cache.resolve_cross_library_errors(MergedClassFacts::default());
 
         let app = module(&cache, "app");
         let CachedSafety::Ok(safety) = &app.safety else {
@@ -2650,7 +2653,8 @@ mod tests {
             .push(safe_cached_module("collections", &[], &[]));
 
         let graph_only_stubs = [mn("collections")].into_iter().collect();
-        let analysis = LifeGuardAnalysis::from_cache(&mut cache, &graph_only_stubs, &options);
+        let resolved = reduce_workspace_from_merged(cache, graph_only_stubs).resolve();
+        let analysis = LifeGuardAnalysis::from_resolved_cache(&resolved, &options);
 
         let consumer_deps = analysis
             .output
@@ -2695,7 +2699,8 @@ mod tests {
         cache.modules.push(safe_cached_module("torch.nn", &[], &[]));
 
         let graph_only_stubs = Default::default();
-        let analysis = LifeGuardAnalysis::from_cache(&mut cache, &graph_only_stubs, &options);
+        let resolved = reduce_workspace_from_merged(cache, graph_only_stubs).resolve();
+        let analysis = LifeGuardAnalysis::from_resolved_cache(&resolved, &options);
 
         let consumer_deps = analysis
             .output

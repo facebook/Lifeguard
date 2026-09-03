@@ -59,13 +59,6 @@ pub struct LibraryCache {
     /// resolved by the map phase.
     #[serde(default)]
     pub constructor_callees: Vec<(ModuleName, ConstructorCallees)>,
-    /// Reduce-side accumulators. Dependency caches fold into these as they are
-    /// consumed, so the un-deduplicated concatenation of every dep's entries
-    /// never exists (memory optimisation).
-    #[serde(skip)]
-    pub merged_class_bases: HashMap<ModuleName, Vec<ModuleName>>,
-    #[serde(skip)]
-    pub merged_constructor_callees: HashMap<ModuleName, ConstructorCallees>,
 }
 
 /// Which of a class's candidate constructor callees the map phase resolved.
@@ -174,6 +167,135 @@ pub(crate) fn constructor_mask_bits(
         .filter(|(_, method)| resolves(&owner.append_str(method)))
         .map(|(i, _)| 1u8 << (base_bit + i))
         .fold(0u8, |mask, bit| mask | bit)
+}
+
+/// Mutable reduce workspace decoded from one or more serialized library artifacts.
+pub struct ReduceWorkspace {
+    cache: LibraryCache,
+    graph_only_stubs: AHashSet<ModuleName>,
+    artifact_module_count: usize,
+    merged: MergedClassFacts,
+}
+
+/// Class facts folded together as dependency caches are consumed, so the
+/// un-deduplicated concatenation of every dep's entries never exists.
+///
+/// This is reduce state, not artifact state: a cache read off disk has none of
+/// it, and nothing here is ever written back out.
+#[derive(Default)]
+pub struct MergedClassFacts {
+    class_bases: HashMap<ModuleName, Vec<ModuleName>>,
+    constructor_callees: HashMap<ModuleName, ConstructorCallees>,
+}
+
+/// A reduce workspace after all cross-library semantic resolution has completed.
+///
+/// This intentionally retains the workspace's cache and stub facts: the
+/// distinct type prevents output construction before `resolve` has consumed
+/// the mutable workspace and completed semantic resolution.
+pub struct ResolvedCache {
+    cache: LibraryCache,
+    graph_only_stubs: AHashSet<ModuleName>,
+}
+
+impl ReduceWorkspace {
+    /// Wrap an already merged cache and the graph-only stubs injected into it,
+    /// bypassing the stub injection that `single` and `merge` perform. Only
+    /// tests want that, so the public door is
+    /// [`crate::test_lib::reduce_workspace_from_merged`]; this stays crate-private
+    /// so no production caller can skip the stub-set invariant.
+    pub(crate) fn from_merged(cache: LibraryCache, graph_only_stubs: AHashSet<ModuleName>) -> Self {
+        let artifact_module_count = cache
+            .modules
+            .len()
+            .checked_sub(graph_only_stubs.len())
+            .expect("graph-only stub count should not exceed cached module count");
+        Self {
+            cache,
+            graph_only_stubs,
+            artifact_module_count,
+            merged: MergedClassFacts::default(),
+        }
+    }
+
+    /// Prepare a single serialized cache for reduction by injecting bundled stubs.
+    pub fn single(cache: LibraryCache, python_version: PythonVersion) -> Self {
+        Self::single_with(cache, python_version, MergedClassFacts::default())
+    }
+
+    /// `single`, for a cache whose dependencies have already been folded in.
+    fn single_with(
+        mut cache: LibraryCache,
+        python_version: PythonVersion,
+        merged: MergedClassFacts,
+    ) -> Self {
+        let artifact_module_count = cache.modules.len();
+        let graph_only_stubs = cache.inject_bundled_stub_graph(python_version);
+        Self {
+            cache,
+            graph_only_stubs,
+            artifact_module_count,
+            merged,
+        }
+    }
+
+    /// Merge a nonempty set of serialized caches and inject bundled stubs.
+    pub fn merge(
+        mut caches: Vec<LibraryCache>,
+        python_version: PythonVersion,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(!caches.is_empty(), "cannot reduce an empty cache set");
+        // Preserve the historical merge base and remainder order: duplicate
+        // module facts can contain order-sensitive mutation candidates.
+        let mut cache = caches.swap_remove(0);
+        let merged = if caches.is_empty() {
+            MergedClassFacts::default()
+        } else {
+            cache.merge_dep_caches(caches)
+        };
+        Ok(Self::single_with(cache, python_version, merged))
+    }
+
+    /// Return the total number of modules, including injected bundled stubs.
+    pub fn module_count(&self) -> usize {
+        self.cache.modules.len()
+    }
+
+    /// Return the number of modules contributed by serialized cache artifacts.
+    pub fn artifact_module_count(&self) -> usize {
+        self.artifact_module_count
+    }
+
+    /// Resolve cross-library errors and consume the mutable reduce workspace.
+    pub fn resolve(mut self) -> ResolvedCache {
+        self.cache.resolve_cross_library_errors(self.merged);
+        ResolvedCache {
+            cache: self.cache,
+            graph_only_stubs: self.graph_only_stubs,
+        }
+    }
+}
+
+impl ResolvedCache {
+    pub(crate) fn resolved_cache(&self) -> &LibraryCache {
+        &self.cache
+    }
+
+    pub(crate) fn modules(&self) -> &[CachedModule] {
+        &self.cache.modules
+    }
+
+    pub(crate) fn graph_only_stubs(&self) -> &AHashSet<ModuleName> {
+        &self.graph_only_stubs
+    }
+
+    pub(crate) fn re_exports(&self) -> &[CachedReExport] {
+        &self.cache.exports.re_exports
+    }
+
+    pub(crate) fn build_import_graph(&self) -> ImportGraph {
+        self.cache.to_import_graph()
+    }
 }
 
 /// Cached analysis for a single module within a library.
@@ -386,7 +508,8 @@ impl LibraryCache {
     /// - imports / side_effect_imports: union
     /// - missing_imports: intersection (only truly missing if unresolved everywhere)
     /// - safety: most conservative (most errors)
-    pub fn merge_dep_caches(&mut self, dep_caches: Vec<LibraryCache>) {
+    pub fn merge_dep_caches(&mut self, dep_caches: Vec<LibraryCache>) -> MergedClassFacts {
+        let mut merged = MergedClassFacts::default();
         let extra_modules: usize = dep_caches.iter().map(|d| d.modules.len()).sum();
         self.modules.reserve(extra_modules);
 
@@ -398,11 +521,8 @@ impl LibraryCache {
         for dep in dep_caches {
             self.modules.extend(dep.modules);
             re_export_batches.push(dep.exports.re_exports);
-            fold_fqn_lists(&mut self.merged_class_bases, dep.class_bases);
-            fold_constructor_callees(
-                &mut self.merged_constructor_callees,
-                dep.constructor_callees,
-            );
+            fold_fqn_lists(&mut merged.class_bases, dep.class_bases);
+            fold_constructor_callees(&mut merged.constructor_callees, dep.constructor_callees);
         }
 
         // A module's re-exports recur across many caches, far outnumbering the
@@ -458,6 +578,8 @@ impl LibraryCache {
             // Sort the (already-deduped, much smaller) set for a stable output order.
             || exports.sort_and_dedup(),
         );
+
+        merged
     }
 
     /// Merge consecutive modules with the same name (assumes sorted by name).
@@ -595,13 +717,13 @@ impl LibraryCache {
 
     /// Resolve missing imports against the merged cache and selectively clear
     /// false errors using per-function safety verdicts.
-    pub fn resolve_cross_library_errors(&mut self) {
+    pub fn resolve_cross_library_errors(&mut self, merged: MergedClassFacts) {
         let module_names: AHashSet<ModuleName> = self.modules.iter().map(|m| m.name).collect();
         let ambiguous_resolved = self.resolve_ambiguous_imports(&module_names);
 
-        let mut class_bases = std::mem::take(&mut self.merged_class_bases);
+        let mut class_bases = merged.class_bases;
         fold_fqn_lists(&mut class_bases, std::mem::take(&mut self.class_bases));
-        let mut constructor_callees = std::mem::take(&mut self.merged_constructor_callees);
+        let mut constructor_callees = merged.constructor_callees;
         fold_constructor_callees(
             &mut constructor_callees,
             std::mem::take(&mut self.constructor_callees),
@@ -1500,6 +1622,77 @@ mod tests {
     use rayon::ThreadPoolBuilder;
 
     use super::*;
+    use crate::effects::ImportedArgs;
+    use crate::module_safety::MutationCandidateSite;
+
+    #[test]
+    fn reduce_workspace_rejects_empty_cache_set() {
+        assert!(ReduceWorkspace::merge(Vec::new(), PythonVersion::default()).is_err());
+    }
+
+    #[test]
+    #[should_panic(expected = "graph-only stub count should not exceed cached module count")]
+    fn reduce_workspace_rejects_inconsistent_stub_count() {
+        let cache = LibraryCache {
+            modules: Vec::new(),
+            exports: CachedExports {
+                re_exports: Vec::new(),
+            },
+            ..Default::default()
+        };
+        let graph_only_stubs = AHashSet::from_iter([ModuleName::from_str("missing_stub")]);
+
+        ReduceWorkspace::from_merged(cache, graph_only_stubs);
+    }
+
+    #[test]
+    fn reduce_workspace_merge_preserves_historical_cache_order() {
+        fn cache_with_candidate(module: ModuleName, call: &str) -> LibraryCache {
+            let mut cached_module = CachedModule::empty(module);
+            cached_module.mutation_candidates.push(MutationCandidate {
+                callee: ModuleName::from_str("dependency.mutate"),
+                site: MutationCandidateSite::ModuleScope {
+                    call: ModuleName::from_str(call),
+                },
+                arg_offset: 0,
+                imported_args: ImportedArgs::default(),
+            });
+            LibraryCache {
+                modules: vec![cached_module],
+                exports: CachedExports {
+                    re_exports: Vec::new(),
+                },
+                ..Default::default()
+            }
+        }
+
+        let module = ModuleName::from_str("pkg.module");
+        let workspace = ReduceWorkspace::merge(
+            vec![
+                cache_with_candidate(module, "first"),
+                cache_with_candidate(module, "middle"),
+                cache_with_candidate(module, "last"),
+            ],
+            PythonVersion::default(),
+        )
+        .expect("nonempty caches should merge");
+        let merged = workspace
+            .cache
+            .modules
+            .iter()
+            .find(|cached| cached.name == module)
+            .expect("merged cache should contain the input module");
+        let calls: Vec<&str> = merged
+            .mutation_candidates
+            .iter()
+            .map(|candidate| match &candidate.site {
+                MutationCandidateSite::ModuleScope { call } => call.as_str(),
+                _ => panic!("expected module-scope mutation candidate"),
+            })
+            .collect();
+
+        assert_eq!(calls, ["first", "last", "middle"]);
+    }
 
     #[test]
     fn mro_resolves_inherited_method_to_base_verdict() {

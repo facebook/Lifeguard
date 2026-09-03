@@ -21,6 +21,8 @@ use rayon::prelude::*;
 use tempfile::TempDir;
 
 use crate::analyzer::analyze;
+use crate::cache::LibraryCache;
+use crate::cache::ReduceWorkspace;
 use crate::config::AnalysisConfig;
 use crate::effects::Effect;
 use crate::errors::SafetyError;
@@ -826,6 +828,19 @@ pub fn populate_temp_dir(files: &[(&str, &str)]) -> TempDir {
         fs::write(&path, contents).expect("write file");
     }
     tmp
+}
+
+/// Wrap an already merged cache and the graph-only stubs injected into it,
+/// skipping the stub injection `ReduceWorkspace::single` and `merge` perform.
+///
+/// Test support only. Production reduces have to go through those two, which
+/// establish the stub-set invariant; this exists so a test can hand the reduce
+/// a cache it assembled itself, or replay one it just took apart.
+pub fn reduce_workspace_from_merged(
+    cache: LibraryCache,
+    graph_only_stubs: AHashSet<ModuleName>,
+) -> ReduceWorkspace {
+    ReduceWorkspace::from_merged(cache, graph_only_stubs)
 }
 
 #[cfg(test)]

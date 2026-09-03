@@ -15,6 +15,7 @@ use rayon::prelude::*;
 use tracing::info;
 
 use crate::cache::LibraryCache;
+use crate::cache::ReduceWorkspace;
 use crate::commands::write_json;
 use crate::hasher::AHashSet;
 use crate::output::LifeGuardAnalysis;
@@ -59,7 +60,7 @@ pub fn run(args: AnalyzeBinaryArgs) -> Result<()> {
 
     anyhow::ensure!(!cache_paths.is_empty(), "no cache paths provided");
 
-    let mut caches: Vec<LibraryCache> = time("Loading caches", || {
+    let caches: Vec<LibraryCache> = time("Loading caches", || {
         cache_paths
             .par_iter()
             .map(|p| {
@@ -69,19 +70,16 @@ pub fn run(args: AnalyzeBinaryArgs) -> Result<()> {
             .collect::<Result<Vec<_>>>()
     })?;
 
-    let mut merged = caches.swap_remove(0);
-    if !caches.is_empty() {
-        time("merge_dep_caches", || merged.merge_dep_caches(caches));
-    }
-
-    info!("Merged cache: {} modules", merged.modules.len());
-
     let python_version = parse_python_version(&args.python_version)?;
-
-    // Per-library caches drop stub-only modules; rebuild them to match e2e.
-    let graph_only_stubs = time("Injecting bundled stub graph", || {
-        merged.inject_bundled_stub_graph(python_version)
-    });
+    let workspace = time("Preparing reduce workspace", || {
+        ReduceWorkspace::merge(caches, python_version)
+    })?;
+    info!(
+        "Prepared cache: {} artifact modules, {} total modules including bundled stubs",
+        workspace.artifact_module_count(),
+        workspace.module_count()
+    );
+    let resolved = time("Resolving cross-library facts", || workspace.resolve());
 
     let options = Options {
         verbose_output_path: None,
@@ -91,7 +89,7 @@ pub fn run(args: AnalyzeBinaryArgs) -> Result<()> {
     };
 
     let analysis = time("Building analysis from cache", || {
-        LifeGuardAnalysis::from_cache(&mut merged, &graph_only_stubs, &options)
+        LifeGuardAnalysis::from_resolved_cache(&resolved, &options)
     });
 
     info!("{}", time("Generating report", || analysis.get_report()));

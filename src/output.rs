@@ -20,7 +20,7 @@ use starlark_map::small_set::SmallSet;
 use crate::cache::CachedModule;
 use crate::cache::CachedReExport;
 use crate::cache::CachedSafety;
-use crate::cache::LibraryCache;
+use crate::cache::ResolvedCache;
 use crate::errors::ErrorKind;
 use crate::errors::ErrorMetadata;
 use crate::errors::SafetyError;
@@ -562,28 +562,20 @@ impl LifeGuardAnalysis {
 
     /// Build a LifeGuardAnalysis from pre-computed library caches.
     /// This is the "reduce" step: no per-file analysis happens here.
-    pub fn from_cache(
-        cache: &mut LibraryCache,
-        graph_only_stubs: &AHashSet<ModuleName>,
-        options: &Options,
-    ) -> Self {
-        time("resolve_cross_library_errors", || {
-            cache.resolve_cross_library_errors()
-        });
-
+    pub fn from_resolved_cache(cache: &ResolvedCache, options: &Options) -> Self {
         let (classified, import_graph) = rayon::join(
-            || classify_cached_modules(&cache.modules, graph_only_stubs),
-            || cache.to_import_graph(),
+            || classify_cached_modules(cache.modules(), cache.graph_only_stubs()),
+            || cache.build_import_graph(),
         );
 
-        let cached_re_exports = &cache.exports.re_exports;
+        let cached_re_exports = cache.re_exports();
         let re_export_map_builder = |failing: &SmallSet<ModuleName>| {
             build_re_export_map_from_cache(cached_re_exports, failing)
         };
 
         let mut analysis =
             Self::build_classified(classified, import_graph, options, re_export_map_builder);
-        analysis.propagate_cached_side_effect_imports(&cache.modules);
+        analysis.propagate_cached_side_effect_imports(cache.modules());
         analysis
     }
 

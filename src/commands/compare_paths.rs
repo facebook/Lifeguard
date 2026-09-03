@@ -31,6 +31,8 @@ use pyrefly_python::module_name::ModuleName;
 
 use crate::cache::CachedSafety;
 use crate::cache::LibraryCache;
+use crate::cache::MergedClassFacts;
+use crate::cache::ReduceWorkspace;
 use crate::output::LifeGuardAnalysis;
 use crate::output::LifeGuardOutput;
 use crate::project::ExecutionMode;
@@ -40,6 +42,7 @@ use crate::runner::parse_python_version;
 use crate::runner::run_pipeline;
 use crate::source_map;
 use crate::source_map::SourceMap;
+use crate::tracing::time;
 
 #[derive(Parser)]
 pub struct ComparePathsArgs {
@@ -115,7 +118,8 @@ fn cache_errors(cache: &LibraryCache) -> ErrorMap {
 /// Run the same post-map reduction steps that can clear cross-library false
 /// positives, then read the remaining per-module errors.
 fn resolved_cache_errors(mut cache: LibraryCache) -> ErrorMap {
-    cache.resolve_cross_library_errors();
+    // Nothing was merged into this cache, so there are no folded class facts.
+    cache.resolve_cross_library_errors(MergedClassFacts::default());
     cache_errors(&cache)
 }
 
@@ -201,12 +205,13 @@ fn run_incremental(
     );
     cache.set_class_bases(result.class_bases);
     cache.set_constructor_callees(result.constructor_callees);
-    // Per-library caches drop stub-only modules; the reduce re-adds them.
-    let graph_only_stubs = cache.inject_bundled_stub_graph(options.python_version);
-    let analysis = LifeGuardAnalysis::from_cache(&mut cache, &graph_only_stubs, options);
+    let resolved = time("Resolving incremental cache", || {
+        ReduceWorkspace::single(cache, options.python_version).resolve()
+    });
+    let analysis = LifeGuardAnalysis::from_resolved_cache(&resolved, options);
     // The reduce cleared/retained errors in place, so read them post-resolution.
     let errors = if compute_errors {
-        cache_errors(&cache)
+        cache_errors(resolved.resolved_cache())
     } else {
         HashMap::new()
     };
