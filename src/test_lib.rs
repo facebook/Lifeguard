@@ -786,11 +786,11 @@ pub fn run_lifeguard_analysis_on(sources: &TestSources, options: &Options) -> Li
 }
 
 pub fn assert_passing(result: &LifeGuardAnalysis, expected: Vec<&str>) {
-    assert_str_keys(&result.passing_modules, expected);
+    assert_str_keys(&result.summary.passing_modules, expected);
 }
 
 pub fn assert_failing(result: &LifeGuardAnalysis, expected: Vec<&str>) {
-    assert_str_keys(&result.failing_modules, expected);
+    assert_str_keys(&result.summary.failing_modules, expected);
 }
 
 /// Whether `module` is lazy-eligible but must load `dep` eagerly.
@@ -955,6 +955,7 @@ mod tests {
         let analysis = run_lifeguard_analysis_on(&sources, &test_options());
         assert!(
             analysis
+                .summary
                 .failing_modules
                 .contains(&ModuleName::from_str("broken"))
         );

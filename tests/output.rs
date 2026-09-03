@@ -86,7 +86,10 @@ mod tests {
         error_counts: Vec<((ErrorKind, ErrorMetadata), usize)>,
     ) {
         for (err, count) in &error_counts {
-            assert_eq!(result.aggregated_errors.get(err).unwrap_or(&0), count);
+            assert_eq!(
+                result.summary.aggregated_errors.get(err).unwrap_or(&0),
+                count
+            );
         }
     }
 
@@ -150,9 +153,9 @@ mod tests {
             &test_options(),
         );
 
-        assert!(result.failing_modules.is_empty());
-        assert!(result.passing_modules.is_empty());
-        assert!(result.aggregated_errors.is_empty());
+        assert!(result.summary.failing_modules.is_empty());
+        assert!(result.summary.passing_modules.is_empty());
+        assert!(result.summary.aggregated_errors.is_empty());
         assert!(result.output.load_imports_eagerly.is_empty());
         assert!(result.output.lazy_eligible.is_empty());
     }
@@ -255,15 +258,17 @@ mod tests {
         );
 
         // Check module categorization
-        assert_eq!(result.passing_modules.len(), 1);
+        assert_eq!(result.summary.passing_modules.len(), 1);
         assert!(
             result
+                .summary
                 .passing_modules
                 .contains(&ModuleName::from_str("safe_module"))
         );
-        assert_eq!(result.failing_modules.len(), 1);
+        assert_eq!(result.summary.failing_modules.len(), 1);
         assert!(
             result
+                .summary
                 .failing_modules
                 .contains(&ModuleName::from_str("unsafe_module"))
         );
@@ -566,6 +571,7 @@ mod tests {
         // module_d should be in failing_modules
         assert!(
             result
+                .summary
                 .failing_modules
                 .contains(&ModuleName::from_str("module_d")),
             "module_d should be in failing_modules"
@@ -574,16 +580,19 @@ mod tests {
         // All other modules should be passing
         assert!(
             result
+                .summary
                 .passing_modules
                 .contains(&ModuleName::from_str("module_a"))
         );
         assert!(
             result
+                .summary
                 .passing_modules
                 .contains(&ModuleName::from_str("module_b"))
         );
         assert!(
             result
+                .summary
                 .passing_modules
                 .contains(&ModuleName::from_str("module_c"))
         );
@@ -681,6 +690,7 @@ mod tests {
 
         assert!(
             result
+                .summary
                 .failing_modules
                 .contains(&ModuleName::from_str("layer_film")),
             "layer_film should be failing"
@@ -688,6 +698,7 @@ mod tests {
 
         assert!(
             result
+                .summary
                 .passing_modules
                 .contains(&ModuleName::from_str("gen_layers")),
             "gen_layers should be passing"
@@ -699,6 +710,7 @@ mod tests {
 
         assert!(
             result
+                .summary
                 .passing_modules
                 .contains(&ModuleName::from_str("test_module")),
             "test_module should be passing"
@@ -1067,6 +1079,7 @@ mod tests {
 
         assert!(
             result
+                .summary
                 .failing_modules
                 .contains(&ModuleName::from_str("broken")),
             "parse-failed module should be in failing_modules"

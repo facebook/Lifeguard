@@ -40,6 +40,10 @@ use crate::tracing::time;
 
 pub struct LifeGuardAnalysis {
     pub output: LifeGuardOutput,
+    pub summary: AnalysisSummary,
+}
+
+pub struct AnalysisSummary {
     pub failing_modules: SmallSet<ModuleName>,
     pub passing_modules: SmallSet<ModuleName>,
     // Dictionary mapping (error kind, metadata) : num of occurrences
@@ -665,9 +669,11 @@ impl LifeGuardAnalysis {
 
         let mut analysis = Self {
             output,
-            failing_modules: classified.failing_modules,
-            passing_modules: classified.passing_modules,
-            aggregated_errors: classified.aggregated_errors,
+            summary: AnalysisSummary {
+                failing_modules: classified.failing_modules,
+                passing_modules: classified.passing_modules,
+                aggregated_errors: classified.aggregated_errors,
+            },
         };
         match side_effects {
             SideEffects::Whole(imports) => analysis.propagate_side_effect_imports(imports),
@@ -716,7 +722,7 @@ impl LifeGuardAnalysis {
     ) {
         // Most modules have no side-effect imports. Check both conditions before
         // taking a `lazy_eligible` shard lock to avoid needless contention.
-        if imports.is_empty() || !self.passing_modules.contains(&module) {
+        if imports.is_empty() || !self.summary.passing_modules.contains(&module) {
             return;
         }
         self.output.lazy_eligible.entry(module).or_default().extend(
@@ -728,6 +734,16 @@ impl LifeGuardAnalysis {
     }
 
     pub fn get_report(&self) -> String {
+        self.summary.report(self.output.load_imports_eagerly.len())
+    }
+
+    pub fn print_diagnostics(&self) {
+        self.summary.print_diagnostics();
+    }
+}
+
+impl AnalysisSummary {
+    fn report(&self, load_imports_eagerly_count: usize) -> String {
         let mut error_vec: Vec<_> = self.aggregated_errors.iter().collect();
 
         let default_size = 20; // This could be made configurable
@@ -764,11 +780,11 @@ impl LifeGuardAnalysis {
             avg_num_of_errors,
             self.failing_modules.len(),
             self.passing_modules.len(),
-            self.output.load_imports_eagerly.len(),
+            load_imports_eagerly_count,
         )
     }
 
-    pub fn print_diagnostics(&self) {
+    fn print_diagnostics(&self) {
         for m in &self.passing_modules {
             println!("Passing: {:?}", m);
         }
@@ -1549,27 +1565,29 @@ mod tests {
     fn test_get_report_format() {
         let analysis = LifeGuardAnalysis {
             output: LifeGuardOutput::new(true),
-            failing_modules: {
-                let mut s = SmallSet::new();
-                s.insert(mn("bad"));
-                s
-            },
-            passing_modules: {
-                let mut s = SmallSet::new();
-                s.insert(mn("good1"));
-                s.insert(mn("good2"));
-                s
-            },
-            aggregated_errors: {
-                let mut m = AHashMap::new();
-                m.insert(
-                    (
-                        ErrorKind::UnsafeFunctionCall,
-                        "f()".parse::<ErrorMetadata>().unwrap(),
-                    ),
-                    3,
-                );
-                m
+            summary: AnalysisSummary {
+                failing_modules: {
+                    let mut s = SmallSet::new();
+                    s.insert(mn("bad"));
+                    s
+                },
+                passing_modules: {
+                    let mut s = SmallSet::new();
+                    s.insert(mn("good1"));
+                    s.insert(mn("good2"));
+                    s
+                },
+                aggregated_errors: {
+                    let mut m = AHashMap::new();
+                    m.insert(
+                        (
+                            ErrorKind::UnsafeFunctionCall,
+                            "f()".parse::<ErrorMetadata>().unwrap(),
+                        ),
+                        3,
+                    );
+                    m
+                },
             },
         };
 
