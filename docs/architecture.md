@@ -7,7 +7,7 @@ The pipeline is orchestrated through `runner::process_source_map()` (shared by `
 1. **Load sources** - Parse the source DB JSON, load stubs, build `Sources` (`source_map.rs`)
 2. **Build import graph + exports** - Extract import relationships and module exports in a single pass (`ImportGraph::make_with_exports`)
 3. **Analyze modules** - Parallel per-module analysis to detect side effects (`project::run_analysis`)
-4. **Generate output** - Compute import chains and safety verdicts (`LifeGuardAnalysis::new`)
+4. **Generate output** - Compute import chains and safety verdicts (`LifeGuardAnalysis::from_whole_program`)
 
 AST parsing is on-demand — modules are parsed as needed during import graph construction and analysis, avoiding holding all ASTs in memory at once.
 

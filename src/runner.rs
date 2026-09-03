@@ -215,9 +215,13 @@ pub fn process_source_map(
     }
 
     let lifeguard_output = time("Creating analysis object", || {
-        let mut analysis = LifeGuardAnalysis::new(safety_map, import_graph, &exports, options);
-        analysis.propagate_side_effect_imports(&side_effect_imports);
-        analysis
+        LifeGuardAnalysis::from_whole_program(
+            safety_map,
+            import_graph,
+            &exports,
+            &side_effect_imports,
+            options,
+        )
     });
 
     // Skip deallocation of large data structures since the process is about to exit.

@@ -776,9 +776,13 @@ pub fn run_lifeguard_analysis_on(sources: &TestSources, options: &Options) -> Li
             SafetyResult::AnalysisError(anyhow::anyhow!("Parse error: {}", entry.value())),
         );
     }
-    let mut analysis = LifeGuardAnalysis::new(output.safety_map, import_graph, &exports, options);
-    analysis.propagate_side_effect_imports(&output.side_effect_imports);
-    analysis
+    LifeGuardAnalysis::from_whole_program(
+        output.safety_map,
+        import_graph,
+        &exports,
+        &output.side_effect_imports,
+        options,
+    )
 }
 
 pub fn assert_passing(result: &LifeGuardAnalysis, expected: Vec<&str>) {

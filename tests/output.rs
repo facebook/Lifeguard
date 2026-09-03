@@ -142,7 +142,13 @@ mod tests {
         let safety_map = SafetyMap::new();
         let import_graph = ImportGraph::new();
         let exports = Exports::empty();
-        let result = LifeGuardAnalysis::new(safety_map, import_graph, &exports, &test_options());
+        let result = LifeGuardAnalysis::from_whole_program(
+            safety_map,
+            import_graph,
+            &exports,
+            &Default::default(),
+            &test_options(),
+        );
 
         assert!(result.failing_modules.is_empty());
         assert!(result.passing_modules.is_empty());
@@ -159,7 +165,13 @@ mod tests {
             ("safe_module2", vec![], vec![], vec![]),
         ]);
         let exports = Exports::empty();
-        let result = LifeGuardAnalysis::new(safety_map, import_graph, &exports, &test_options());
+        let result = LifeGuardAnalysis::from_whole_program(
+            safety_map,
+            import_graph,
+            &exports,
+            &Default::default(),
+            &test_options(),
+        );
         assert_passing(&result, vec!["safe_module1", "safe_module2"]);
         assert_failing(&result, vec![]);
         assert_eq!(result.output.lazy_eligible.len(), 0);
@@ -183,7 +195,13 @@ mod tests {
             ),
         ]);
         let exports = Exports::empty();
-        let result = LifeGuardAnalysis::new(safety_map, import_graph, &exports, &test_options());
+        let result = LifeGuardAnalysis::from_whole_program(
+            safety_map,
+            import_graph,
+            &exports,
+            &Default::default(),
+            &test_options(),
+        );
         assert_failing(&result, vec!["unsafe_module1"]);
         assert_passing(&result, vec!["unsafe_module2"]);
         assert_eq!(result.output.lazy_eligible.len(), 0);
@@ -228,7 +246,13 @@ mod tests {
             ),
         ]);
         let exports = Exports::empty();
-        let result = LifeGuardAnalysis::new(safety_map, import_graph, &exports, &test_options());
+        let result = LifeGuardAnalysis::from_whole_program(
+            safety_map,
+            import_graph,
+            &exports,
+            &Default::default(),
+            &test_options(),
+        );
 
         // Check module categorization
         assert_eq!(result.passing_modules.len(), 1);
@@ -291,7 +315,13 @@ mod tests {
             vec![],
         )]);
         let exports = Exports::empty();
-        let result = LifeGuardAnalysis::new(safety_map, import_graph, &exports, &test_options());
+        let result = LifeGuardAnalysis::from_whole_program(
+            safety_map,
+            import_graph,
+            &exports,
+            &Default::default(),
+            &test_options(),
+        );
 
         // Verify error counts
         assert_error_counts(
@@ -961,7 +991,13 @@ mod tests {
 
         let import_graph = ImportGraph::new();
         let exports = Exports::empty();
-        let result = LifeGuardAnalysis::new(safety_map, import_graph, &exports, &test_options());
+        let result = LifeGuardAnalysis::from_whole_program(
+            safety_map,
+            import_graph,
+            &exports,
+            &Default::default(),
+            &test_options(),
+        );
 
         assert_passing(&result, vec!["ok_module"]);
         assert_failing(&result, vec!["error_module"]);
@@ -1021,9 +1057,13 @@ mod tests {
             );
         }
 
-        let mut result =
-            LifeGuardAnalysis::new(output.safety_map, import_graph, &exports, &test_options());
-        result.propagate_side_effect_imports(&output.side_effect_imports);
+        let result = LifeGuardAnalysis::from_whole_program(
+            output.safety_map,
+            import_graph,
+            &exports,
+            &output.side_effect_imports,
+            &test_options(),
+        );
 
         assert!(
             result

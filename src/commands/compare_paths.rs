@@ -173,13 +173,13 @@ fn run_single_pass(
     } else {
         HashMap::new()
     };
-    let mut analysis = LifeGuardAnalysis::new(
+    let analysis = LifeGuardAnalysis::from_whole_program(
         result.safety_map,
         result.import_graph,
         &result.exports,
+        &result.side_effect_imports,
         options,
     );
-    analysis.propagate_side_effect_imports(&result.side_effect_imports);
     // Skip deallocation of large data structures since the process is about to exit.
     std::mem::forget(result.exports);
     Ok(PathResult {

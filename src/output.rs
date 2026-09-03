@@ -185,6 +185,56 @@ struct ModuleStatus {
     load_eagerly: bool,
 }
 
+enum ReExports<'a> {
+    Whole(&'a Exports),
+    Cached(&'a [CachedReExport]),
+}
+
+enum SideEffects<'a> {
+    Whole(&'a SideEffectMap),
+    Cached(&'a [CachedModule]),
+}
+
+/// Facts consumed by lazy-import policy generation, retaining the source
+/// representation where materializing a common form would require cloning.
+struct ResolvedProgram<'a> {
+    classified: ClassifiedModules,
+    import_graph: ImportGraph,
+    re_exports: ReExports<'a>,
+    side_effects: SideEffects<'a>,
+}
+
+impl<'a> ResolvedProgram<'a> {
+    fn from_whole_program(
+        safety_map: SafetyMap,
+        mut import_graph: ImportGraph,
+        exports: &'a Exports,
+        side_effect_imports: &'a SideEffectMap,
+    ) -> Self {
+        import_graph.resolve_missing_to_known();
+        let classified = classify_modules(safety_map);
+        Self {
+            classified,
+            import_graph,
+            re_exports: ReExports::Whole(exports),
+            side_effects: SideEffects::Whole(side_effect_imports),
+        }
+    }
+
+    fn from_cache(cache: &'a ResolvedCache) -> Self {
+        let (classified, import_graph) = rayon::join(
+            || classify_cached_modules(cache.modules(), cache.graph_only_stubs()),
+            || cache.build_import_graph(),
+        );
+        Self {
+            classified,
+            import_graph,
+            re_exports: ReExports::Cached(cache.re_exports()),
+            side_effects: SideEffects::Cached(cache.modules()),
+        }
+    }
+}
+
 impl ClassifiedModules {
     fn record_status(&mut self, module: ModuleName, status: ModuleStatus) {
         if status.is_safe {
@@ -545,62 +595,35 @@ fn propagate_implicit_imports_along_paths(
 }
 
 impl LifeGuardAnalysis {
-    pub fn new(
+    pub fn from_whole_program(
         safety_map: SafetyMap,
-        mut import_graph: ImportGraph,
+        import_graph: ImportGraph,
         exports: &Exports,
+        side_effect_imports: &SideEffectMap,
         options: &Options,
     ) -> Self {
-        // Resolve missing imports to their nearest known module, otherwise name-imports and
-        // submodules of known packages are treated as missing and conservatively forced eager.
-        // (the incremental path does this via `resolve_cross_library_errors`).
-        import_graph.resolve_missing_to_known();
-        let re_export_map_builder =
-            |failing: &SmallSet<ModuleName>| build_re_export_map(exports, failing);
-        Self::build(safety_map, import_graph, options, re_export_map_builder)
+        let program = ResolvedProgram::from_whole_program(
+            safety_map,
+            import_graph,
+            exports,
+            side_effect_imports,
+        );
+        Self::from_resolved_program(program, options)
     }
 
     /// Build a LifeGuardAnalysis from pre-computed library caches.
     /// This is the "reduce" step: no per-file analysis happens here.
     pub fn from_resolved_cache(cache: &ResolvedCache, options: &Options) -> Self {
-        let (classified, import_graph) = rayon::join(
-            || classify_cached_modules(cache.modules(), cache.graph_only_stubs()),
-            || cache.build_import_graph(),
-        );
-
-        let cached_re_exports = cache.re_exports();
-        let re_export_map_builder = |failing: &SmallSet<ModuleName>| {
-            build_re_export_map_from_cache(cached_re_exports, failing)
-        };
-
-        let mut analysis =
-            Self::build_classified(classified, import_graph, options, re_export_map_builder);
-        analysis.propagate_cached_side_effect_imports(cache.modules());
-        analysis
+        Self::from_resolved_program(ResolvedProgram::from_cache(cache), options)
     }
 
-    fn build(
-        safety_map: SafetyMap,
-        import_graph: ImportGraph,
-        options: &Options,
-        re_export_map_builder: impl FnOnce(
-            &SmallSet<ModuleName>,
-        ) -> AHashMap<ModuleName, AHashSet<ModuleName>>
-        + Send,
-    ) -> Self {
-        let classified = classify_modules(safety_map);
-        Self::build_classified(classified, import_graph, options, re_export_map_builder)
-    }
-
-    fn build_classified(
-        classified: ClassifiedModules,
-        import_graph: ImportGraph,
-        options: &Options,
-        re_export_map_builder: impl FnOnce(
-            &SmallSet<ModuleName>,
-        ) -> AHashMap<ModuleName, AHashSet<ModuleName>>
-        + Send,
-    ) -> Self {
+    fn from_resolved_program(program: ResolvedProgram<'_>, options: &Options) -> Self {
+        let ResolvedProgram {
+            classified,
+            import_graph,
+            re_exports,
+            side_effects,
+        } = program;
         let source_modules: AHashSet<ModuleName> = classified
             .passing_modules
             .iter()
@@ -609,7 +632,14 @@ impl LifeGuardAnalysis {
             .collect();
         let (all_cycles, re_export_map) = rayon::join(
             || collect_cycles(&import_graph, &source_modules),
-            || re_export_map_builder(&classified.failing_modules),
+            || match re_exports {
+                ReExports::Whole(exports) => {
+                    build_re_export_map(exports, &classified.failing_modules)
+                }
+                ReExports::Cached(re_exports) => {
+                    build_re_export_map_from_cache(re_exports, &classified.failing_modules)
+                }
+            },
         );
         let lazy_eligible =
             build_lazy_eligible(&import_graph, &classified, &re_export_map, &all_cycles);
@@ -633,18 +663,23 @@ impl LifeGuardAnalysis {
             }
         };
 
-        Self {
+        let mut analysis = Self {
             output,
             failing_modules: classified.failing_modules,
             passing_modules: classified.passing_modules,
             aggregated_errors: classified.aggregated_errors,
+        };
+        match side_effects {
+            SideEffects::Whole(imports) => analysis.propagate_side_effect_imports(imports),
+            SideEffects::Cached(modules) => analysis.propagate_cached_side_effect_imports(modules),
         }
+        analysis
     }
 
     /// Propagate side-effect imports: if module A has an unused import of module B,
     /// and B is a passing module with non-empty failing deps, add B to A's failing
     /// deps so B is eagerly imported.
-    pub fn propagate_side_effect_imports(&mut self, side_effect_imports: &SideEffectMap) {
+    fn propagate_side_effect_imports(&mut self, side_effect_imports: &SideEffectMap) {
         let has_failing_deps = self.modules_with_failing_deps();
 
         side_effect_imports
@@ -656,7 +691,6 @@ impl LifeGuardAnalysis {
 
     fn propagate_cached_side_effect_imports(&mut self, modules: &[CachedModule]) {
         let has_failing_deps = self.modules_with_failing_deps();
-
         modules.par_iter().for_each(|module| {
             self.propagate_side_effect_entry(
                 module.name,
@@ -1324,8 +1358,13 @@ mod tests {
                 chains.push((outer, middle, inner));
             }
 
-            let mut analysis = LifeGuardAnalysis::new(safety_map, import_graph, &exports, &options);
-            analysis.propagate_side_effect_imports(&side_effect_imports);
+            let analysis = LifeGuardAnalysis::from_whole_program(
+                safety_map,
+                import_graph,
+                &exports,
+                &side_effect_imports,
+                &options,
+            );
 
             for (outer, middle, inner) in chains {
                 let middle_deps = analysis.output.lazy_eligible.get(&middle).unwrap();
