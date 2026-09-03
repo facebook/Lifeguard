@@ -26,8 +26,6 @@ use crate::analyzer;
 use crate::analyzer::AnalyzedModule;
 use crate::cache::CONSTRUCTOR_METHODS;
 use crate::cache::ConstructorCallees;
-use crate::cache::INHERITABLE_CONSTRUCTOR_METHODS;
-use crate::cache::OWN_CONSTRUCTOR_METHODS;
 use crate::cache::constructor_mask_bits;
 use crate::class::Class;
 use crate::class::ClassTable;
@@ -983,10 +981,10 @@ impl CallStack {
 }
 
 /// The functions a constructor call to `cls_name` may dispatch to, in the
-/// order `check_constructor_call` checks them: the metaclass `__new__` and
-/// `__init__` (if the class has a metaclass), then `__init__` and
-/// `__post_init__` on the class itself (the latter is called by the
-/// dataclass-generated `__init__`).
+/// order `check_constructor_call` checks them: `CONSTRUCTOR_METHODS` on the
+/// metaclass (if the class has one), then the same set on the class itself.
+/// Mirrors the candidate set `ConstructorCallees` masks, so the direct and
+/// cache-backed paths dispatch to the same callees.
 /// TODO: Look up `__init__` in the MRO.
 fn constructor_method_names(
     cls_name: ModuleName,
@@ -996,10 +994,7 @@ fn constructor_method_names(
     metaclass
         .into_iter()
         .flat_map(|mcls| CONSTRUCTOR_METHODS.map(|method| mcls.append_str(method)))
-        .chain([
-            cls_name.append_str("__init__"),
-            cls_name.append_str("__post_init__"),
-        ])
+        .chain(CONSTRUCTOR_METHODS.map(|method| cls_name.append_str(method)))
 }
 
 /// Number of implicit leading parameters (the receiver) for a method call.
@@ -1944,7 +1939,7 @@ impl ProjectInfo {
         let own_mask = constructor_mask_bits(
             cls_name,
             CONSTRUCTOR_METHODS.len(),
-            &OWN_CONSTRUCTOR_METHODS,
+            &CONSTRUCTOR_METHODS,
             |m| self.contains_callable(m),
         );
         ConstructorCallees {
@@ -1959,7 +1954,7 @@ impl ProjectInfo {
     /// walks the MRO, so this names the ancestor that actually defines the
     /// method rather than the first base that mentions it.
     fn inherited_constructor_callees(&self, cls_name: ModuleName) -> Vec<ModuleName> {
-        INHERITABLE_CONSTRUCTOR_METHODS
+        CONSTRUCTOR_METHODS
             .iter()
             .filter_map(|method| {
                 let own = cls_name.append_str(method);

@@ -23,6 +23,37 @@ a = A()  # E: unsafe-function-call
         check(code);
     }
 
+    /// A class's own `__new__` runs on instantiation just as its `__init__`
+    /// does. The cache-backed path covers this in `tests/cache.rs`; this pins
+    /// the direct path, whose candidate set used to omit the own `__new__`.
+    #[test]
+    fn test_unsafe_new_called() {
+        let code = r#"
+import foo
+
+class A:
+    def __new__(cls):
+        foo.x = 42
+        return super().__new__(cls)
+
+a = A()  # E: unsafe-function-call
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_unsafe_new_not_called() {
+        let code = r#"
+import foo
+
+class A:
+    def __new__(cls):
+        foo.x = 42
+        return super().__new__(cls)
+"#;
+        check(code);
+    }
+
     #[test]
     fn test_unsafe_init_not_called() {
         let code = r#"

@@ -37,7 +37,7 @@ class timezone(tzinfo):
     utc: ClassVar[timezone]
     min: ClassVar[timezone]
     max: ClassVar[timezone]
-    def __new__(cls, offset: timedelta, name: str = ...) -> Self: ...
+    def __new__(cls, offset: timedelta, name: str = ...) -> Self: no_effects()
     def tzname(self, dt: datetime | None, /) -> str:
         """If name is specified when timezone is created, returns the name.  Otherwise returns offset as 'UTC(+|-)HH:MM'."""
         ...
@@ -74,7 +74,7 @@ class date:
     min: ClassVar[date]
     max: ClassVar[date]
     resolution: ClassVar[timedelta]
-    def __new__(cls, year: SupportsIndex, month: SupportsIndex, day: SupportsIndex) -> Self: ...
+    def __new__(cls, year: SupportsIndex, month: SupportsIndex, day: SupportsIndex) -> Self: no_effects()
     @classmethod
     def fromtimestamp(cls, timestamp: float, /) -> Self:
         """
@@ -212,7 +212,7 @@ class time:
         tzinfo: _TzInfo | None = None,
         *,
         fold: int = 0,
-    ) -> Self: ...
+    ) -> Self: no_effects()
     @property
     def hour(self) -> int: ...
     @property
@@ -326,7 +326,7 @@ class timedelta:
         minutes: float = 0,
         hours: float = 0,
         weeks: float = 0,
-    ) -> Self: ...
+    ) -> Self: no_effects()
     @property
     def days(self) -> int:
         """Number of days."""
@@ -429,7 +429,7 @@ class datetime(date):
         tzinfo: _TzInfo | None = None,
         *,
         fold: int = 0,
-    ) -> Self: ...
+    ) -> Self: no_effects()
     @property
     def hour(self) -> int: ...
     @property

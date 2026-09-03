@@ -1640,6 +1640,40 @@ mod tests {
         );
     }
 
+    /// A class's own `__new__` runs on instantiation just as its `__init__` does,
+    /// so a side effect there has to keep the call unsafe. Before the method sets
+    /// were unified the own half of the mask covered only `__init__` and
+    /// `__post_init__`, and this cleared.
+    #[test]
+    fn test_own_new_side_effect_keeps_call_unsafe() {
+        let cache = resolved_cache(
+            &[(
+                "caller",
+                "from dep import Widget\n\
+                 instance = Widget()\n",
+            )],
+            &[
+                (
+                    "dep",
+                    "import dep_state\n\
+                     class Widget:\n\
+                     \x20   def __new__(cls):\n\
+                     \x20       dep_state.counter = dep_state.counter + 1\n\
+                     \x20       return super().__new__(cls)\n\
+                     \x20   def __init__(self):\n\
+                     \x20       pass\n",
+                ),
+                ("dep_state", "counter = 0\n"),
+            ],
+        );
+
+        let caller = module(&cache, "caller");
+        assert!(
+            !caller.is_safe(),
+            "a side effect in the class's own __new__ must keep the call unsafe",
+        );
+    }
+
     /// End-to-end cover for the inherited case `extra` exists to carry: `Sentinel`
     /// defines no constructor, so the map phase walks its MRO and records
     /// `base.Base.__init__` as the callee. That callee has an import-time side

@@ -68,16 +68,11 @@ pub struct LibraryCache {
     pub merged_constructor_callees: HashMap<ModuleName, ConstructorCallees>,
 }
 
-/// The methods a class's own FQN can carry as constructor callees, in bit order
-/// after `CONSTRUCTOR_METHODS`.
-// TODO: Deliberately excludes the class's own `__new__` to preserve existing behaviour.
-pub(crate) const OWN_CONSTRUCTOR_METHODS: [&str; 2] = ["__init__", "__post_init__"];
-
 /// Which of a class's candidate constructor callees the map phase resolved.
 ///
 /// The candidate set is fixed — `CONSTRUCTOR_METHODS` on the metaclass, then
-/// `OWN_CONSTRUCTOR_METHODS` on the class itself — so a mask over that set plus
-/// the metaclass name reconstructs every callee FQN.
+/// the same set on the class itself — so a mask over it plus the metaclass name
+/// reconstructs every callee FQN.
 ///
 /// NOTE: Storing the mask instead of the names keeps the callee FQNs out of both
 /// the cache's name table and the process-wide `ModuleName` interner, neither of
@@ -89,8 +84,7 @@ pub struct ConstructorCallees {
     /// metaclass cannot be merged into a callee set neither of them recorded.
     pub metaclass: Option<ModuleName>,
     /// Bit `i` for `CONSTRUCTOR_METHODS[i]` on `metaclass`, then bit
-    /// `CONSTRUCTOR_METHODS.len() + i` for `OWN_CONSTRUCTOR_METHODS[i]` on the
-    /// class.
+    /// `CONSTRUCTOR_METHODS.len() + i` for `CONSTRUCTOR_METHODS[i]` on the class.
     pub mask: u8,
     /// Callees the mask cannot name: a constructor inherited from a base class,
     /// whose owner is neither the class nor its metaclass.
@@ -99,9 +93,9 @@ pub struct ConstructorCallees {
 }
 
 impl ConstructorCallees {
-    /// Bits covering `OWN_CONSTRUCTOR_METHODS`, which need no metaclass.
+    /// Bits covering the class's own methods, which need no metaclass.
     const OWN_BITS: u8 =
-        ((1 << OWN_CONSTRUCTOR_METHODS.len()) - 1) << (CONSTRUCTOR_METHODS.len() as u8);
+        ((1 << CONSTRUCTOR_METHODS.len()) - 1) << (CONSTRUCTOR_METHODS.len() as u8);
 
     /// A record naming no callee at all, which reduce must not read as "nothing
     /// runs" — it means the map phase resolved nothing, so the call cannot clear.
@@ -139,12 +133,9 @@ impl ConstructorCallees {
         let metaclass_callees = self.metaclass.into_iter().flat_map(move |metaclass| {
             Self::selected(self.mask, 0, &CONSTRUCTOR_METHODS).map(move |m| (metaclass, m))
         });
-        let own_callees = Self::selected(
-            self.mask,
-            CONSTRUCTOR_METHODS.len(),
-            &OWN_CONSTRUCTOR_METHODS,
-        )
-        .map(move |m| (class_fqn, m));
+        let own_callees =
+            Self::selected(self.mask, CONSTRUCTOR_METHODS.len(), &CONSTRUCTOR_METHODS)
+                .map(move |m| (class_fqn, m));
         metaclass_callees.chain(own_callees)
     }
 
@@ -163,10 +154,10 @@ impl ConstructorCallees {
 
 /// The mask bit naming `method` on the class itself.
 pub fn own_constructor_bit(method: &str) -> u8 {
-    let index = OWN_CONSTRUCTOR_METHODS
+    let index = CONSTRUCTOR_METHODS
         .iter()
         .position(|m| *m == method)
-        .expect("should name one of OWN_CONSTRUCTOR_METHODS");
+        .expect("should name one of CONSTRUCTOR_METHODS");
     1 << (CONSTRUCTOR_METHODS.len() + index)
 }
 
@@ -1273,15 +1264,10 @@ fn lookup_decorator_in_safety_map(
     })
 }
 
-/// The methods that run when a class is instantiated.
-pub(crate) const CONSTRUCTOR_METHODS: [&str; 2] = ["__new__", "__init__"];
-
-/// Every method an instantiation can dispatch to on the class side, whether the
-/// class defines it or inherits it. The union of `CONSTRUCTOR_METHODS` and
-/// `OWN_CONSTRUCTOR_METHODS`: the mask names only the own definitions, so the
-/// inherited ones have to be resolved by FQN into `ConstructorCallees::extra`.
-pub(crate) const INHERITABLE_CONSTRUCTOR_METHODS: [&str; 3] =
-    ["__new__", "__init__", "__post_init__"];
+/// The methods an instantiation can dispatch to. The same set applies to the
+/// metaclass and to the class itself, so a mask over two copies of it names
+/// every callee the map phase can resolve without interning an FQN.
+pub(crate) const CONSTRUCTOR_METHODS: [&str; 3] = ["__new__", "__init__", "__post_init__"];
 
 /// The `function_safety` entry names of `local_name`'s constructor methods.
 fn constructors(local_name: &str) -> impl Iterator<Item = String> + '_ {

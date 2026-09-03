@@ -16,7 +16,7 @@ class ABCMeta(type):
     if sys.version_info >= (3, 11):
         def __new__(
             mcls: type[_typeshed.Self], name: str, bases: tuple[type, ...], namespace: dict[str, Any], /, **kwargs: Any
-        ) -> _typeshed.Self: ...
+        ) -> _typeshed.Self: no_effects()
     else:
         def __new__(
             mcls: type[_typeshed.Self], name: str, bases: tuple[type, ...], namespace: dict[str, Any], **kwargs: Any

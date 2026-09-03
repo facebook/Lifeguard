@@ -211,5 +211,5 @@ class itemgetter(Generic[_T_co]):
 
 @final
 class methodcaller:
-    def __new__(cls, name: str, /, *args: Any, **kwargs: Any) -> Self: ...
+    def __new__(cls, name: str, /, *args: Any, **kwargs: Any) -> Self: no_effects()
     def __call__(self, obj: Any) -> Any: ...
