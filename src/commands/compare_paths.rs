@@ -35,11 +35,11 @@ use crate::cache::MergedClassFacts;
 use crate::cache::ReduceWorkspace;
 use crate::output::LifeGuardAnalysis;
 use crate::output::LifeGuardOutput;
-use crate::project::ExecutionMode;
 use crate::runner::DEFAULT_PYTHON_VERSION;
 use crate::runner::Options;
+use crate::runner::analyze_library;
+use crate::runner::analyze_whole_program;
 use crate::runner::parse_python_version;
-use crate::runner::run_pipeline;
 use crate::source_map;
 use crate::source_map::SourceMap;
 use crate::tracing::time;
@@ -157,7 +157,7 @@ fn run_single_pass(
     options: &Options,
     compute_errors: bool,
 ) -> Result<PathResult> {
-    let result = run_pipeline(src_map, root_dir, ExecutionMode::WholeProgram, options)?;
+    let result = analyze_whole_program(src_map, root_dir, options)?;
     let errors = if compute_errors {
         let mut cache = LibraryCache::build(
             &result.safety_map,
@@ -167,8 +167,8 @@ fn run_single_pass(
         );
         // Both paths have to see the same class facts, or the comparison reports
         // divergence that is an artifact of how the two caches were built.
-        cache.set_class_bases(result.class_bases.clone());
-        cache.set_constructor_callees(result.constructor_callees.clone());
+        cache.set_class_bases(result.class_bases);
+        cache.set_constructor_callees(result.constructor_callees);
         post_resolution_errors(cache, options)
     } else {
         HashMap::new()
@@ -196,7 +196,7 @@ fn run_incremental(
     options: &Options,
     compute_errors: bool,
 ) -> Result<PathResult> {
-    let result = run_pipeline(src_map, root_dir, ExecutionMode::Incremental, options)?;
+    let result = analyze_library(src_map, root_dir, options)?;
     let mut cache = LibraryCache::build(
         &result.safety_map,
         &result.import_graph,

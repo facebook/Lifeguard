@@ -14,11 +14,10 @@ use tracing::info;
 use tracing::warn;
 
 use crate::cache::LibraryCache;
-use crate::project::ExecutionMode;
 use crate::runner::DEFAULT_PYTHON_VERSION;
 use crate::runner::Options;
+use crate::runner::analyze_library;
 use crate::runner::parse_python_version;
-use crate::runner::run_pipeline;
 use crate::source_map;
 use crate::source_map::SourceMap;
 use crate::tracing::ProcessTimer;
@@ -141,7 +140,7 @@ pub fn run(args: AnalyzeLibraryArgs) -> Result<()> {
     } else {
         let root_dir = detect_root_dir(&src_map)?;
 
-        let result = run_pipeline(src_map, &root_dir, ExecutionMode::Incremental, &options)?;
+        let result = analyze_library(src_map, &root_dir, &options)?;
 
         let mut cache = time("Building cache", || {
             LibraryCache::build(

@@ -83,8 +83,10 @@ impl Default for Options {
     }
 }
 
-/// Intermediate results from the analysis pipeline, before final output generation.
-pub struct PipelineResult {
+/// Fully analyzed whole-program facts ready for direct output construction.
+/// Class bases are retained so parity tooling can run the same reduce-time MRO
+/// verification as the incremental path when comparing residual errors.
+pub struct WholeProgramFacts {
     pub sources: Sources,
     pub safety_map: project::SafetyMap,
     pub import_graph: ImportGraph,
@@ -94,14 +96,26 @@ pub struct PipelineResult {
     pub constructor_callees: Vec<(ModuleName, ConstructorCallees)>,
 }
 
-/// Run the analysis pipeline up to (but not including) final output generation.
-/// Returns intermediate results that can be consumed by different output formats.
-pub fn run_pipeline(
+/// Provisional per-library facts serialized by the incremental map phase.
+/// Cross-library resolution must run before these facts become final output.
+pub struct LibraryAnalysisFacts {
+    pub safety_map: project::SafetyMap,
+    pub import_graph: ImportGraph,
+    pub exports: crate::exports::Exports,
+    pub side_effect_imports: project::SideEffectMap,
+    pub class_bases: Vec<(ModuleName, Vec<ModuleName>)>,
+    pub constructor_callees: Vec<(ModuleName, ConstructorCallees)>,
+}
+
+/// Shared source indexing and AST analysis behind the two public phase APIs.
+/// Produces the whole-program shape; `analyze_library` narrows it to the subset
+/// a library's cache can carry.
+fn run_local_pipeline(
     src_map: SourceMap,
     root_dir: &std::path::Path,
     mode: ExecutionMode,
     options: &Options,
-) -> Result<PipelineResult> {
+) -> Result<WholeProgramFacts> {
     let config = AnalysisConfig::with_python_version(options.python_version, options.main_module);
 
     let sources = time("Building sources", || {
@@ -129,7 +143,7 @@ pub fn run_pipeline(
         );
     }
 
-    Ok(PipelineResult {
+    Ok(WholeProgramFacts {
         sources,
         safety_map: output.safety_map,
         import_graph,
@@ -140,14 +154,50 @@ pub fn run_pipeline(
     })
 }
 
+/// Analyze a complete source database for direct output generation.
+pub fn analyze_whole_program(
+    src_map: SourceMap,
+    root_dir: &std::path::Path,
+    options: &Options,
+) -> Result<WholeProgramFacts> {
+    run_local_pipeline(src_map, root_dir, ExecutionMode::WholeProgram, options)
+}
+
+/// Analyze one library into provisional facts for cache serialization.
+pub fn analyze_library(
+    src_map: SourceMap,
+    root_dir: &std::path::Path,
+    options: &Options,
+) -> Result<LibraryAnalysisFacts> {
+    // Everything but `sources`: a library's cache carries facts, not the source
+    // index they were derived from.
+    let WholeProgramFacts {
+        sources: _,
+        safety_map,
+        import_graph,
+        exports,
+        side_effect_imports,
+        class_bases,
+        constructor_callees,
+    } = run_local_pipeline(src_map, root_dir, ExecutionMode::Incremental, options)?;
+    Ok(LibraryAnalysisFacts {
+        safety_map,
+        import_graph,
+        exports,
+        side_effect_imports,
+        class_bases,
+        constructor_callees,
+    })
+}
+
 /// Process a source map and run the full analysis pipeline.
 pub fn process_source_map(
     src_map: SourceMap,
     root_dir: &std::path::Path,
     options: &Options,
 ) -> Result<LifeGuardAnalysis> {
-    let result = run_pipeline(src_map, root_dir, ExecutionMode::WholeProgram, options)?;
-    let PipelineResult {
+    let result = analyze_whole_program(src_map, root_dir, options)?;
+    let WholeProgramFacts {
         sources,
         safety_map,
         import_graph,
