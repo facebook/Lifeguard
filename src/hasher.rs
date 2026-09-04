@@ -62,3 +62,15 @@ where
         }
     }
 }
+
+/// Combine two nested maps, extending the larger allocation with the smaller.
+/// Shaped for `rayon`'s `reduce`, which needs an owned-in, owned-out merge.
+pub fn merge_nested_larger<K, V>(a: AHashMap<K, V>, b: AHashMap<K, V>) -> AHashMap<K, V>
+where
+    K: Eq + std::hash::Hash,
+    V: IntoIterator + Extend<<V as IntoIterator>::Item>,
+{
+    let (mut large, small) = if a.len() >= b.len() { (a, b) } else { (b, a) };
+    extend_nested(&mut large, small);
+    large
+}

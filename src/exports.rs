@@ -29,6 +29,7 @@ use crate::hasher::AHashSet;
 use crate::hasher::HashMapExt;
 use crate::hasher::HashSetExt;
 use crate::hasher::extend_nested;
+use crate::hasher::merge_nested_larger;
 use crate::imports::ImportGraph;
 use crate::module_parser::ParsedModule;
 use crate::pyrefly::definitions::Definition;
@@ -392,6 +393,43 @@ impl Exports {
         self.re_exports.retain(|_, names| !names.is_empty());
     }
 
+    /// Index the members every `relevant` module already binds without a star.
+    ///
+    /// Only a handful of modules are relevant, but finding their members means
+    /// scanning every exported and re-exported name in the program, so the scan
+    /// runs in parallel. Every insert records the same `None`, which is why the
+    /// per-thread indices can be merged in any order.
+    fn seed_star_members(&self, relevant: &AHashMap<&str, ModuleName>) -> StarMembers {
+        let (from_exports, from_re_exports) = rayon::join(
+            || {
+                self.exports
+                    .par_iter()
+                    .filter_map(|(name, _)| {
+                        let (parent, attr) = name.as_str().rsplit_once('.')?;
+                        Some((*relevant.get(parent)?, Name::new(attr)))
+                    })
+                    .fold(StarMembers::new, |mut acc, (module, attr)| {
+                        acc.entry(module).or_default().insert(attr, None);
+                        acc
+                    })
+                    .reduce(StarMembers::new, merge_nested_larger)
+            },
+            || {
+                self.re_exports
+                    .par_iter()
+                    .filter(|(module, _)| relevant.contains_key(module.as_str()))
+                    .fold(StarMembers::new, |mut acc, (module, names)| {
+                        acc.entry(*module)
+                            .or_default()
+                            .extend(names.keys().map(|attr| (attr.clone(), None)));
+                        acc
+                    })
+                    .reduce(StarMembers::new, merge_nested_larger)
+            },
+        );
+        merge_nested_larger(from_exports, from_re_exports)
+    }
+
     pub fn expand_star_re_exports(&mut self, import_graph: &ImportGraph) {
         if self.star_imports.is_empty() {
             return;
@@ -413,36 +451,19 @@ impl Exports {
 
         // Only modules a star import touches need a member index: the source, to
         // enumerate the names it binds, and the importer, to resolve shadowing.
-        let mut relevant: AHashSet<&str> = AHashSet::new();
+        // Mapping the name back to its interned `ModuleName` lets the seeding scan
+        // recognise a module without re-interning it.
+        let mut relevant: AHashMap<&str, ModuleName> = AHashMap::new();
         for (m, star) in &edges {
-            relevant.insert(m.as_str());
-            relevant.insert(star.source.as_str());
+            relevant.insert(m.as_str(), *m);
+            relevant.insert(star.source.as_str(), star.source);
         }
 
         // Index of each relevant module's member names, seeded from real exports
         // and explicit re-exports.
         // The value records what bounded the name: `None` for a non-star binding,
         // `Some(rank)` for the star that bound it.
-        let mut members = StarMembers::new();
-        for name in self.exports.keys() {
-            if !relevant.contains(name.as_str().rsplit_once('.').map_or("", |(m, _)| m)) {
-                continue;
-            }
-            let attr = Attribute::from_module_name(name);
-            members
-                .entry(attr.module)
-                .or_default()
-                .insert(attr.attr, None);
-        }
-        for (module, names) in &self.re_exports {
-            if !relevant.contains(module.as_str()) {
-                continue;
-            }
-            members
-                .entry(*module)
-                .or_default()
-                .extend(names.keys().map(|attr| (attr.clone(), None)));
-        }
+        let mut members = self.seed_star_members(&relevant);
 
         loop {
             let mut changed = false;
