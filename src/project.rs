@@ -45,6 +45,7 @@ use crate::hasher::AHashMap;
 use crate::hasher::AHashSet;
 use crate::hasher::HashMapExt;
 use crate::hasher::HashSetExt;
+use crate::hasher::union_larger;
 use crate::imports::ImportGraph;
 use crate::module_effects::ModuleImportsMap;
 use crate::module_parser::ParsedModule;
@@ -1374,19 +1375,32 @@ impl ProjectInfo {
 
         let module_names: AHashSet<ModuleName> = self.analysis_map.keys().copied().collect();
 
+        let candidates = self.collect_mutation_candidates(import_graph);
+
         // Functions whose verdict the resolution may change: mutation-candidate call
         // sites plus everything the promotion fixpoint promotes. Only these are
         // written back (re-deriving the fqn), avoiding a full-table rewrite.
-        let mut changed: AHashSet<(ModuleName, String)> = AHashSet::new();
-
-        let candidates = self.collect_mutation_candidates(import_graph);
-        for (module, module_candidates) in &candidates {
-            for candidate in module_candidates {
-                if let MutationCandidateSite::Function { name } = &candidate.site {
-                    changed.insert((*module, name.as_str().to_owned()));
-                }
-            }
-        }
+        // Call sites outnumber the functions they name by an order of magnitude, so
+        // they are deduplicated as `Copy` pairs before any name is allocated.
+        let sites: AHashSet<(ModuleName, ModuleName)> = candidates
+            .par_iter()
+            .flat_map_iter(|(module, module_candidates)| {
+                module_candidates
+                    .iter()
+                    .filter_map(move |candidate| match &candidate.site {
+                        MutationCandidateSite::Function { name } => Some((*module, *name)),
+                        MutationCandidateSite::ModuleScope { .. } => None,
+                    })
+            })
+            .fold(AHashSet::new, |mut acc, site| {
+                acc.insert(site);
+                acc
+            })
+            .reduce(AHashSet::new, union_larger);
+        let mut changed: AHashSet<(ModuleName, String)> = sites
+            .into_iter()
+            .map(|(module, name)| (module, name.as_str().to_owned()))
+            .collect();
 
         // Whole-program: every candidate callee is unresolved, so none are confirmed —
         // each drops from its caller's missing-dep set, promoting callers left with no
