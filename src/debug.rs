@@ -12,6 +12,7 @@ use crate::exports::ExportType;
 use crate::exports::Exports;
 use crate::imports::ImportGraph;
 use crate::module_effects::ModuleImportsMap;
+use crate::traits::ModuleNameExt;
 
 /// Print exports table in sorted format for debugging.
 /// Outputs one line per export in format:
@@ -25,9 +26,9 @@ pub fn print_exports(exports: &Exports) {
         };
         format!("{}: {}", prefix, name.as_str())
     });
-    let formatted_re_exports = exports
-        .get_re_exports()
-        .map(|(name, _)| format!("re-export: {}", name.as_module_name().as_str()));
+    let formatted_re_exports = exports.get_re_exports().map(|(module, attr, _)| {
+        format!("re-export: {}", module.append_str(attr.as_str()).as_str())
+    });
 
     for line in formatted_exports.chain(formatted_re_exports).sorted() {
         println!("{}", line);

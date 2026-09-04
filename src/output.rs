@@ -345,15 +345,13 @@ fn build_re_export_map(
     failing_modules: &SmallSet<ModuleName>,
 ) -> AHashMap<ModuleName, AHashSet<ModuleName>> {
     let mut map: AHashMap<ModuleName, AHashSet<ModuleName>> = AHashMap::new();
-    for (re_export_name, _) in exports.get_re_exports() {
-        let resolved = exports.resolve_transitive(re_export_name);
-        let source_module = match &resolved {
-            Some(attr) => attr.module,
+    for (module, _, (imported, _range)) in exports.get_re_exports() {
+        let source_module = match exports.resolve_transitive(imported) {
+            Some(resolved) => resolved.module,
             None => continue,
         };
         if failing_modules.contains(&source_module) {
-            let module_part = re_export_name.module;
-            map.entry(module_part).or_default().insert(source_module);
+            map.entry(module).or_default().insert(source_module);
         }
     }
     map

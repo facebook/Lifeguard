@@ -253,7 +253,7 @@ fn collect_re_exports(exports: &Exports, effect_table: &EffectTable) -> AHashSet
     // part on large projects; do it in parallel, then build the set.
     let names: Vec<ModuleName> = exports
         .par_re_exports()
-        .map(|(name, _)| name.as_module_name())
+        .map(|(module, attr, _)| module.append_str(attr.as_str()))
         .collect();
     let mut re_exports: AHashSet<ModuleName> = names.into_iter().collect();
     remove_unsafe_re_exports(effect_table, &mut re_exports);

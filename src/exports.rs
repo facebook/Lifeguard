@@ -28,6 +28,7 @@ use crate::hasher::AHashMap;
 use crate::hasher::AHashSet;
 use crate::hasher::HashMapExt;
 use crate::hasher::HashSetExt;
+use crate::hasher::extend_nested;
 use crate::imports::ImportGraph;
 use crate::module_parser::ParsedModule;
 use crate::pyrefly::definitions::Definition;
@@ -153,12 +154,30 @@ fn star_can_replace(existing: Option<&Option<StarRank>>, rank: StarRank) -> bool
     }
 }
 
+/// Re-exported names of one module: attribute name -> what it resolves to.
+type ModuleReExports = AHashMap<Name, (Attribute, TextRange)>;
+
+/// Flatten one module's re-exports into `(module, attr, resolution)` triples.
+fn flatten_module_re_exports<'a>(
+    (module, names): (&'a ModuleName, &'a ModuleReExports),
+) -> impl Iterator<Item = (ModuleName, &'a Name, &'a (Attribute, TextRange))> {
+    names
+        .iter()
+        .map(move |(attr, resolved)| (*module, attr, resolved))
+}
+
 #[derive(Debug)]
 pub struct Exports {
-    /// Map of definitions to the name of their containing module.
+    /// Map of each definition's fully-qualified name to what kind of definition
+    /// it is. Deliberately flat, unlike `re_exports`: every lookup already holds
+    /// an interned FQN, so nesting would force a split and a re-intern per
+    /// lookup on the analyzer's hottest path.
     exports: AHashMap<ModuleName, ExportType>,
-    /// Map of imported objects to their resolved names and locations.
-    re_exports: AHashMap<Attribute, (Attribute, TextRange)>,
+    /// Map of imported objects to their resolved names and locations, nested by
+    /// re-exporting module. Every entry a single module contributes shares that
+    /// module, so nesting lets `merge_all` move one sub-map per module instead
+    /// of rehashing millions of individual `Attribute` keys.
+    re_exports: AHashMap<ModuleName, ModuleReExports>,
     /// Map of module name to the contents of that module's `__all__`.
     all: AHashMap<ModuleName, Vec<Name>>,
     /// Map of fully-qualified function names to their return types (class names).
@@ -182,16 +201,18 @@ impl Exports {
         }
     }
 
+    /// `re_exporting_modules` sizes the outer `re_exports` map, so it counts
+    /// modules rather than individual re-exports.
     pub fn with_capacity(
         exports: usize,
-        re_exports: usize,
+        re_exporting_modules: usize,
         all: usize,
         return_types: usize,
         star_imports: usize,
     ) -> Self {
         Self {
             exports: AHashMap::with_capacity(exports),
-            re_exports: AHashMap::with_capacity(re_exports),
+            re_exports: AHashMap::with_capacity(re_exporting_modules),
             all: AHashMap::with_capacity(all),
             return_types: AHashMap::with_capacity(return_types),
             star_imports: AHashMap::with_capacity(star_imports),
@@ -217,9 +238,7 @@ impl Exports {
     /// Follow re-export chains transitively to find the ultimate definition.
     /// Returns `None` if a cycle is detected.
     pub fn resolve_transitive(&self, name: &Attribute) -> Option<Attribute> {
-        resolve_chain(name, |attr| {
-            self.re_exports.get(attr).map(|(a, _)| a.clone())
-        })
+        resolve_chain(name, |attr| self.resolve_imported_name(attr))
     }
 
     /// Check if a symbol is a class, following re-export chains transitively if needed.
@@ -277,32 +296,49 @@ impl Exports {
     }
 
     /// Get an iterator to all re-exported symbols and their definitions.
-    pub fn get_re_exports(&self) -> impl Iterator<Item = (&Attribute, &(Attribute, TextRange))> {
-        self.re_exports.iter()
+    pub fn get_re_exports(
+        &self,
+    ) -> impl Iterator<Item = (ModuleName, &Name, &(Attribute, TextRange))> {
+        self.re_exports.iter().flat_map(flatten_module_re_exports)
     }
 
     /// Parallel iterator over all re-exported symbols and their definitions.
     pub fn par_re_exports(
         &self,
-    ) -> impl ParallelIterator<Item = (&Attribute, &(Attribute, TextRange))> {
-        self.re_exports.par_iter()
+    ) -> impl ParallelIterator<Item = (ModuleName, &Name, &(Attribute, TextRange))> {
+        self.re_exports
+            .par_iter()
+            .flat_map_iter(flatten_module_re_exports)
     }
 
     /// Get a symbol re-export information, what its original name and location is, assuming it is a
     /// re-export.
     pub fn get_re_export(&self, name: &Attribute) -> Option<&(Attribute, TextRange)> {
-        self.re_exports.get(name)
+        self.re_exports.get(&name.module)?.get(&name.attr)
     }
 
     /// Check if a symbol is a re-export of another symbol.
     pub fn is_re_export(&self, name: &Attribute) -> bool {
-        self.re_exports.contains_key(name)
+        self.get_re_export(name).is_some()
+    }
+
+    fn insert_re_export_entry(
+        &mut self,
+        module: ModuleName,
+        attr: Name,
+        imported: Attribute,
+        range: TextRange,
+    ) {
+        self.re_exports
+            .entry(module)
+            .or_default()
+            .insert(attr, (imported, range));
     }
 
     /// Merge `other` into `self`. Consume `other`.
     pub fn merge(&mut self, other: Exports) {
         self.exports.extend(other.exports);
-        self.re_exports.extend(other.re_exports);
+        extend_nested(&mut self.re_exports, other.re_exports);
         self.all.extend(other.all);
         self.return_types.extend(other.return_types);
         self.star_imports.extend(other.star_imports);
@@ -310,22 +346,29 @@ impl Exports {
 
     /// Merge a collection of per-module Exports into a single Exports.
     pub fn merge_all(all_exports: Vec<Exports>) -> Self {
-        let (total_exports, total_re_exports, total_all, total_return_types, total_star_imports) =
-            all_exports
-                .iter()
-                .fold((0, 0, 0, 0, 0), |(e, re, a, rt, si), exports| {
-                    (
-                        e + exports.exports.len(),
-                        re + exports.re_exports.len(),
-                        a + exports.all.len(),
-                        rt + exports.return_types.len(),
-                        si + exports.star_imports.len(),
-                    )
-                });
+        // Each input holds one module's exports, so its `re_exports` length is
+        // the module count this contributes to the merged outer map.
+        let (
+            total_exports,
+            re_exporting_modules,
+            total_all,
+            total_return_types,
+            total_star_imports,
+        ) = all_exports
+            .iter()
+            .fold((0, 0, 0, 0, 0), |(e, re, a, rt, si), exports| {
+                (
+                    e + exports.exports.len(),
+                    re + exports.re_exports.len(),
+                    a + exports.all.len(),
+                    rt + exports.return_types.len(),
+                    si + exports.star_imports.len(),
+                )
+            });
 
         let mut result = Self::with_capacity(
             total_exports,
-            total_re_exports,
+            re_exporting_modules,
             total_all,
             total_return_types,
             total_star_imports,
@@ -339,19 +382,14 @@ impl Exports {
     /// Remove re-exports that refer to modules in the import graph.
     /// Used to filter unfiltered exports after the import graph is built.
     /// The predicate interns a ModuleName per re-export (as_module_name), which
-    /// dominates this pass, so it is evaluated in parallel before removal.
+    /// dominates this pass, so modules are filtered in parallel.
     pub fn filter_module_re_exports(&mut self, import_graph: &ImportGraph) {
-        let to_remove: Vec<Attribute> = self
-            .re_exports
-            .par_iter()
-            .filter(|(_, (imported_attr, _))| {
-                import_graph.contains(&imported_attr.as_module_name())
-            })
-            .map(|(exported, _)| exported.clone())
-            .collect();
-        for exported in &to_remove {
-            self.re_exports.remove(exported);
-        }
+        self.re_exports.par_iter_mut().for_each(|(_, names)| {
+            names.retain(|_, (imported_attr, _)| {
+                !import_graph.contains(&imported_attr.as_module_name())
+            });
+        });
+        self.re_exports.retain(|_, names| !names.is_empty());
     }
 
     pub fn expand_star_re_exports(&mut self, import_graph: &ImportGraph) {
@@ -396,14 +434,14 @@ impl Exports {
                 .or_default()
                 .insert(attr.attr, None);
         }
-        for exported in self.re_exports.keys() {
-            if !relevant.contains(exported.module.as_str()) {
+        for (module, names) in &self.re_exports {
+            if !relevant.contains(module.as_str()) {
                 continue;
             }
             members
-                .entry(exported.module)
+                .entry(*module)
                 .or_default()
-                .insert(exported.attr.clone(), None);
+                .extend(names.keys().map(|attr| (attr.clone(), None)));
         }
 
         loop {
@@ -426,8 +464,10 @@ impl Exports {
                     if import_graph.contains(&imported.as_module_name()) {
                         continue;
                     }
-                    let exported = Attribute::new(*m, n.as_str());
-                    self.re_exports.insert(exported, (imported, star.range));
+                    self.re_exports
+                        .entry(*m)
+                        .or_default()
+                        .insert(n.clone(), (imported, star.range));
                     members.entry(*m).or_default().insert(n, Some(rank));
                     changed = true;
                 }
@@ -444,7 +484,7 @@ impl Exports {
     }
 
     pub fn resolve_imported_name(&self, name: &Attribute) -> Option<Attribute> {
-        self.re_exports.get(name).map(|(imp, _)| imp).cloned()
+        self.get_re_export(name).map(|(imp, _)| imp).cloned()
     }
 
     /// Iterate over all `__all__` entries across modules.
@@ -459,8 +499,12 @@ impl Exports {
 
     #[cfg(test)]
     pub fn insert_re_export(&mut self, exported: Attribute, imported: Attribute) {
-        self.re_exports
-            .insert(exported, (imported, TextRange::default()));
+        self.insert_re_export_entry(
+            exported.module,
+            exported.attr,
+            imported,
+            TextRange::default(),
+        );
     }
 }
 
@@ -608,7 +652,8 @@ impl<'a> ExportsBuilder<'a> {
             .import_graph
             .is_some_and(|ig| ig.contains(&imported.as_module_name()));
         if !is_module {
-            self.inner.re_exports.insert(exported, (imported, range));
+            self.inner
+                .insert_re_export_entry(exported.module, exported.attr, imported, range);
         }
     }
 

@@ -1593,10 +1593,10 @@ impl CachedExports {
     fn from_exports(exports: &Exports, own_modules: &AHashSet<ModuleName>) -> Self {
         let re_exports: Vec<CachedReExport> = exports
             .get_re_exports()
-            .filter(|(exported, _)| own_modules.contains(&exported.module))
-            .map(|(exported, (imported, _range))| CachedReExport {
-                exported_module: exported.module,
-                exported_attr: exported.attr.to_string(),
+            .filter(|(module, _, _)| own_modules.contains(module))
+            .map(|(module, attr, (imported, _range))| CachedReExport {
+                exported_module: module,
+                exported_attr: attr.to_string(),
                 imported_module: imported.module,
                 imported_attr: imported.attr.to_string(),
             })

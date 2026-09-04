@@ -13,6 +13,7 @@
 //! builds millions of small maps. As a batch tool it gains nothing from
 //! randomized (DoS-resistant) hashing, so we use a fixed compile-time seed.
 
+use std::collections::hash_map::Entry;
 use std::hash::BuildHasherDefault;
 
 use ahash::AHasher;
@@ -42,4 +43,22 @@ where
     let (mut large, small) = if a.len() >= b.len() { (a, b) } else { (b, a) };
     large.extend(small);
     large
+}
+
+/// Merge a nested map into another, moving each inner collection wholesale when
+/// its key is new. Nesting a map is only worth it if merges stay proportional to
+/// the outer key count, so the miss path must not rehash the inner entries.
+pub fn extend_nested<K, V>(dst: &mut AHashMap<K, V>, src: AHashMap<K, V>)
+where
+    K: Eq + std::hash::Hash,
+    V: IntoIterator + Extend<<V as IntoIterator>::Item>,
+{
+    for (key, inner) in src {
+        match dst.entry(key) {
+            Entry::Occupied(mut slot) => slot.get_mut().extend(inner),
+            Entry::Vacant(slot) => {
+                slot.insert(inner);
+            }
+        }
+    }
 }
