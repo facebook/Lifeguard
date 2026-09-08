@@ -187,8 +187,6 @@ Each `##` heading is a module. Under it you will see:
 - **Analysis Error** — the module could not be analyzed, for example because
   parsing failed.
 
-Empty diagnostic sections are omitted.
-
 ## Running tests
 
 ```bash
