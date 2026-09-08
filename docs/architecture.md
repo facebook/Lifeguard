@@ -24,11 +24,9 @@ The pipeline above analyzes a program's whole transitive source DB in one pass. 
 verdicts can also be produced incrementally, so that editing one library does not force a
 re-analysis of everything:
 
-- **Map** — `analyze-library` analyzes a single library against its own sources and writes
-  a binary cache file (`commands/analyze_library.rs`, `cache.rs`, `cache_wire.rs`).
+- **Map** — `analyze-library` analyzes a single library against its own sources and writes a binary cache file.
 - **Reduce** — `analyze-binary` merges the per-library caches, resolves cross-library
-  function safety, and emits the same final output (`commands/analyze_binary.rs`,
-  `resolution.rs`).
+  function safety, and emits the same final output.
 
 The map phase cannot see other libraries, so a call it could not resolve is recorded as a
 candidate rather than a verdict; the reduce phase resolves those against the merged program
