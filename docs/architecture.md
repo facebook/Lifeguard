@@ -70,7 +70,11 @@ when they disagree on more modules than `--max-divergent-modules` allows.
 - `output.rs` - `LifeGuardOutput` and `LifeGuardAnalysis` construction
 
 **Incremental analysis**:
-- `cache.rs` - Per-library cache model (`LibraryCache`, `CachedModule`, `CachedExports`)
+- `cache.rs` - Declares the cache submodules and re-exports their types and functions
+- `cache/artifact.rs` - Per-library cache model (`LibraryCache`, `CachedModule`, `CachedExports`) and construction from analysis results
+- `cache/bundled_stubs.rs` - Reconstructs graph-only bundled stub modules omitted from per-library artifacts
+- `cache/merge.rs` - Merges library records and propagates facts independent of final safety resolution
+- `cache/reduce.rs` - Resolves merged caches into final analysis results
 - `cache_wire.rs` - On-disk cache format, read and write
 - `resolution.rs` - Function-safety resolution (`resolve_program`); used by the reduce and by the whole-program path in `project.rs`
 
