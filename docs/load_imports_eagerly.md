@@ -38,7 +38,7 @@ exec(config_code)  # Static analysis cannot reason about this
 
 ### 3. sys.modules Access
 
-**Trigger**: A subscript access (`sys.modules["x"]`) or method call (`sys.modules.setdefault(...)`, `sys.modules.pop(...)`) on `sys.modules`, subject to the read exceptions below.
+**Trigger**: A subscript access (`sys.modules["x"]`) or method call (`sys.modules.setdefault(...)`, `sys.modules.pop(...)`) on `sys.modules` at any scope, subject to the read exceptions below.
 
 For subscript reads with a literal string key, the analyzer suppresses this
 effect when the key names the current module, one of its parent packages, or

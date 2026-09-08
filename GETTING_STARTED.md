@@ -176,8 +176,7 @@ Each `##` heading is a module. Under it you will see:
 - **Errors** — diagnostics grouped under `<ErrorKind> (<count>)`, followed by
   `Line <n> - <detail>` entries. Common error kinds:
   - `UnknownFunctionCall` — a call target could not be resolved
-  - `UnsafeFunctionCall` — a local or imported function was not determined safe
-    to call eagerly
+  - `UnsafeFunctionCall` — a local or imported function that was statically analyzed to be lazy imports incompatible
   - `CustomFinalizer` — a class defines `__del__`
   - `ExecCall` — the module calls `exec()`
 - **Load Imports Eagerly** — errors that cause the module to be added to the
