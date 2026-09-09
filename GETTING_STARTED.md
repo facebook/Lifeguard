@@ -172,3 +172,13 @@ Each `##` heading is a module. Under it you will see:
 ```bash
 cargo test
 ```
+
+To run everything CI checks — formatting, clippy, tests and the release binary —
+use the test script:
+
+```bash
+./test.py
+```
+
+That builds in release, which takes a while from cold. Pass `--no-release` while
+iterating.

@@ -35,7 +35,13 @@ We follow the [Buck2 coding conventions](https://github.com/facebook/buck2/blob/
 
 ## Testing
 
-You can use `cargo test` to run the tests, or `python3 test.py` from this directory.
+Use `cargo test` for the inner loop. Before opening a pull request, run
+`./test.py` from this directory: it formats, lints, tests and builds the binary,
+matching the checks in `.github/workflows/lifeguard.yml`. Where CI runs
+`cargo fmt -- --check`, `./test.py` formats for you — commit anything it changes.
+
+Pass `--no-release` for a faster run, and `--no-fmt` / `--no-lint` / `--no-test` /
+`--no-build` to skip a step.
 
 Tests live in `tests/`, and the harness is `src/test_lib.rs`. Most tests are a
 `#[test]` function holding inline Python, where the expected results are written

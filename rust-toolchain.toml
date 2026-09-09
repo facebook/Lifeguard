@@ -1,2 +1,5 @@
 [toolchain]
 channel = "nightly-2026-05-22"
+# `cargo fmt` and `cargo clippy` in the cargo path of test.py need these, and
+# rustup only installs them for the pinned toolchain if they are declared here.
+components = ["clippy", "rustfmt"]
