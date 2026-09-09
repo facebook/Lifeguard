@@ -215,6 +215,7 @@ impl SafetyError {
             EffectKind::UnknownDecoratorCall => Some(ErrorKind::UnknownDecoratorCall),
             EffectKind::UnknownEffects => Some(ErrorKind::UnknownEffects),
             EffectKind::UnknownObject => Some(ErrorKind::UnknownObject),
+            EffectKind::Unsafe => Some(ErrorKind::UnsafeFunctionCall),
             EffectKind::TooManyArgs => Some(ErrorKind::TooManyArgs),
             _ => None,
         }

@@ -20,6 +20,16 @@ lifeguard_test.foo() # E: unsafe-function-call
     }
 
     #[test]
+    fn test_unsafe_stub() {
+        let code = r#"
+import lifeguard_test
+
+lifeguard_test.baz() # E: unsafe-function-call
+"#;
+        check(code);
+    }
+
+    #[test]
     fn test_no_effects() {
         let code = r#"
 import lifeguard_test

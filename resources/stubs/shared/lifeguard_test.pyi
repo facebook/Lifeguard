@@ -8,6 +8,10 @@ def bar():
     no_effects()
 
 
+def baz():
+    unsafe()
+
+
 class A:
     def f(x):
         no_effects()
