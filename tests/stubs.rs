@@ -30,6 +30,69 @@ lifeguard_test.baz() # E: unsafe-function-call
     }
 
     #[test]
+    fn test_all_bare_overloads_stay_unknown() {
+        let code = r#"
+import lifeguard_test
+
+lifeguard_test.all_bare_overloads(1) # E: unsafe-function-call
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_no_effects_first_overload_covers_the_set() {
+        let code = r#"
+import lifeguard_test
+
+lifeguard_test.no_effects_first_overload(1)
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_unsafe_first_overload_covers_the_set() {
+        let code = r#"
+import lifeguard_test
+
+lifeguard_test.unsafe_first_overload(1) # E: unsafe-function-call
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_mutation_first_overload_covers_the_set() {
+        // Mutation describes the receiver, not the call, so the set is safe to
+        // call the same way `list.append` is.
+        let code = r#"
+import lifeguard_test
+
+lifeguard_test.mutation_first_overload(1)
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_mutation_on_first_overload_flags_global_receiver() {
+        // Both mutators are the shape this function handles: mutation() on the
+        // first overload, bare bodies after it. The annotation has to survive the
+        // merge and still reach may_mutate_receiver. `count` and `get` are the
+        // controls, `get` being an overload set of its own.
+        let code = r#"
+a = []
+d = {}
+
+def f():
+    a.sort() # E: method-call # E: global-var-mutation
+    d.pop("k") # E: method-call # E: global-var-mutation
+
+def g():
+    a.count(1) # E: method-call
+    d.get("k") # E: method-call
+"#;
+        check_effects(code);
+    }
+
+    #[test]
     fn test_no_effects() {
         let code = r#"
 import lifeguard_test

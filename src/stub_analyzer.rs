@@ -155,11 +155,13 @@ impl<'a> StubAnalyzer<'a> {
         }
     }
 
-    // Remove unknown_effects() if we have any other effect for the function.
-    // Lets us annotate only the first overload with effects and keep the rest as `...`
+    // Lets a stub annotate only the first overload in a set and leave the rest as
+    // `...` (see `resources/stubs/stubs.md`). Guarded on a real effect being
+    // present rather than on the effect count, so a set of all-bare overloads
+    // stays unknown rather than cancelling into safe.
     fn remove_unknown_effects(&self, output: &mut ModuleEffects) {
         for (_, effs) in output.effects.iter_mut() {
-            if effs.len() > 1 {
+            if effs.iter().any(|e| e.kind != EffectKind::UnknownEffects) {
                 effs.retain(|e| e.kind != EffectKind::UnknownEffects);
             }
         }
