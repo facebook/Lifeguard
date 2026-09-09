@@ -290,6 +290,39 @@ class C:
     }
 
     #[test]
+    fn test_math_module_scope_calls_safe() {
+        // Every `math` function is a pure computation on its arguments. Before
+        // the stub was annotated only the overloaded entries (`ceil`, `floor`)
+        // were safe, because two bare `...` overloads cancel each other out.
+        let code = r#"
+import math
+a = math.sqrt(2)
+b = math.floor(1.5)
+c = math.log(10)
+d = math.ceil(1.2)
+e = math.gcd(4, 6)
+f = math.factorial(3)
+g = math.isclose(1.0, 1.0)
+h = math.hypot(3, 4)
+i = math.prod([1, 2])
+j = math.trunc(1.5)
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_cmath_module_scope_calls_safe() {
+        let code = r#"
+import cmath
+a = cmath.sqrt(-1)
+b = cmath.phase(1j)
+c = cmath.polar(1j)
+d = cmath.isclose(1j, 1j)
+"#;
+        check(code);
+    }
+
+    #[test]
     fn test_pydantic_stub_class_body_calls_safe() {
         // Regression test for the bundled pydantic/__init__.pyi stub.
         // Pydantic's runtime __init__.py exposes Field/ConfigDict/field_serializer
