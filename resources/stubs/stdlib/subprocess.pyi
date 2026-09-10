@@ -82,9 +82,9 @@ class CompletedProcess(Generic[_T]):
     # and writing all the overloads would be horrific.
     stdout: _T
     stderr: _T
-    def __init__(self, args: _CMD, returncode: int, stdout: _T | None = None, stderr: _T | None = None) -> None: ...
+    def __init__(self, args: _CMD, returncode: int, stdout: _T | None = None, stderr: _T | None = None) -> None: no_effects()
     def check_returncode(self) -> None: ...
-    def __class_getitem__(cls, item: Any, /) -> GenericAlias: ...
+    def __class_getitem__(cls, item: Any, /) -> GenericAlias: no_effects()
 
 if sys.version_info >= (3, 11):
     # 3.11 adds "process_group" argument
@@ -121,7 +121,7 @@ if sys.version_info >= (3, 11):
         umask: int = -1,
         pipesize: int = -1,
         process_group: int | None = None,
-    ) -> CompletedProcess[str]: ...
+    ) -> CompletedProcess[str]: unsafe()
     @overload
     def run(
         args: _CMD,
@@ -723,7 +723,7 @@ if sys.version_info >= (3, 11):
         umask: int = -1,
         pipesize: int = -1,
         process_group: int | None = None,
-    ) -> int: ...
+    ) -> int: unsafe()
 
 elif sys.version_info >= (3, 10):
     # 3.10 adds "pipesize" argument
@@ -816,7 +816,7 @@ if sys.version_info >= (3, 11):
         umask: int = -1,
         pipesize: int = -1,
         process_group: int | None = None,
-    ) -> int: ...
+    ) -> int: unsafe()
 
 elif sys.version_info >= (3, 10):
     # 3.10 adds "pipesize" argument
@@ -910,7 +910,7 @@ if sys.version_info >= (3, 11):
         umask: int = -1,
         pipesize: int = -1,
         process_group: int | None = None,
-    ) -> str: ...
+    ) -> str: unsafe()
     @overload
     def check_output(
         args: _CMD,
@@ -1438,7 +1438,7 @@ class SubprocessError(Exception): ...
 class TimeoutExpired(SubprocessError):
     def __init__(
         self, cmd: _CMD, timeout: float, output: str | bytes | None = None, stderr: str | bytes | None = None
-    ) -> None: ...
+    ) -> None: no_effects()
     # morally: _CMD
     cmd: Any
     timeout: float
@@ -1459,7 +1459,7 @@ class CalledProcessError(SubprocessError):
     stderr: Any
     def __init__(
         self, returncode: int, cmd: _CMD, output: str | bytes | None = None, stderr: str | bytes | None = None
-    ) -> None: ...
+    ) -> None: no_effects()
 
 class Popen(Generic[AnyStr]):
     args: _CMD
@@ -1502,7 +1502,7 @@ class Popen(Generic[AnyStr]):
             umask: int = -1,
             pipesize: int = -1,
             process_group: int | None = None,
-        ) -> None: ...
+        ) -> None: unsafe()
         @overload
         def __init__(
             self: Popen[str],
@@ -2020,31 +2020,31 @@ class Popen(Generic[AnyStr]):
         ) -> None: ...
 
     def poll(self) -> int | None: ...
-    def wait(self, timeout: float | None = None) -> int: ...
+    def wait(self, timeout: float | None = None) -> int: unsafe()
     # morally the members of the returned tuple should be optional
     # TODO: this should allow ReadableBuffer for Popen[bytes], but adding
     # overloads for that runs into a mypy bug (python/mypy#14070).
-    def communicate(self, input: AnyStr | None = None, timeout: float | None = None) -> tuple[AnyStr, AnyStr]: ...
-    def send_signal(self, sig: int) -> None: ...
-    def terminate(self) -> None: ...
-    def kill(self) -> None: ...
-    def __enter__(self) -> Self: ...
+    def communicate(self, input: AnyStr | None = None, timeout: float | None = None) -> tuple[AnyStr, AnyStr]: unsafe()
+    def send_signal(self, sig: int) -> None: unsafe()
+    def terminate(self) -> None: unsafe()
+    def kill(self) -> None: unsafe()
+    def __enter__(self) -> Self: no_effects()
     def __exit__(
         self, exc_type: type[BaseException] | None, value: BaseException | None, traceback: TracebackType | None
-    ) -> None: ...
+    ) -> None: unsafe()
     def __del__(self) -> None: ...
-    def __class_getitem__(cls, item: Any, /) -> GenericAlias: ...
+    def __class_getitem__(cls, item: Any, /) -> GenericAlias: no_effects()
 
 # The result really is always a str.
 if sys.version_info >= (3, 11):
-    def getstatusoutput(cmd: _CMD, *, encoding: str | None = None, errors: str | None = None) -> tuple[int, str]: ...
-    def getoutput(cmd: _CMD, *, encoding: str | None = None, errors: str | None = None) -> str: ...
+    def getstatusoutput(cmd: _CMD, *, encoding: str | None = None, errors: str | None = None) -> tuple[int, str]: unsafe()
+    def getoutput(cmd: _CMD, *, encoding: str | None = None, errors: str | None = None) -> str: unsafe()
 
 else:
-    def getstatusoutput(cmd: _CMD) -> tuple[int, str]: ...
-    def getoutput(cmd: _CMD) -> str: ...
+    def getstatusoutput(cmd: _CMD) -> tuple[int, str]: unsafe()
+    def getoutput(cmd: _CMD) -> str: unsafe()
 
-def list2cmdline(seq: Iterable[StrOrBytesPath]) -> str: ...  # undocumented
+def list2cmdline(seq: Iterable[StrOrBytesPath]) -> str: no_effects()  # undocumented
 
 if sys.platform == "win32":
     if sys.version_info >= (3, 13):
