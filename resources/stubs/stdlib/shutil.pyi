@@ -53,19 +53,19 @@ else:
 class ReadError(OSError): ...
 class RegistryError(Exception): ...
 
-def copyfileobj(fsrc: SupportsRead[AnyStr], fdst: SupportsWrite[AnyStr], length: int = 0) -> None: ...
-def copyfile(src: StrOrBytesPath, dst: _StrOrBytesPathT, *, follow_symlinks: bool = True) -> _StrOrBytesPathT: ...
-def copymode(src: StrOrBytesPath, dst: StrOrBytesPath, *, follow_symlinks: bool = True) -> None: ...
-def copystat(src: StrOrBytesPath, dst: StrOrBytesPath, *, follow_symlinks: bool = True) -> None: ...
+def copyfileobj(fsrc: SupportsRead[AnyStr], fdst: SupportsWrite[AnyStr], length: int = 0) -> None: unsafe()
+def copyfile(src: StrOrBytesPath, dst: _StrOrBytesPathT, *, follow_symlinks: bool = True) -> _StrOrBytesPathT: unsafe()
+def copymode(src: StrOrBytesPath, dst: StrOrBytesPath, *, follow_symlinks: bool = True) -> None: unsafe()
+def copystat(src: StrOrBytesPath, dst: StrOrBytesPath, *, follow_symlinks: bool = True) -> None: unsafe()
 @overload
-def copy(src: StrPath, dst: _StrPathT, *, follow_symlinks: bool = True) -> _StrPathT | str: ...
+def copy(src: StrPath, dst: _StrPathT, *, follow_symlinks: bool = True) -> _StrPathT | str: unsafe()
 @overload
 def copy(src: BytesPath, dst: _BytesPathT, *, follow_symlinks: bool = True) -> _BytesPathT | bytes: ...
 @overload
-def copy2(src: StrPath, dst: _StrPathT, *, follow_symlinks: bool = True) -> _StrPathT | str: ...
+def copy2(src: StrPath, dst: _StrPathT, *, follow_symlinks: bool = True) -> _StrPathT | str: unsafe()
 @overload
 def copy2(src: BytesPath, dst: _BytesPathT, *, follow_symlinks: bool = True) -> _BytesPathT | bytes: ...
-def ignore_patterns(*patterns: StrPath) -> Callable[[Any, list[str]], set[str]]: ...
+def ignore_patterns(*patterns: StrPath) -> Callable[[Any, list[str]], set[str]]: no_effects()
 def copytree(
     src: StrPath,
     dst: _StrPathT,
@@ -74,7 +74,7 @@ def copytree(
     copy_function: Callable[[str, str], object] = ...,
     ignore_dangling_symlinks: bool = False,
     dirs_exist_ok: bool = False,
-) -> _StrPathT: ...
+) -> _StrPathT: unsafe()
 
 _OnErrorCallback: TypeAlias = Callable[[Callable[..., Any], str, ExcInfo], object]
 _OnExcCallback: TypeAlias = Callable[[Callable[..., Any], str, BaseException], object]
@@ -135,14 +135,14 @@ _CopyFn: TypeAlias = Callable[[str, str], object] | Callable[[StrPath, StrPath],
 # N.B. shutil.move appears to take bytes arguments, however,
 # this does not work when dst is (or is within) an existing directory.
 # (#6832)
-def move(src: StrPath, dst: _StrPathT, copy_function: _CopyFn = ...) -> _StrPathT | str | MaybeNone: ...
+def move(src: StrPath, dst: _StrPathT, copy_function: _CopyFn = ...) -> _StrPathT | str | MaybeNone: unsafe()
 
 class _ntuple_diskusage(NamedTuple):
     total: int
     used: int
     free: int
 
-def disk_usage(path: FileDescriptorOrPath) -> _ntuple_diskusage: ...
+def disk_usage(path: FileDescriptorOrPath) -> _ntuple_diskusage: no_effects()
 
 # While chown can be imported on Windows, it doesn't actually work;
 # see https://bugs.python.org/issue33140. We keep it here because it's
@@ -156,7 +156,7 @@ if sys.version_info >= (3, 13):
         *,
         dir_fd: int | None = None,
         follow_symlinks: bool = True,
-    ) -> None: ...
+    ) -> None: unsafe()
     @overload
     def chown(
         path: FileDescriptorOrPath,
@@ -177,7 +177,7 @@ if sys.version_info >= (3, 13):
 
 else:
     @overload
-    def chown(path: FileDescriptorOrPath, user: str | int, group: None = None) -> None: ...
+    def chown(path: FileDescriptorOrPath, user: str | int, group: None = None) -> None: unsafe()
     @overload
     def chown(path: FileDescriptorOrPath, user: None = None, *, group: str | int) -> None: ...
     @overload
@@ -191,7 +191,7 @@ if sys.platform == "win32" and sys.version_info < (3, 12):
     def which(cmd: os.PathLike[str], mode: int = 1, path: StrPath | None = None) -> NoReturn: ...
 
 @overload
-def which(cmd: StrPath, mode: int = 1, path: StrPath | None = None) -> str | None: ...
+def which(cmd: StrPath, mode: int = 1, path: StrPath | None = None) -> str | None: no_effects()
 @overload
 def which(cmd: bytes, mode: int = 1, path: StrPath | None = None) -> bytes | None: ...
 def make_archive(
@@ -204,20 +204,20 @@ def make_archive(
     owner: str | None = None,
     group: str | None = None,
     logger: Any | None = None,
-) -> str: ...
-def get_archive_formats() -> list[tuple[str, str]]: ...
+) -> str: unsafe()
+def get_archive_formats() -> list[tuple[str, str]]: no_effects()
 @overload
 def register_archive_format(
     name: str, function: Callable[..., object], extra_args: Sequence[tuple[str, Any] | list[Any]], description: str = ""
-) -> None: ...
+) -> None: unsafe()
 @overload
 def register_archive_format(
     name: str, function: Callable[[str, str], object], extra_args: None = None, description: str = ""
 ) -> None: ...
-def unregister_archive_format(name: str) -> None: ...
+def unregister_archive_format(name: str) -> None: unsafe()
 def unpack_archive(
     filename: StrPath, extract_dir: StrPath | None = None, format: str | None = None, *, filter: _TarfileFilter | None = None
-) -> None: ...
+) -> None: unsafe()
 @overload
 def register_unpack_format(
     name: str,
@@ -225,11 +225,11 @@ def register_unpack_format(
     function: Callable[..., object],
     extra_args: Sequence[tuple[str, Any]],
     description: str = "",
-) -> None: ...
+) -> None: unsafe()
 @overload
 def register_unpack_format(
     name: str, extensions: list[str], function: Callable[[str, str], object], extra_args: None = None, description: str = ""
 ) -> None: ...
-def unregister_unpack_format(name: str) -> None: ...
-def get_unpack_formats() -> list[tuple[str, list[str], str]]: ...
-def get_terminal_size(fallback: tuple[int, int] = (80, 24)) -> os.terminal_size: ...
+def unregister_unpack_format(name: str) -> None: unsafe()
+def get_unpack_formats() -> list[tuple[str, list[str], str]]: no_effects()
+def get_terminal_size(fallback: tuple[int, int] = (80, 24)) -> os.terminal_size: no_effects()
