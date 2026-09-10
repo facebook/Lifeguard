@@ -24,11 +24,9 @@ The pipeline above analyzes a program's whole transitive source DB in one pass. 
 verdicts can also be produced incrementally, so that editing one library does not force a
 re-analysis of everything:
 
-- **Map** — `analyze-library` analyzes a single library against its own sources and writes
-  a binary cache file (`commands/analyze_library.rs`, `cache.rs`, `cache_wire.rs`).
+- **Map** — `analyze-library` analyzes a single library against its own sources and writes a binary cache file.
 - **Reduce** — `analyze-binary` merges the per-library caches, resolves cross-library
-  function safety, and emits the same final output (`commands/analyze_binary.rs`,
-  `resolution.rs`).
+  function safety, and emits the same final output.
 
 The map phase cannot see other libraries, so a call it could not resolve is recorded as a
 candidate rather than a verdict; the reduce phase resolves those against the merged program
@@ -48,7 +46,7 @@ when they disagree on more modules than `--max-divergent-modules` allows.
 - `mro.rs` - C3 linearization, so an inherited method resolves to the same definition CPython would pick
 
 **Pipeline orchestration**:
-- `runner.rs` - Shared pipeline orchestration used by `main.rs` and `commands/run_tree.rs`
+- `runner.rs` - Shared pipeline orchestration used by the analysis subcommands
 
 **AST traversal helpers**:
 - `cursor.rs` - Tracks current scope during AST traversal (module → class → function)
@@ -72,7 +70,11 @@ when they disagree on more modules than `--max-divergent-modules` allows.
 - `output.rs` - `LifeGuardOutput` and `LifeGuardAnalysis` construction
 
 **Incremental analysis**:
-- `cache.rs` - Per-library cache model (`LibraryCache`, `CachedModule`, `CachedExports`)
+- `cache.rs` - Declares the cache submodules and re-exports their types and functions
+- `cache/artifact.rs` - Per-library cache model (`LibraryCache`, `CachedModule`, `CachedExports`) and construction from analysis results
+- `cache/bundled_stubs.rs` - Reconstructs graph-only bundled stub modules omitted from per-library artifacts
+- `cache/merge.rs` - Merges library records and propagates facts independent of final safety resolution
+- `cache/reduce.rs` - Resolves merged caches into final analysis results
 - `cache_wire.rs` - On-disk cache format, read and write
 - `resolution.rs` - Function-safety resolution (`resolve_program`); used by the reduce and by the whole-program path in `project.rs`
 
@@ -83,7 +85,7 @@ when they disagree on more modules than `--max-divergent-modules` allows.
 - `manual_override.rs` - Hardcoded list of functions declared safe (`SAFE_FUNCTIONS_ARRAY`)
 - `module_parser.rs` - Module parsing abstraction
 - `config.rs` - Analysis configuration (`AnalysisConfig`)
-- `hasher.rs` - Fixed-seed hashing, so the analyzer's many small maps produce deterministic output
+- `hasher.rs` - Fixed-seed hashing, avoiding per-map seed generation for the analyzer's many small maps
 - `tracing.rs` - Simple timing utility
 - `debug.rs` - Dump helpers for exports, import cycles, and the module imports map
 - `traits.rs` - Extension traits bridging lifeguard with pyrefly types
@@ -108,9 +110,9 @@ These are critical design decisions affecting correctness:
 
 - **Indexing imported objects**: Treated as SAFE (most don't override `__getitem__` unsafely)
 - **Recursive function calls**: Treated as UNSAFE (cannot determine termination)
-- **Unresolved function calls**: Treated as SAFE (most are builtins)
+- **Unresolved function calls**: Treated as UNSAFE when reached from eager code (reported as `UnknownFunctionCall`)
 - **`exec()` calls**: Module marked as UNSAFE and added to load_imports_eagerly set (differs from original analyzer)
-- **`sys.modules` access**: Module added to load_imports_eagerly set (subscript access and method calls depend on import ordering that lazy imports disrupts)
+- **`sys.modules` access**: Module added to load_imports_eagerly set (subscript access and method calls depend on import ordering that lazy imports disrupts). Some subscript reads are exempted; see [load_imports_eagerly.md](load_imports_eagerly.md).
 
 ### Output Structure
 

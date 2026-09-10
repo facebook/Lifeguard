@@ -25,3 +25,6 @@ annotations to the first overload in a set, leaving all the other overloads as
 them against the original typeshed files easier. There is a helper script,
 `resources/scripts/normalize_stubs.py`, which will rewrite the stubs to do this
 overload merging if needed.
+
+Use `no_effects()` only for a function with no other declared effects; the stub
+analyzer rejects combining it with other effect kinds, even across overloads.

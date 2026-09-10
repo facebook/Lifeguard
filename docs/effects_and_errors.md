@@ -14,10 +14,14 @@ pub struct Effect {
     pub name: ModuleName,   // Fully qualified name of the entity involved
     pub range: TextRange,   // Source location (byte range)
     pub data: EffectData,   // Optional metadata (e.g., whether call args are unsafe)
+    pub try_handlers: Option<Box<[TryHandler]>>, // Enclosing handlers at a call site
 }
 ```
 
-`EffectData` is either `None` or `Call(CallData { has_unsafe_args })`, indicating whether any argument to a call is an imported variable.
+`EffectData` is either `None` or `Call(Box<CallData>)`. `CallData` tracks imported
+arguments by positional index and keyword name, uncertainty from `*args` and
+`**kwargs`, and forwarding of the enclosing function's parameters. Its
+`has_unsafe_args()` accessor indicates whether imported arguments are present.
 
 ### EffectKind
 
@@ -25,7 +29,7 @@ pub struct Effect {
 
 ### Key EffectKind Methods
 
-- **`is_runnable()`** — Returns true for call effects where the analyzer can recurse into the called function body: `FunctionCall`, `ImportedFunctionCall`, `DecoratorCall`, `ImportedDecoratorCall`, `MethodCall`. These trigger call graph traversal in `project.rs`.
+- **`is_runnable()`** — Returns true for call effects where the analyzer can recurse into the called function body: `FunctionCall`, `ImportedFunctionCall`, `DecoratorCall`, `ImportedDecoratorCall`, `MethodCall`, `UnboundMethodCall`. These trigger call graph traversal in `project.rs`.
 
 - **`requires_eager_loading_imports()`** — Returns true for `CustomFinalizer`, `ExecCall`, `SysModulesAccess`. These cause the module to be added to the `load_imports_eagerly` set regardless of scope.
 
@@ -45,7 +49,7 @@ The `SourceAnalyzer` walks the Python AST and produces effects for each statemen
 - Function/method calls are resolved and classified (imported, local, unknown)
 - Decorators are treated as function calls
 - Function/class bodies are analyzed in their own scope
-- `raise` statements produce effects unless inside a `try:` block
+- `raise` statements produce effects unless an enclosing handler is recognized as catching the exception; being inside a `try:` block alone is not enough
 - Special builtins (`exec`, `getattr`/`setattr` with non-literal args, `sys.modules`) get dedicated effect kinds
 
 **Stub files (`.pyi`) — `stub_analyzer.rs`:**
@@ -53,10 +57,18 @@ Stubs declare effects explicitly using pseudo-function calls in the body:
 ```python
 def some_function():
     imported_function_call("os.path.join")  # declares this effect
-    mutation()                               # declares this is mutating
-    no_effects()                            # declares this is safe
+
+def mutating_method(self):
+    mutation()  # declares receiver mutation
+
+def safe_function():
+    no_effects()  # declares this is safe
 ```
-Functions with body `...` and no annotations automatically get `UnknownEffects`.
+Functions with no declared effects (for example, a body containing only `...`)
+automatically get `UnknownEffects`, regardless of type annotations. Overloads
+share effects, so an annotated overload can replace those unknown markers.
+Do not combine `no_effects()` with other effect kinds for the same function,
+including across overloads: the stub analyzer rejects the conflict.
 
 ## Errors
 
@@ -69,6 +81,7 @@ pub struct SafetyError {
     pub kind: ErrorKind,
     pub metadata: ErrorMetadata,  // interned string (usually the entity name)
     pub range: TextRange,
+    pub parameterized_decorator: bool,
 }
 ```
 
@@ -124,7 +137,11 @@ The conversion from effects to errors happens in `project.rs` and is the heart o
 
 ### Step 1: Merge Effects
 
-All per-module `EffectTable`s are merged into a single global table (`merge_all_effects`). Nested scope effects are propagated upward — a decorator wrapping a function with side effects is itself marked as having side effects.
+All per-module `EffectTable`s are merged into a single global table
+(`merge_all_effects`). Class-body effects inside a function are propagated to
+that enclosing function. Nested function bodies are not propagated here; the
+call graph handles their execution. Parameterized decorators have additional
+call-site handling for the returned wrapper's effects.
 
 ### Step 2: Build ProjectInfo
 
@@ -144,24 +161,25 @@ All per-module `EffectTable`s are merged into a single global table (`merge_all_
    - `UnknownDecoratorCall` → `UnknownDecoratorCall`
    - `UnknownEffects` → `UnknownEffects`
    - `UnknownObject` → `UnknownObject`
+   - `TooManyArgs` → `TooManyArgs`
 
 2. **Call graph traversal** (`SafetyError::from_unsafe_call`): For "runnable" effects (`FunctionCall`, `MethodCall`, `DecoratorCall`, etc.), the analyzer recursively walks into the called function's body to determine safety. This uses:
    - A `CallStack` to prevent infinite recursion
-   - A `FunctionSafety` cache with three states: `Safe`, `Unsafe`, and `UnsafeIfImported` (safe when called within the same module, unsafe cross-module due to global variable mutation)
+   - Cached `FunctionSafetyInfo` with a `FunctionSafety` bitset: `Safe` is the empty set; `Unsafe`, `UnsafeIfImported` (global mutation unsafe across modules), and `UnsafeMissingDep` (an unresolved transitive callee) are independent concerns that can coexist
 
 3. **Special handling**:
    - `ImportedVarMutation` at module scope → `ImportedModuleAssignment` error
    - `ImportedTypeAttr` → checked for property access, treated as a call
-   - `ImportedVarArgument` + `ParamMethodCall` → `ImportedVarArgument` error
+   - Imported arguments matched to directly or transitively mutated parameters → `ImportedVarArgument` error
    - Effects with `requires_eager_loading_imports()` → added to `force_imports_eager_overrides`
 
 ### Not All Effects Become Errors
 
 Many effect kinds exist only for call graph traversal or state tracking:
 
-- `FunctionCall`, `ImportedFunctionCall`, `MethodCall`, `DecoratorCall`, `ImportedDecoratorCall` — only become errors if the called function is determined unsafe after body analysis
+- `FunctionCall`, `ImportedFunctionCall`, `MethodCall`, `UnboundMethodCall`, `DecoratorCall`, `ImportedDecoratorCall` — checked through call resolution and body analysis; unresolved or unsafe callees can produce errors
 - `GlobalVarAssign`, `GlobalVarMutation` — only become errors in cross-module calls (`UnsafeIfImported`)
-- `ParamMethodCall` — only becomes an error if the call has `has_unsafe_args: true`
+- `ParamMethodCall` — seeds parameter-mutation tracking; calls are flagged when imported arguments reach the affected parameters
 - `ClassVarAssign`, `SetAttr`, `SetSubscript` — tracked as effects but not directly converted to errors
 - `NoEffects`, `Mutation`, `Dunder` — stub-only markers, never directly become errors
 

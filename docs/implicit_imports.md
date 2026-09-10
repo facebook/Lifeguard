@@ -36,7 +36,7 @@ During AST traversal of each module (`source_analyzer.rs`), three data structure
 
 - **`pending_imports`**: Maps scopes (module-level or function names) to the set of modules imported in that scope. Every `import X` or `from X import Y` statement adds entries here.
 - **`called_imports`**: Maps scopes to modules that are actually used/accessed (not just imported). When code accesses `foo.bar` and `foo` is a known import, `foo.bar` is recorded as a called import.
-- **`called_functions`**: Tracks which functions defined in the module are actually called at module level. This is used to determine whether a function call triggers an import.
+- **`called_functions`**: Records function calls encountered in the module, including imported functions. This is used to determine whether a function call triggers an import.
 
 ### Phase 2: Cross-Module Detection
 
@@ -61,6 +61,9 @@ A called import is **not** implicit if any of the following hold:
 4. **Attribute of imported parent**: The called import is actually an attribute of an already-imported parent module (not a separate module). This is determined using the import graph to distinguish "module `foo.bar`" from "attribute `bar` on module `foo`".
 
 5. **Import-as alias**: The import resolves through an alias (e.g., `import foo.bar.baz as baz`).
+
+6. **Startup submodule**: The name is in the analyzer's fixed startup set:
+   `encodings.aliases`, `encodings.utf_8`, or `os.path`.
 
 The final result is: `called_imports − non_implicit_imports = implicit_imports`.
 

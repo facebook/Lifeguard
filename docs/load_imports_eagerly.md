@@ -38,7 +38,19 @@ exec(config_code)  # Static analysis cannot reason about this
 
 ### 3. sys.modules Access
 
-**Trigger**: A subscript access (`sys.modules["x"]`) or method call (`sys.modules.setdefault(...)`, `sys.modules.pop(...)`) on `sys.modules` anywhere in the module.
+**Trigger**: A subscript access (`sys.modules["x"]`) or method call (`sys.modules.setdefault(...)`, `sys.modules.pop(...)`) on `sys.modules` at any scope, subject to the read exceptions below.
+
+For subscript reads with a literal string key, the analyzer suppresses this
+effect when the key names the current module, one of its parent packages, or
+`__main__`, `builtins`, or `sys`. It also suppresses the effect when an enclosing
+`try` handler explicitly names `KeyError`, or the module contains a recognized
+`"key" in sys.modules` / `"key" not in sys.modules` test for that key.
+Membership tests are collected across the module; this is a heuristic, not a
+proof that a test guards a particular read. Aliases such as `import sys as s`
+are not recognized by that membership-test scan.
+
+These exceptions do not apply to subscript writes, deletions, or method calls.
+A bare `except:` or `except Exception:` alone does not exempt a subscript read.
 
 **Why this may be unsafe**: `sys.modules` is a runtime dict that reflects which modules have been loaded. Code that reads or writes `sys.modules` typically depends on other imports having already executed. Under lazy imports, `import foo` is deferred, so a subsequent `sys.modules["foo"]` will raise `KeyError` because the module hasn't actually been loaded yet. To ensure all imports are present in `sys.modules` when the module accesses it, we eagerly load imports in modules that access `sys.modules`.
 

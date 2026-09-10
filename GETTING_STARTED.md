@@ -2,13 +2,24 @@
 
 Lifeguard analyzes Python codebases to determine which modules can safely
 use lazy imports without triggering side effects at import time. This guide
-walks you through building and running the tool from source using Cargo.
+walks you through installing the tool from PyPI or building it from source.
 
-## Prerequisites
+## Install from PyPI
 
-- **Rust (nightly)** — the crate uses unstable features, so you need a nightly
-  toolchain. Install via [rustup](https://rustup.rs/) and set it with
-  `rustup default nightly`.
+```bash
+pip install lifeguard-lazy-imports
+lifeguard run-tree /path/to/project output.json --verbose-output verbose.txt
+```
+
+Wheels are available for Linux, macOS, and Windows on Python 3.12 or newer, so
+no Rust toolchain is needed. `python -m lifeguard_lazy_imports` is equivalent
+to the `lifeguard` command. In the Cargo examples below, substitute `lifeguard`
+for `cargo run --`; the bundled sample project is in the repository, not the package.
+
+## Prerequisites for Building from Source
+
+- **Rust (nightly)** — install via [rustup](https://rustup.rs/). Cargo selects
+  the nightly pinned in [rust-toolchain.toml](rust-toolchain.toml) automatically.
 - **Git** — needed to clone Lifeguard and its submodules.
 
 ## Clone & Setup
@@ -34,7 +45,9 @@ cargo build
 
 ## Quick Start — Analyze a directory (`run-tree`)
 
-The `run-tree` subcommand analyzes every `.py` file under a directory tree.
+The `run-tree` subcommand discovers `.py` files under a directory tree and
+follows resolvable top-level imports. File and directory names below the input
+root must be ASCII Python identifiers; other paths are skipped.
 
 Run it against the bundled sample project:
 
@@ -64,7 +77,6 @@ Num of passing files: 3
 Num of load-imports-eagerly modules: 2
 Output written to output.json
 Full time executing: 222.72ms
-Full time executing (CPU): 1.39s
 ```
 
 **Reading the output:**
@@ -75,7 +87,8 @@ Full time executing (CPU): 1.39s
 | Failing files | Modules with side effects that prevent lazy imports |
 | Load-imports-eagerly modules | Modules where *all* imports must be loaded eagerly (e.g. `exec()` calls, custom `__del__` finalizers) |
 
-The JSON written to `output.json` contains two top-level keys:
+The JSON written to `output.json` contains these keys (the last two only with
+`--verbose-output`):
 
 ```json
 {
@@ -85,16 +98,18 @@ The JSON written to `output.json` contains two top-level keys:
   ],
   "LAZY_ELIGIBLE": {
     "importer": [
-      "safer_lazy_imports.lifeguard.testdata.sample_project.unsafe_module.helper",
       "safer_lazy_imports.lifeguard.testdata.sample_project.safe_module",
       "safer_lazy_imports.lifeguard.testdata.sample_project.safe_module.greet",
-      "safer_lazy_imports.lifeguard.testdata.sample_project.unsafe_module"
+      "safer_lazy_imports.lifeguard.testdata.sample_project.unsafe_module",
+      "safer_lazy_imports.lifeguard.testdata.sample_project.unsafe_module.helper"
     ],
+    "pkg": [],
+    "pkg.sub": [],
     "safe_module": [],
-    "unsafe_module": [
-      "os.path"
-    ]
-  }
+    "unsafe_module": []
+  },
+  "IMPLICIT_IMPORTS": {},
+  "IMPORT_CYCLES": []
 }
 ```
 
@@ -106,11 +121,13 @@ The JSON written to `output.json` contains two top-level keys:
   dependencies that must be imported eagerly when that module is loaded lazily.
   - An empty list (like `safe_module` above) means the module is fully safe
     with no caveats.
-  - A non-empty list (like `unsafe_module` → `["os.path"]`) means the module
+  - A non-empty list (like `importer` above) means the module
     is safe *except* those dependencies must be loaded eagerly.
-  - Modules that appear in `LOAD_IMPORTS_EAGERLY` are omitted from this dict.
+  - A module can appear in both `LAZY_ELIGIBLE` and `LOAD_IMPORTS_EAGERLY`.
+- **`IMPLICIT_IMPORTS`** and **`IMPORT_CYCLES`** — diagnostic details included
+  only with `--verbose-output`. Both are empty in this sample run.
 
-# Reading the verbose output
+## Reading the verbose output
 
 When you pass `--verbose-output verbose.txt`, Lifeguard writes a per-module
 breakdown. Here is an example:
@@ -120,52 +137,55 @@ breakdown. Here is an example:
 ------------------------------------------------------------------------------
 ## has_finalizer
 ### Errors
-  Line 6 - CustomFinalizer __del__
+CustomFinalizer (1)
+  Line 11 - __del__
+
 ### Load Imports Eagerly
-  Line 6 - CustomFinalizer __del__
-### Implicit Imports
+CustomFinalizer (1)
+  Line 11 - __del__
 
 ## importer
 ### Lazy imports incompatibilities were not detected
 
 ## main
 ### Errors
-  Line 10 - UnsafeFunctionCall main.main
-### Load Imports Eagerly
-### Implicit Imports
+UnsafeFunctionCall (1)
+  Line 21 - main.main
 
 ## safe_module
 ### Lazy imports incompatibilities were not detected
 
 ## unsafe_module
-### Errors
-### Load Imports Eagerly
-### Implicit Imports
-  os.path
+### Lazy imports incompatibilities were not detected
 
 ## uses_exec
 ### Errors
-  Line 3 - ExecCall exec
+ExecCall (1)
+  Line 8 - exec
+
 ### Load Imports Eagerly
-  Line 3 - ExecCall exec
-### Implicit Imports
+ExecCall (1)
+  Line 8 - exec
 ```
 
 Each `##` heading is a module. Under it you will see:
 
-- **"Lazy imports incompatibilities were not detected"** — the module is fully
-  safe; nothing else to report.
-- **Errors** — side effects detected at the listed lines. The format is
-  `Line <n> - <ErrorKind> <detail>`. Common error kinds:
-  - `CalledImport` — an imported function is called at module scope
-  - `UnsafeFunctionCall` — a local function with side effects is called at
-    module scope
+- **"Lazy imports incompatibilities were not detected"** — no local safety
+  errors, eager-import overrides, or implicit imports were reported. The JSON
+  can still list dependency constraints, as it does for `importer` above.
+- **Errors** — diagnostics grouped under `<ErrorKind> (<count>)`, followed by
+  `Line <n> - <detail>` entries. Common error kinds:
+  - `UnknownFunctionCall` — a call target could not be resolved
+  - `UnsafeFunctionCall` — a local or imported function that was statically analyzed to be lazy imports incompatible
   - `CustomFinalizer` — a class defines `__del__`
   - `ExecCall` — the module calls `exec()`
 - **Load Imports Eagerly** — errors that cause the module to be added to the
-  `LOAD_IMPORTS_EAGERLY` set (lazy imports fully disabled for this module).
-- **Implicit Imports** — modules that are implicitly imported as a side effect
-  of importing this module (e.g. `import os.path` implicitly imports `os`).
+  `LOAD_IMPORTS_EAGERLY` set (its own imports must execute eagerly).
+- **Implicit Imports** — submodule accesses that rely on another import having
+  already loaded the submodule, such as `import foo; foo.bar` without a direct
+  import of `foo.bar`. See [docs/implicit_imports.md](docs/implicit_imports.md).
+- **Analysis Error** — the module could not be analyzed, for example because
+  parsing failed.
 
 ## Running tests
 

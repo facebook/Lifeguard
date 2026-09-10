@@ -35,21 +35,32 @@ For a deeper look at the analysis pipeline and architecture, see [docs/architect
 Lifeguard is in active development. We are aiming to be ready for general use by the [Python 3.15 final release](https://peps.python.org/pep-0790/).
 
 ### Items on our roadmap
-- We are preparing GitHub actions to fully support external contributors.
-- We've tested and support Python 3.12 and 3.14. Other versions may also work. We do not yet support the [`lazy` keyword added in PEP 810](https://peps.python.org/pep-0810/) — but we fully intend to support this ahead of the 3.15 release.
+- We've tested and support Python 3.12 and 3.14. Other versions may also work. To analyze the explicit `lazy import` syntax from [PEP 810](https://peps.python.org/pep-0810/), pass `--python-version 3.15`.
 - We are actively developing a standalone linter output mode to help users identify which specific lines in their codebase are incompatible with Lazy Imports.
 - We plan to add support for easy ingestion of Lifeguard's output to drive Lazy Imports enablement for advanced users (see [Using the Output](#using-the-output)).
 
-## Prerequisites
+## Install from PyPI
 
-- **Rust (nightly)** — the crate uses unstable features. Install via [rustup](https://rustup.rs/) and set with `rustup default nightly`.
+Lifeguard is published on [PyPI](https://pypi.org/project/lifeguard-lazy-imports/) with prebuilt wheels for Linux, macOS, and Windows (x86-64 and ARM64). It requires Python 3.12 or newer and no Rust toolchain:
+
+```bash
+pip install lifeguard-lazy-imports
+lifeguard run-tree /path/to/project output.json --verbose-output verbose.txt
+```
+
+`python -m lifeguard_lazy_imports` is equivalent to the `lifeguard` command. The `cargo run --` examples below build and run the tool from source; with the installed package, replace `cargo run --` with `lifeguard`.
+PyPI releases are cut manually and can lag behind the main branch. Run `lifeguard --help` to see what your installed version supports.
+
+## Prerequisites for Building from Source
+
+- **Rust (nightly)** — install via [rustup](https://rustup.rs/). Cargo uses the nightly pinned in [rust-toolchain.toml](rust-toolchain.toml); there is no need to change your global default toolchain.
 - **Git** — clone with submodules: `git clone --recurse-submodules https://github.com/facebook/Lifeguard.git`
 
 If you already cloned without `--recurse-submodules`, run `git submodule update --init --recursive`.
 
 ## Quick Start
 
-The fastest way to try Lifeguard is the `run-tree` subcommand, which analyzes every `.py` file under a directory. No additional setup needed.
+The fastest way to try Lifeguard is the `run-tree` subcommand, which discovers `.py` files under a directory and follows resolvable top-level imports. File and directory names below the input root must be ASCII Python identifiers; other paths are skipped.
 
 ```bash
 cargo run -- run-tree <INPUT_DIR> <OUTPUT_PATH>
@@ -79,9 +90,9 @@ Optionally, if your project has library dependencies, you can point Lifeguard at
 site_packages = "/path/to/site-packages"
 ```
 
-You can find out your site-packages path via `python -m site`. The `gen-source-db` subcommand reads this section automatically when generating the source DB.
+You can find out your site-packages path via `python -m site`. Both `gen-source-db` and `run-tree` read this section from `<INPUT_DIR>/pyproject.toml`. Relative `site_packages` paths are resolved against `INPUT_DIR`. You can override the setting with `--site-packages /path/to/site-packages`.
 
-**Note:** The script may not discover all of your project's dependencies. If Lifeguard reports missing modules, you may need to manually add entries to the generated source DB.
+**Note:** Discovery follows top-level import statements and may not discover all dependencies, such as imports nested in functions or conditional blocks outside the input tree. If Lifeguard reports missing modules, you may need to manually add entries to the generated source DB. For explicit lazy syntax, pass `--python-version 3.15` to both source discovery and analysis.
 
 2. Run Lifeguard in one of two modes:
    - **Default**: Prints a high-level analysis of your codebase (% of compatible files, top errors, etc.) and writes the JSON output to `OUTPUT_PATH`.
@@ -97,8 +108,11 @@ You can find out your site-packages path via `python -m site`. The `gen-source-d
 ```text
 ## example.module.foo
 ### Errors
-  Line 17 - ImportedModuleAssignment sys
-  Line 38 - UnsafeFunctionCall example.demo.unsafe_method
+ImportedModuleAssignment (1)
+  Line 17 - sys
+
+UnsafeFunctionCall (1)
+  Line 38 - example.demo.unsafe_method
 ```
 
 ## Input Format
@@ -125,11 +139,13 @@ Lifeguard writes a JSON file with two fields:
     "LAZY_ELIGIBLE": {
         "module1": [],
         "module2": ["module3", "module4"],
-        "module5": [],
+        "module5": []
     },
     "LOAD_IMPORTS_EAGERLY": ["module5", "module99", "module100"]
 }
 ```
+
+With `--verbose-output`, the JSON also includes `IMPLICIT_IMPORTS` (a module-to-dependencies mapping) and `IMPORT_CYCLES` (lists of modules in each cycle). Use `--sorted-output` for deterministic ordering of these fields.
 
 ### `LAZY_ELIGIBLE`
 
@@ -159,7 +175,7 @@ Lifeguard can be used as a standalone linter to identify which specific lines in
 
 ### To drive a lazy import loader
 
-The JSON output is designed to drive a lazy import loader's filter function. In Python 3.15, [`importlib.util.lazy_import`](https://peps.python.org/pep-0810/) accepts a filter callback that controls which imports are deferred and which are loaded eagerly. Lifeguard's output provides the data needed to build this filter — using `LAZY_ELIGIBLE` to identify safe modules and their constraints, and `LOAD_IMPORTS_EAGERLY` to identify modules that need all imports resolved upfront.
+The JSON output is designed to drive a lazy import loader's filter function. In Python 3.15, [`sys.set_lazy_imports_filter()`](https://peps.python.org/pep-0810/#lazy-imports-filter) installs a callback that controls which imports are deferred and which are loaded eagerly. Lifeguard's output provides the data needed to build this filter — using `LAZY_ELIGIBLE` to identify safe modules and their constraints, and `LOAD_IMPORTS_EAGERLY` to identify modules that need all imports resolved upfront.
 
 We plan to provide tooling for easy ingestion of Lifeguard's output ahead of the Python 3.15 release. This is a work in progress.
 
