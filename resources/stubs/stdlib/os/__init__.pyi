@@ -708,16 +708,16 @@ class _Environ(MutableMapping[AnyStr, AnyStr], Generic[AnyStr]):
         decodekey: _EnvironCodeFunc[AnyStr],
         encodevalue: _EnvironCodeFunc[AnyStr],
         decodevalue: _EnvironCodeFunc[AnyStr],
-    ) -> None: ...
+    ) -> None: no_effects()
     def setdefault(self, key: AnyStr, value: AnyStr) -> AnyStr: ...
-    def copy(self) -> dict[AnyStr, AnyStr]: ...
+    def copy(self) -> dict[AnyStr, AnyStr]: no_effects()
     def __delitem__(self, key: AnyStr) -> None: ...
-    def __getitem__(self, key: AnyStr) -> AnyStr: ...
+    def __getitem__(self, key: AnyStr) -> AnyStr: no_effects()
     def __setitem__(self, key: AnyStr, value: AnyStr) -> None: ...
-    def __iter__(self) -> Iterator[AnyStr]: ...
-    def __len__(self) -> int: ...
-    def __or__(self, other: Mapping[_T1, _T2]) -> dict[AnyStr | _T1, AnyStr | _T2]: ...
-    def __ror__(self, other: Mapping[_T1, _T2]) -> dict[AnyStr | _T1, AnyStr | _T2]: ...
+    def __iter__(self) -> Iterator[AnyStr]: no_effects()
+    def __len__(self) -> int: no_effects()
+    def __or__(self, other: Mapping[_T1, _T2]) -> dict[AnyStr | _T1, AnyStr | _T2]: no_effects()
+    def __ror__(self, other: Mapping[_T1, _T2]) -> dict[AnyStr | _T1, AnyStr | _T2]: no_effects()
     # We use @overload instead of a Union for reasons similar to those given for
     # overloading MutableMapping.update in stdlib/typing.pyi
     # The type: ignore is needed due to incompatible __or__/__ior__ signatures
@@ -795,39 +795,39 @@ class stat_result(structseq[float], tuple[int, int, int, int, int, int, int, flo
     @property
     def st_mode(self) -> int:
         """protection bits"""
-        ...
+        no_effects()
     @property
     def st_ino(self) -> int:
         """inode"""
-        ...
+        no_effects()
     @property
     def st_dev(self) -> int:
         """device"""
-        ...
+        no_effects()
     @property
     def st_nlink(self) -> int:
         """number of hard links"""
-        ...
+        no_effects()
     @property
     def st_uid(self) -> int:
         """user ID of owner"""
-        ...
+        no_effects()
     @property
     def st_gid(self) -> int:
         """group ID of owner"""
-        ...
+        no_effects()
     @property
     def st_size(self) -> int:
         """total size, in bytes"""
-        ...
+        no_effects()
     @property
     def st_atime(self) -> float:
         """time of last access"""
-        ...
+        no_effects()
     @property
     def st_mtime(self) -> float:
         """time of last modification"""
-        ...
+        no_effects()
     # platform dependent (time of most recent metadata change on Unix, or the time of creation on Windows)
     if sys.version_info >= (3, 12) and sys.platform == "win32":
         @property
@@ -841,21 +841,21 @@ In the future, this property will contain the last metadata change time."""
         @property
         def st_ctime(self) -> float:
             """time of last change"""
-            ...
+            no_effects()
 
     @property
     def st_atime_ns(self) -> int:
         """time of last access in nanoseconds"""
-        ...
+        no_effects()
     @property
     def st_mtime_ns(self) -> int:
         """time of last modification in nanoseconds"""
-        ...
+        no_effects()
     # platform dependent (time of most recent metadata change on Unix, or the time of creation on Windows) in nanoseconds
     @property
     def st_ctime_ns(self) -> int:
         """time of last change in nanoseconds"""
-        ...
+        no_effects()
     if sys.platform == "win32":
         @property
         def st_file_attributes(self) -> int: ...
@@ -870,15 +870,15 @@ In the future, this property will contain the last metadata change time."""
         @property
         def st_blocks(self) -> int:
             """number of blocks allocated"""
-            ...
+            no_effects()
         @property
         def st_blksize(self) -> int:
             """blocksize for filesystem I/O"""
-            ...
+            no_effects()
         @property
         def st_rdev(self) -> int:
             """device type (if inode device)"""
-            ...
+            no_effects()
         if sys.platform != "linux":
             # These properties are available on MacOS, but not Ubuntu.
             # On other Unix systems (such as FreeBSD), the following attributes may be
@@ -918,7 +918,7 @@ def listdir(path: StrPath | None = None) -> list[str]:
     The list is in arbitrary order.  It does not include the special
     entries '.' and '..' even if they are present in the directory.
     """
-    ...
+    no_effects()
 @overload
 def listdir(path: BytesPath) -> list[bytes]:
     r"""
@@ -961,36 +961,36 @@ class DirEntry(Generic[AnyStr]):
     @property
     def name(self) -> AnyStr:
         """the entry's base filename, relative to scandir() "path" argument"""
-        ...
+        no_effects()
     @property
     def path(self) -> AnyStr:
         """the entry's full path name; equivalent to os.path.join(scandir_path, entry.name)"""
-        ...
+        no_effects()
     def inode(self) -> int:
         """Return inode of the entry; cached per entry."""
-        ...
+        no_effects()
     def is_dir(self, *, follow_symlinks: bool = True) -> bool:
         """Return True if the entry is a directory; cached per entry."""
-        ...
+        no_effects()
     def is_file(self, *, follow_symlinks: bool = True) -> bool:
         """Return True if the entry is a file; cached per entry."""
-        ...
+        no_effects()
     def is_symlink(self) -> bool:
         """Return True if the entry is a symbolic link; cached per entry."""
-        ...
+        no_effects()
     def stat(self, *, follow_symlinks: bool = True) -> stat_result:
         """Return stat_result object for the entry; cached per entry."""
-        ...
+        no_effects()
     def __fspath__(self) -> AnyStr:
         """Returns the path for the entry."""
-        ...
+        no_effects()
     def __class_getitem__(cls, item: Any, /) -> GenericAlias:
         """See PEP 585"""
-        ...
+        no_effects()
     if sys.version_info >= (3, 12):
         def is_junction(self) -> bool:
             """Return True if the entry is a junction; cached per entry."""
-            ...
+            no_effects()
 
 @final
 class statvfs_result(structseq[int], tuple[int, int, int, int, int, int, int, int, int, int, int]):
@@ -1009,31 +1009,31 @@ class statvfs_result(structseq[int], tuple[int, int, int, int, int, int, int, in
         )
 
     @property
-    def f_bsize(self) -> int: ...
+    def f_bsize(self) -> int: no_effects()
     @property
-    def f_frsize(self) -> int: ...
+    def f_frsize(self) -> int: no_effects()
     @property
-    def f_blocks(self) -> int: ...
+    def f_blocks(self) -> int: no_effects()
     @property
-    def f_bfree(self) -> int: ...
+    def f_bfree(self) -> int: no_effects()
     @property
-    def f_bavail(self) -> int: ...
+    def f_bavail(self) -> int: no_effects()
     @property
-    def f_files(self) -> int: ...
+    def f_files(self) -> int: no_effects()
     @property
-    def f_ffree(self) -> int: ...
+    def f_ffree(self) -> int: no_effects()
     @property
-    def f_favail(self) -> int: ...
+    def f_favail(self) -> int: no_effects()
     @property
-    def f_flag(self) -> int: ...
+    def f_flag(self) -> int: no_effects()
     @property
-    def f_namemax(self) -> int: ...
+    def f_namemax(self) -> int: no_effects()
     @property
-    def f_fsid(self) -> int: ...
+    def f_fsid(self) -> int: no_effects()
 
 # ----- os function stubs -----
-def fsencode(filename: StrOrBytesPath) -> bytes: ...
-def fsdecode(filename: StrOrBytesPath) -> str: ...
+def fsencode(filename: StrOrBytesPath) -> bytes: no_effects()
+def fsdecode(filename: StrOrBytesPath) -> str: no_effects()
 @overload
 def fspath(path: str) -> str:
     """
@@ -1103,37 +1103,37 @@ class uname_result(structseq[str], tuple[str, str, str, str, str]):
     @property
     def sysname(self) -> str:
         """operating system name"""
-        ...
+        no_effects()
     @property
     def nodename(self) -> str:
         """name of machine on network (implementation-defined)"""
-        ...
+        no_effects()
     @property
     def release(self) -> str:
         """operating system release"""
-        ...
+        no_effects()
     @property
     def version(self) -> str:
         """operating system version"""
-        ...
+        no_effects()
     @property
     def machine(self) -> str:
         """hardware identifier"""
-        ...
+        no_effects()
 
 if sys.platform != "win32":
     def ctermid() -> str:
         """Return the name of the controlling terminal for this process."""
-        ...
+        no_effects()
     def getegid() -> int:
         """Return the current process's effective group id."""
-        ...
+        no_effects()
     def geteuid() -> int:
         """Return the current process's effective user id."""
-        ...
+        no_effects()
     def getgid() -> int:
         """Return the current process's group id."""
-        ...
+        no_effects()
     def getgrouplist(user: str, group: int, /) -> list[int]:
         """
         Returns a list of groups to which a user belongs.
@@ -1146,7 +1146,7 @@ if sys.platform != "win32":
         ...
     def getgroups() -> list[int]:
         """Return list of supplemental group IDs for the process."""
-        ...
+        no_effects()
     def initgroups(username: str, gid: int, /) -> None:
         """
         Initialize the group access list.
@@ -1158,27 +1158,27 @@ if sys.platform != "win32":
         ...
     def getpgid(pid: int) -> int:
         """Call the system call getpgid(), and return the result."""
-        ...
+        no_effects()
     def getpgrp() -> int:
         """Return the current process group id."""
-        ...
+        no_effects()
     def getpriority(which: int, who: int) -> int:
         """Return program scheduling priority."""
-        ...
+        no_effects()
     def setpriority(which: int, who: int, priority: int) -> None:
         """Set program scheduling priority."""
         ...
     if sys.platform != "darwin":
         def getresuid() -> tuple[int, int, int]:
             """Return a tuple of the current process's real, effective, and saved user ids."""
-            ...
+            no_effects()
         def getresgid() -> tuple[int, int, int]:
             """Return a tuple of the current process's real, effective, and saved group ids."""
-            ...
+            no_effects()
 
     def getuid() -> int:
         """Return the current process's user id."""
-        ...
+        no_effects()
     def setegid(egid: int, /) -> None:
         """Set the current process's effective group id."""
         ...
@@ -1213,7 +1213,7 @@ if sys.platform != "win32":
         ...
     def getsid(pid: int, /) -> int:
         """Call the system call getsid(pid) and return the result."""
-        ...
+        no_effects()
     def setsid() -> None:
         """Call the system call setsid()."""
         ...
@@ -1227,16 +1227,16 @@ if sys.platform != "win32":
         The object behaves like a named tuple with the following fields:
           (sysname, nodename, release, version, machine)
         """
-        ...
+        no_effects()
 
 @overload
-def getenv(key: str) -> str | None: ...
+def getenv(key: str) -> str | None: no_effects()
 @overload
 def getenv(key: str, default: _T) -> str | _T: ...
 
 if sys.platform != "win32":
     @overload
-    def getenvb(key: bytes) -> bytes | None: ...
+    def getenvb(key: bytes) -> bytes | None: no_effects()
     @overload
     def getenvb(key: bytes, default: _T) -> bytes | _T: ...
     def putenv(name: StrOrBytesPath, value: StrOrBytesPath, /) -> None:
@@ -1342,7 +1342,7 @@ def device_encoding(fd: int) -> str | None:
     The file descriptor must be attached to a terminal.
     If the device is not a terminal, return None.
     """
-    ...
+    no_effects()
 def dup(fd: int, /) -> int:
     """Return a duplicate of a file descriptor."""
     ...
@@ -1356,7 +1356,7 @@ def fstat(fd: int) -> stat_result:
     Like stat(), but for an open file descriptor.
     Equivalent to os.stat(fd).
     """
-    ...
+    no_effects()
 def ftruncate(fd: int, length: int, /) -> None:
     """Truncate a file, specified by file descriptor, to a specific length."""
     ...
@@ -1370,7 +1370,7 @@ def isatty(fd: int, /) -> bool:
     Return True if the file descriptor is an open file descriptor
     connected to the slave end of a terminal.
     """
-    ...
+    no_effects()
 
 if sys.platform != "win32" and sys.version_info >= (3, 11):
     def login_tty(fd: int, /) -> None:
@@ -1434,7 +1434,7 @@ if sys.version_info >= (3, 12) or sys.platform != "win32":
 
         Return False if the O_NONBLOCK flag is set, True if the flag is cleared.
         """
-        ...
+        no_effects()
     def set_blocking(fd: int, blocking: bool, /) -> None:
         """
         Set the blocking mode of the specified file descriptor.
@@ -1458,14 +1458,14 @@ if sys.platform != "win32":
 
         If there is no limit, return -1.
         """
-        ...
+        no_effects()
     def fstatvfs(fd: int, /) -> statvfs_result:
         """
         Perform an fstatvfs system call on the given fd.
 
         Equivalent to statvfs(fd).
         """
-        ...
+        no_effects()
     def lockf(fd: int, command: int, length: int, /) -> None:
         """
         Apply, test or remove a POSIX lock on an open file descriptor.
@@ -1636,11 +1636,11 @@ class terminal_size(structseq[int], tuple[int, int]):
     @property
     def columns(self) -> int:
         """width of the terminal window in characters"""
-        ...
+        no_effects()
     @property
     def lines(self) -> int:
         """height of the terminal window in characters"""
-        ...
+        no_effects()
 
 def get_terminal_size(fd: int = ..., /) -> terminal_size:
     """
@@ -1658,10 +1658,10 @@ def get_terminal_size(fd: int = ..., /) -> terminal_size:
     shutil.get_terminal_size is the high-level function which should
     normally be used, os.get_terminal_size is the low-level implementation.
     """
-    ...
+    no_effects()
 def get_inheritable(fd: int, /) -> bool:
     """Get the close-on-exe flag of the specified file descriptor."""
-    ...
+    no_effects()
 def set_inheritable(fd: int, inheritable: bool, /) -> None:
     """Set the inheritable flag of the specified file descriptor."""
     ...
@@ -1674,7 +1674,7 @@ if sys.platform != "win32":
     # Unix only
     def tcgetpgrp(fd: int, /) -> int:
         """Return the process group associated with the terminal specified by fd."""
-        ...
+        no_effects()
     def tcsetpgrp(fd: int, pgid: int, /) -> None:
         """Set the process group associated with the terminal specified by fd."""
         ...
@@ -1685,7 +1685,7 @@ if sys.platform != "win32":
         fd
           Integer file descriptor handle.
         """
-        ...
+        no_effects()
 
 def write(fd: int, data: ReadableBuffer, /) -> int:
     """Write a bytes object to a file descriptor."""
@@ -1721,7 +1721,7 @@ def access(
       routine can be used in a suid/sgid environment to test if the invoking user
       has the specified access to the path.
     """
-    ...
+    no_effects()
 def chdir(path: FileDescriptorOrPath) -> None:
     """
     Change the current working directory to the specified path.
@@ -1744,10 +1744,10 @@ if sys.platform != "win32":
 
 def getcwd() -> str:
     """Return a unicode string representing the current working directory."""
-    ...
+    no_effects()
 def getcwdb() -> bytes:
     """Return a bytes string representing the current working directory."""
-    ...
+    no_effects()
 def chmod(path: FileDescriptorOrPath, mode: int, *, dir_fd: int | None = None, follow_symlinks: bool = True) -> None:
     """
     Change the access permissions of a file.
@@ -1854,7 +1854,7 @@ def lstat(path: StrOrBytesPath, *, dir_fd: int | None = None) -> stat_result:
     Like stat(), but do not follow symbolic links.
     Equivalent to stat(path, follow_symlinks=False).
     """
-    ...
+    no_effects()
 def mkdir(path: StrOrBytesPath, mode: int = 0o777, *, dir_fd: int | None = None) -> None:
     """
     Create a directory.
@@ -1903,13 +1903,13 @@ if sys.platform != "win32":
         ...
     def major(device: int, /) -> int:
         """Extracts a device major number from a raw device number."""
-        ...
+        no_effects()
     def minor(device: int, /) -> int:
         """Extracts a device minor number from a raw device number."""
-        ...
+        no_effects()
     def makedev(major: int, minor: int, /) -> int:
         """Composes a raw device number from the major and minor device numbers."""
-        ...
+        no_effects()
     def pathconf(path: FileDescriptorOrPath, name: str | int) -> int:
         """
         Return the configuration limit name for the file or directory path.
@@ -1918,7 +1918,7 @@ if sys.platform != "win32":
         On some platforms, path may also be specified as an open file descriptor.
           If this functionality is unavailable, using it raises an exception.
         """
-        ...
+        no_effects()
 
 def readlink(path: GenericPath[AnyStr], *, dir_fd: int | None = None) -> AnyStr:
     """
@@ -1930,7 +1930,7 @@ def readlink(path: GenericPath[AnyStr], *, dir_fd: int | None = None) -> AnyStr:
     dir_fd may not be implemented on your platform.  If it is unavailable,
     using it will raise a NotImplementedError.
     """
-    ...
+    no_effects()
 def remove(path: StrOrBytesPath, *, dir_fd: int | None = None) -> None:
     """
     Remove a file (same as unlink()).
@@ -1998,7 +1998,7 @@ def scandir(path: None = None) -> _ScandirIterator[str]:
 
     If path is None, uses the path='.'.
     """
-    ...
+    no_effects()
 @overload
 def scandir(path: int) -> _ScandirIterator[str]:
     """
@@ -2046,7 +2046,7 @@ def stat(path: FileDescriptorOrPath, *, dir_fd: int | None = None, follow_symlin
     It's an error to use dir_fd or follow_symlinks when specifying path as
       an open file descriptor.
     """
-    ...
+    no_effects()
 
 if sys.platform != "win32":
     def statvfs(path: FileDescriptorOrPath) -> statvfs_result:
@@ -2057,7 +2057,7 @@ if sys.platform != "win32":
         On some platforms, path may also be specified as an open file descriptor.
           If this functionality is unavailable, using it raises an exception.
         """
-        ...
+        no_effects()
 
 def symlink(
     src: StrOrBytesPath, dst: StrOrBytesPath, target_is_directory: bool = False, *, dir_fd: int | None = None
@@ -2161,8 +2161,8 @@ if sys.platform != "win32":
         dir_fd: int | None = None,
     ) -> Iterator[tuple[bytes, list[bytes], list[bytes], int]]: ...
     if sys.platform == "linux":
-        def getxattr(path: FileDescriptorOrPath, attribute: StrOrBytesPath, *, follow_symlinks: bool = True) -> bytes: ...
-        def listxattr(path: FileDescriptorOrPath | None = None, *, follow_symlinks: bool = True) -> list[str]: ...
+        def getxattr(path: FileDescriptorOrPath, attribute: StrOrBytesPath, *, follow_symlinks: bool = True) -> bytes: no_effects()
+        def listxattr(path: FileDescriptorOrPath | None = None, *, follow_symlinks: bool = True) -> list[str]: no_effects()
         def removexattr(path: FileDescriptorOrPath, attribute: StrOrBytesPath, *, follow_symlinks: bool = True) -> None: ...
         def setxattr(
             path: FileDescriptorOrPath,
@@ -2327,23 +2327,23 @@ class times_result(structseq[float], tuple[float, float, float, float, float]):
     @property
     def user(self) -> float:
         """user time"""
-        ...
+        no_effects()
     @property
     def system(self) -> float:
         """system time"""
-        ...
+        no_effects()
     @property
     def children_user(self) -> float:
         """user time of children"""
-        ...
+        no_effects()
     @property
     def children_system(self) -> float:
         """system time of children"""
-        ...
+        no_effects()
     @property
     def elapsed(self) -> float:
         """elapsed time since an arbitrary point in the past"""
-        ...
+        no_effects()
 
 def times() -> times_result:
     """
@@ -2353,7 +2353,7 @@ def times() -> times_result:
       (utime, stime, cutime, cstime, elapsed_time)
     All fields are floating-point numbers.
     """
-    ...
+    no_effects()
 def waitpid(pid: int, options: int, /) -> tuple[int, int]:
     """
     Wait for completion of a given child process.
@@ -2407,15 +2407,15 @@ else:
                 __match_args__: Final = ("si_pid", "si_uid", "si_signo", "si_status", "si_code")
 
             @property
-            def si_pid(self) -> int: ...
+            def si_pid(self) -> int: no_effects()
             @property
-            def si_uid(self) -> int: ...
+            def si_uid(self) -> int: no_effects()
             @property
-            def si_signo(self) -> int: ...
+            def si_signo(self) -> int: no_effects()
             @property
-            def si_status(self) -> int: ...
+            def si_status(self) -> int: no_effects()
             @property
-            def si_code(self) -> int: ...
+            def si_code(self) -> int: no_effects()
 
         def waitid(idtype: int, ident: int, options: int, /) -> waitid_result | None:
             """
@@ -2454,7 +2454,7 @@ else:
         ...
     def WCOREDUMP(status: int, /) -> bool:
         """Return True if the process returning status was dumped to a core file."""
-        ...
+        no_effects()
     def WIFCONTINUED(status: int) -> bool:
         """
         Return True if a particular process was continued from a job control stop.
@@ -2462,25 +2462,25 @@ else:
         Return True if the process returning status was continued from a
         job control stop.
         """
-        ...
+        no_effects()
     def WIFSTOPPED(status: int) -> bool:
         """Return True if the process returning status was stopped."""
-        ...
+        no_effects()
     def WIFSIGNALED(status: int) -> bool:
         """Return True if the process returning status was terminated by a signal."""
-        ...
+        no_effects()
     def WIFEXITED(status: int) -> bool:
         """Return True if the process returning status exited via the exit() system call."""
-        ...
+        no_effects()
     def WEXITSTATUS(status: int) -> int:
         """Return the process return code from status."""
-        ...
+        no_effects()
     def WSTOPSIG(status: int) -> int:
         """Return the signal that stopped the process that provided the status value."""
-        ...
+        no_effects()
     def WTERMSIG(status: int) -> int:
         """Return the signal that terminated the process that provided the status value."""
-        ...
+        no_effects()
     def posix_spawn(
         path: StrOrBytesPath,
         argv: _ExecVArgs,
@@ -2575,18 +2575,18 @@ if sys.platform != "win32":
         if sys.version_info >= (3, 10):
             __match_args__: Final = ("sched_priority",)
 
-        def __new__(cls, sched_priority: int) -> Self: ...
+        def __new__(cls, sched_priority: int) -> Self: no_effects()
         @property
         def sched_priority(self) -> int:
             """the scheduling priority"""
-            ...
+            no_effects()
 
     def sched_get_priority_min(policy: int) -> int:
         """Get the minimum scheduling priority for policy."""
-        ...
+        no_effects()
     def sched_get_priority_max(policy: int) -> int:
         """Get the maximum scheduling priority for policy."""
-        ...
+        no_effects()
     def sched_yield() -> None:
         """Voluntarily relinquish the CPU."""
         ...
@@ -2605,14 +2605,14 @@ if sys.platform != "win32":
 
             Passing 0 for pid returns the scheduling policy for the calling process.
             """
-            ...
+            no_effects()
         def sched_rr_get_interval(pid: int, /) -> float:
             """
             Return the round-robin quantum for the process identified by pid, in seconds.
 
             Value returned is a float.
             """
-            ...
+            no_effects()
         def sched_setparam(pid: int, param: sched_param, /) -> None:
             """
             Set scheduling parameters for the process identified by pid.
@@ -2628,7 +2628,7 @@ if sys.platform != "win32":
             If pid is 0, returns parameters for the calling process.
             Return value is an instance of sched_param.
             """
-            ...
+            no_effects()
         def sched_setaffinity(pid: int, mask: Iterable[int], /) -> None:
             """
             Set the CPU affinity of the process identified by pid to mask.
@@ -2642,7 +2642,7 @@ if sys.platform != "win32":
 
             The affinity is returned as a set of CPU identifiers.
             """
-            ...
+            no_effects()
 
 def cpu_count() -> int | None:
     """
@@ -2652,13 +2652,13 @@ def cpu_count() -> int | None:
     use.  The number of usable CPUs can be obtained with
     ``len(os.sched_getaffinity(0))``
     """
-    ...
+    no_effects()
 
 if sys.version_info >= (3, 13):
     # Documented to return `int | None`, but falls back to `len(sched_getaffinity(0))` when
     # available. See https://github.com/python/cpython/blob/417c130/Lib/os.py#L1175-L1186.
     if sys.platform != "win32" and sys.platform != "darwin":
-        def process_cpu_count() -> int: ...
+        def process_cpu_count() -> int: no_effects()
     else:
         def process_cpu_count() -> int | None: ...
 
@@ -2666,7 +2666,7 @@ if sys.platform != "win32":
     # Unix only
     def confstr(name: str | int, /) -> str | None:
         """Return a string-valued system configuration variable."""
-        ...
+        no_effects()
     def getloadavg() -> tuple[float, float, float]:
         """
         Return average recent system load information.
@@ -2675,10 +2675,10 @@ if sys.platform != "win32":
         the last 1, 5, and 15 minutes as a tuple of three floats.
         Raises OSError if the load average was unobtainable.
         """
-        ...
+        no_effects()
     def sysconf(name: str | int, /) -> int:
         """Return an integer-valued system configuration variable."""
-        ...
+        no_effects()
 
 if sys.platform == "linux":
     def getrandom(size: int, flags: int = 0) -> bytes: ...
@@ -2756,7 +2756,7 @@ def waitstatus_to_exitcode(status: int) -> int:
     WUNTRACED option, the caller must first check if WIFSTOPPED(status) is true.
     This function must not be called if WIFSTOPPED(status) is true.
     """
-    ...
+    no_effects()
 
 if sys.platform == "linux":
     def pidfd_open(pid: int, flags: int = ...) -> int: ...
@@ -2810,7 +2810,7 @@ if sys.version_info >= (3, 13) and sys.platform != "win32":
     def posix_openpt(oflag: int, /) -> int: ...
     def grantpt(fd: FileDescriptorLike, /) -> None: ...
     def unlockpt(fd: FileDescriptorLike, /) -> None: ...
-    def ptsname(fd: FileDescriptorLike, /) -> str: ...
+    def ptsname(fd: FileDescriptorLike, /) -> str: no_effects()
 
 if sys.version_info >= (3, 13) and sys.platform == "linux":
     TFD_TIMER_ABSTIME: Final = 1

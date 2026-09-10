@@ -486,7 +486,7 @@ f()  # E: unknown-function-call
     fn test_lambda_default_analyzed() {
         let code = r#"
 import os
-f = lambda x=os.getcwd(): x  # E: unsafe-function-call
+f = lambda x=os.system("true"): x  # E: unsafe-function-call
 "#;
         check(code);
     }
