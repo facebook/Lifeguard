@@ -20,11 +20,18 @@ effects directly in cases where the python code is hard to analyse.
 ## A note on overloads
 
 Since we merge effects from all overloads anyway, we only add the effect
-annotations to the first overload in a set, leaving all the other overloads as
-`def f(): ...`. This helps keep the stub files more readable, and makes diffing
-them against the original typeshed files easier. There is a helper script,
-`resources/scripts/normalize_stubs.py`, which will rewrite the stubs to do this
-overload merging if needed.
+annotations to the first overload the analyzer sees, leaving all the other
+overloads as `def f(): ...`. That is not always the first in source order:
+`sys.platform` and `sys.version_info` branches are pruned before bodies are read,
+so an annotation inside a dead branch is dead too (`shutil.which` is the trap, its
+source-first overload is win32-only). This helps keep the stub files more readable,
+and makes diffing them against the original typeshed files easier. There is a
+helper script, `resources/scripts/normalize_stubs.py`, which will rewrite the stubs
+to do this overload merging if needed. It does not recurse into `if` blocks, so a
+set under a version or platform guard has to be merged by hand.
+
+An all-bare set is not "no effects". Like a lone `...` it means unknown, so the
+whole set is unsafe; purity has to be said out loud with `no_effects()`.
 
 Use `no_effects()` only for a function with no other declared effects; the stub
 analyzer rejects combining it with other effect kinds, even across overloads.
