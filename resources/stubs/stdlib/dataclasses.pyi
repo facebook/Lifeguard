@@ -397,7 +397,8 @@ else:
     ) -> Any:
         no_effects()
 
-def fields(class_or_instance: DataclassInstance | type[DataclassInstance]) -> tuple[Field[Any], ...]: ...
+def fields(class_or_instance: DataclassInstance | type[DataclassInstance]) -> tuple[Field[Any], ...]:
+    no_effects()
 
 # HACK: `obj: Never` typing matches if object argument is using `Any` type.
 @overload

@@ -414,4 +414,22 @@ class M(BaseModel):
 "#;
         check(code);
     }
+
+    #[test]
+    fn test_dataclasses_fields_is_pure() {
+        // `dataclasses.fields` only reads `__dataclass_fields__` off the class,
+        // so deriving a module-scope constant from it is safe.
+        let code = r#"
+import dataclasses
+from dataclasses import dataclass, field
+
+@dataclass
+class C:
+    a: int = 0
+    extras: dict = field(default_factory=dict)
+
+NAMES = frozenset(f.name for f in dataclasses.fields(C))
+"#;
+        check(code);
+    }
 }
