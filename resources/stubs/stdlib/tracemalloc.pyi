@@ -9,12 +9,12 @@ def take_snapshot() -> Snapshot: ...
 
 class BaseFilter:
     inclusive: bool
-    def __init__(self, inclusive: bool) -> None: ...
+    def __init__(self, inclusive: bool) -> None: no_effects()
 
 class DomainFilter(BaseFilter):
     @property
     def domain(self) -> int: ...
-    def __init__(self, inclusive: bool, domain: int) -> None: ...
+    def __init__(self, inclusive: bool, domain: int) -> None: no_effects()
 
 class Filter(BaseFilter):
     domain: int | None
@@ -29,7 +29,7 @@ class Filter(BaseFilter):
         lineno: int | None = None,
         all_frames: bool = False,
         domain: int | None = None,
-    ) -> None: ...
+    ) -> None: no_effects()
 
 class Statistic:
     count: int
