@@ -709,11 +709,11 @@ class _Environ(MutableMapping[AnyStr, AnyStr], Generic[AnyStr]):
         encodevalue: _EnvironCodeFunc[AnyStr],
         decodevalue: _EnvironCodeFunc[AnyStr],
     ) -> None: no_effects()
-    def setdefault(self, key: AnyStr, value: AnyStr) -> AnyStr: ...
+    def setdefault(self, key: AnyStr, value: AnyStr) -> AnyStr: unsafe()
     def copy(self) -> dict[AnyStr, AnyStr]: no_effects()
-    def __delitem__(self, key: AnyStr) -> None: ...
+    def __delitem__(self, key: AnyStr) -> None: unsafe()
     def __getitem__(self, key: AnyStr) -> AnyStr: no_effects()
-    def __setitem__(self, key: AnyStr, value: AnyStr) -> None: ...
+    def __setitem__(self, key: AnyStr, value: AnyStr) -> None: unsafe()
     def __iter__(self) -> Iterator[AnyStr]: no_effects()
     def __len__(self) -> int: no_effects()
     def __or__(self, other: Mapping[_T1, _T2]) -> dict[AnyStr | _T1, AnyStr | _T2]: no_effects()
@@ -722,7 +722,7 @@ class _Environ(MutableMapping[AnyStr, AnyStr], Generic[AnyStr]):
     # overloading MutableMapping.update in stdlib/typing.pyi
     # The type: ignore is needed due to incompatible __or__/__ior__ signatures
     @overload  # type: ignore[misc]
-    def __ior__(self, other: Mapping[AnyStr, AnyStr]) -> Self: ...
+    def __ior__(self, other: Mapping[AnyStr, AnyStr]) -> Self: unsafe()
     @overload
     def __ior__(self, other: Iterable[tuple[AnyStr, AnyStr]]) -> Self: ...
 
@@ -731,7 +731,7 @@ if sys.platform != "win32":
     environb: _Environ[bytes]
 
 if sys.version_info >= (3, 14):
-    def reload_environ() -> None: ...
+    def reload_environ() -> None: unsafe()
 
 if sys.version_info >= (3, 11) or sys.platform != "win32":
     EX_OK: Final[int]
@@ -1085,7 +1085,7 @@ def strerror(code: int, /) -> str:
     no_effects()
 def umask(mask: int, /) -> int:
     """Set the current numeric umask and return the previous umask."""
-    ...
+    unsafe()
 @final
 class uname_result(structseq[str], tuple[str, str, str, str, str]):
     """
@@ -1155,7 +1155,7 @@ if sys.platform != "win32":
         the groups of which the specified username is a member, plus the specified
         group id.
         """
-        ...
+        unsafe()
     def getpgid(pid: int) -> int:
         """Call the system call getpgid(), and return the result."""
         no_effects()
@@ -1167,7 +1167,7 @@ if sys.platform != "win32":
         no_effects()
     def setpriority(which: int, who: int, priority: int) -> None:
         """Set program scheduling priority."""
-        ...
+        unsafe()
     if sys.platform != "darwin":
         def getresuid() -> tuple[int, int, int]:
             """Return a tuple of the current process's real, effective, and saved user ids."""
@@ -1181,45 +1181,45 @@ if sys.platform != "win32":
         no_effects()
     def setegid(egid: int, /) -> None:
         """Set the current process's effective group id."""
-        ...
+        unsafe()
     def seteuid(euid: int, /) -> None:
         """Set the current process's effective user id."""
-        ...
+        unsafe()
     def setgid(gid: int, /) -> None:
         """Set the current process's group id."""
-        ...
+        unsafe()
     def setgroups(groups: Sequence[int], /) -> None:
         """Set the groups of the current process to list."""
-        ...
+        unsafe()
     def setpgrp() -> None:
         """Make the current process the leader of its process group."""
-        ...
+        unsafe()
     def setpgid(pid: int, pgrp: int, /) -> None:
         """Call the system call setpgid(pid, pgrp)."""
-        ...
+        unsafe()
     def setregid(rgid: int, egid: int, /) -> None:
         """Set the current process's real and effective group ids."""
-        ...
+        unsafe()
     if sys.platform != "darwin":
         def setresgid(rgid: int, egid: int, sgid: int, /) -> None:
             """Set the current process's real, effective, and saved group ids."""
-            ...
+            unsafe()
         def setresuid(ruid: int, euid: int, suid: int, /) -> None:
             """Set the current process's real, effective, and saved user ids."""
-            ...
+            unsafe()
 
     def setreuid(ruid: int, euid: int, /) -> None:
         """Set the current process's real and effective user ids."""
-        ...
+        unsafe()
     def getsid(pid: int, /) -> int:
         """Call the system call getsid(pid) and return the result."""
         no_effects()
     def setsid() -> None:
         """Call the system call setsid()."""
-        ...
+        unsafe()
     def setuid(uid: int, /) -> None:
         """Set the current process's user id."""
-        ...
+        unsafe()
     def uname() -> uname_result:
         """
         Return an object identifying the current operating system.
@@ -1241,10 +1241,10 @@ if sys.platform != "win32":
     def getenvb(key: bytes, default: _T) -> bytes | _T: ...
     def putenv(name: StrOrBytesPath, value: StrOrBytesPath, /) -> None:
         """Change or add an environment variable."""
-        ...
+        unsafe()
     def unsetenv(name: StrOrBytesPath, /) -> None:
         """Delete an environment variable."""
-        ...
+        unsafe()
 
 else:
     def putenv(name: str, value: str, /) -> None: ...
@@ -1262,7 +1262,7 @@ def fdopen(
     newline: str | None = ...,
     closefd: bool = ...,
     opener: _Opener | None = ...,
-) -> TextIOWrapper: ...
+) -> TextIOWrapper: unsafe()
 @overload
 def fdopen(
     fd: int,
@@ -1331,10 +1331,10 @@ def fdopen(
 ) -> IO[Any]: ...
 def close(fd: int) -> None:
     """Close a file descriptor."""
-    ...
+    unsafe()
 def closerange(fd_low: int, fd_high: int, /) -> None:
     """Closes all file descriptors in [fd_low, fd_high), ignoring errors."""
-    ...
+    unsafe()
 def device_encoding(fd: int) -> str | None:
     """
     Return a string describing the encoding of a terminal's file descriptor.
@@ -1345,10 +1345,10 @@ def device_encoding(fd: int) -> str | None:
     no_effects()
 def dup(fd: int, /) -> int:
     """Return a duplicate of a file descriptor."""
-    ...
+    unsafe()
 def dup2(fd: int, fd2: int, inheritable: bool = True) -> int:
     """Duplicate file descriptor."""
-    ...
+    unsafe()
 def fstat(fd: int) -> stat_result:
     """
     Perform a stat system call on the given file descriptor.
@@ -1359,10 +1359,10 @@ def fstat(fd: int) -> stat_result:
     no_effects()
 def ftruncate(fd: int, length: int, /) -> None:
     """Truncate a file, specified by file descriptor, to a specific length."""
-    ...
+    unsafe()
 def fsync(fd: FileDescriptorLike) -> None:
     """Force write of fd to disk."""
-    ...
+    unsafe()
 def isatty(fd: int, /) -> bool:
     """
     Return True if the fd is connected to a terminal.
@@ -1381,7 +1381,7 @@ if sys.platform != "win32" and sys.version_info >= (3, 11):
         controlling tty, the stdin, the stdout, and the stderr of the
         calling process; close fd.
         """
-        ...
+        unsafe()
 
 if sys.version_info >= (3, 11):
     def lseek(fd: int, position: int, whence: int, /) -> int:
@@ -1400,7 +1400,7 @@ if sys.version_info >= (3, 11):
 
         The return value is the number of bytes relative to the beginning of the file.
         """
-        ...
+        unsafe()
 
 else:
     def lseek(fd: int, position: int, how: int, /) -> int: ...
@@ -1414,7 +1414,7 @@ def open(path: StrOrBytesPath, flags: int, mode: int = 0o777, *, dir_fd: int | N
     dir_fd may not be implemented on your platform.
       If it is unavailable, using it will raise a NotImplementedError.
     """
-    ...
+    unsafe()
 def pipe() -> tuple[int, int]:
     """
     Create a pipe.
@@ -1422,10 +1422,10 @@ def pipe() -> tuple[int, int]:
     Returns a tuple of two file descriptors:
       (read_fd, write_fd)
     """
-    ...
+    unsafe()
 def read(fd: int, length: int, /) -> bytes:
     """Read from a file descriptor.  Returns a bytes object."""
-    ...
+    unsafe()
 
 if sys.version_info >= (3, 12) or sys.platform != "win32":
     def get_blocking(fd: int, /) -> bool:
@@ -1442,7 +1442,7 @@ if sys.version_info >= (3, 12) or sys.platform != "win32":
         Set the O_NONBLOCK flag if blocking is False,
         clear the O_NONBLOCK flag otherwise.
         """
-        ...
+        unsafe()
 
 if sys.platform != "win32":
     def fchown(fd: int, uid: int, gid: int) -> None:
@@ -1451,7 +1451,7 @@ if sys.platform != "win32":
 
         Equivalent to os.chown(fd, uid, gid).
         """
-        ...
+        unsafe()
     def fpathconf(fd: int, name: str | int, /) -> int:
         """
         Return the configuration limit name for the file descriptor fd.
@@ -1485,11 +1485,11 @@ if sys.platform != "win32":
         Return a tuple of (master_fd, slave_fd) containing open file descriptors
         for both the master and slave ends.
         """
-        ...
+        unsafe()
     if sys.platform != "darwin":
         def fdatasync(fd: FileDescriptorLike) -> None:
             """Force write of fd to disk without forcing update of metadata."""
-            ...
+            unsafe()
         def pipe2(flags: int, /) -> tuple[int, int]:
             """
             Create a pipe with flags set atomically.
@@ -1500,7 +1500,7 @@ if sys.platform != "win32":
             flags can be constructed by ORing together one or more of these values:
             O_NONBLOCK, O_CLOEXEC.
             """
-            ...
+            unsafe()
         def posix_fallocate(fd: int, offset: int, length: int, /) -> None:
             """
             Ensure a file has allocated at least a particular number of bytes on disk.
@@ -1508,7 +1508,7 @@ if sys.platform != "win32":
             Ensure that the file specified by fd encompasses a range of bytes
             starting at offset bytes from the beginning and continuing for length bytes.
             """
-            ...
+            unsafe()
         def posix_fadvise(fd: int, offset: int, length: int, advice: int, /) -> None:
             """
             Announce an intention to access data in a specific pattern.
@@ -1521,7 +1521,7 @@ if sys.platform != "win32":
             POSIX_FADV_RANDOM, POSIX_FADV_NOREUSE, POSIX_FADV_WILLNEED, or
             POSIX_FADV_DONTNEED.
             """
-            ...
+            unsafe()
 
     def pread(fd: int, length: int, offset: int, /) -> bytes:
         """
@@ -1530,7 +1530,7 @@ if sys.platform != "win32":
         Read length bytes from file descriptor fd, starting at offset bytes from
         the beginning of the file.  The file offset remains unchanged.
         """
-        ...
+        unsafe()
     def pwrite(fd: int, buffer: ReadableBuffer, offset: int, /) -> int:
         """
         Write bytes to a file descriptor starting at a particular offset.
@@ -1539,7 +1539,7 @@ if sys.platform != "win32":
         the file.  Returns the number of bytes writte.  Does not change the
         current file offset.
         """
-        ...
+        unsafe()
     # In CI, stubtest sometimes reports that these are available on MacOS, sometimes not
     def preadv(fd: int, buffers: SupportsLenAndGetItem[WriteableBuffer], offset: int, flags: int = 0, /) -> int:
         """
@@ -1559,7 +1559,7 @@ if sys.platform != "win32":
 
         Using non-zero flags requires Linux 4.6 or newer.
         """
-        ...
+        unsafe()
     def pwritev(fd: int, buffers: SupportsLenAndGetItem[ReadableBuffer], offset: int, flags: int = 0, /) -> int:
         """
         Writes the contents of bytes-like objects to a file descriptor at a given offset.
@@ -1579,7 +1579,7 @@ if sys.platform != "win32":
 
         Using non-zero flags requires Linux 4.7 or newer.
         """
-        ...
+        unsafe()
     if sys.platform != "darwin":
         if sys.version_info >= (3, 10):
             RWF_APPEND: Final[int]  # docs say available on 3.7+, stubtest says otherwise
@@ -1589,7 +1589,7 @@ if sys.platform != "win32":
         RWF_NOWAIT: Final[int]
 
     if sys.platform == "linux":
-        def sendfile(out_fd: FileDescriptor, in_fd: FileDescriptor, offset: int | None, count: int) -> int: ...
+        def sendfile(out_fd: FileDescriptor, in_fd: FileDescriptor, offset: int | None, count: int) -> int: unsafe()
     else:
         def sendfile(
             out_fd: FileDescriptor,
@@ -1615,7 +1615,7 @@ if sys.platform != "win32":
         readv returns the total number of bytes read,
         which may be less than the total capacity of all the buffers.
         """
-        ...
+        unsafe()
     def writev(fd: int, buffers: SupportsLenAndGetItem[ReadableBuffer], /) -> int:
         """
         Iterate over buffers, and write the contents of each to a file descriptor.
@@ -1623,10 +1623,10 @@ if sys.platform != "win32":
         Returns the total number of bytes written.
         buffers must be a sequence of bytes-like objects.
         """
-        ...
+        unsafe()
 
 if sys.version_info >= (3, 14):
-    def readinto(fd: int, buffer: ReadableBuffer, /) -> int: ...
+    def readinto(fd: int, buffer: ReadableBuffer, /) -> int: unsafe()
 
 @final
 class terminal_size(structseq[int], tuple[int, int]):
@@ -1664,7 +1664,7 @@ def get_inheritable(fd: int, /) -> bool:
     no_effects()
 def set_inheritable(fd: int, inheritable: bool, /) -> None:
     """Set the inheritable flag of the specified file descriptor."""
-    ...
+    unsafe()
 
 if sys.platform == "win32":
     def get_handle_inheritable(handle: int, /) -> bool: ...
@@ -1677,7 +1677,7 @@ if sys.platform != "win32":
         no_effects()
     def tcsetpgrp(fd: int, pgid: int, /) -> None:
         """Set the process group associated with the terminal specified by fd."""
-        ...
+        unsafe()
     def ttyname(fd: int, /) -> str:
         """
         Return the name of the terminal device connected to 'fd'.
@@ -1689,7 +1689,7 @@ if sys.platform != "win32":
 
 def write(fd: int, data: ReadableBuffer, /) -> int:
     """Write a bytes object to a file descriptor."""
-    ...
+    unsafe()
 def access(
     path: FileDescriptorOrPath, mode: int, *, dir_fd: int | None = None, effective_ids: bool = False, follow_symlinks: bool = True
 ) -> bool:
@@ -1730,7 +1730,7 @@ def chdir(path: FileDescriptorOrPath) -> None:
     On some platforms, path may also be specified as an open file descriptor.
       If this functionality is unavailable, using it raises an exception.
     """
-    ...
+    unsafe()
 
 if sys.platform != "win32":
     def fchdir(fd: FileDescriptorLike) -> None:
@@ -1740,7 +1740,7 @@ if sys.platform != "win32":
         fd must be opened on a directory, not a file.
         Equivalent to os.chdir(fd).
         """
-        ...
+        unsafe()
 
 def getcwd() -> str:
     """Return a unicode string representing the current working directory."""
@@ -1775,7 +1775,7 @@ def chmod(path: FileDescriptorOrPath, mode: int, *, dir_fd: int | None = None, f
     dir_fd and follow_symlinks may not be implemented on your platform.
       If they are unavailable, using them will raise a NotImplementedError.
     """
-    ...
+    unsafe()
 
 if sys.platform != "win32" and sys.platform != "linux":
     def chflags(path: StrOrBytesPath, flags: int, follow_symlinks: bool = True) -> None: ...  # some flavors of Unix
@@ -1784,7 +1784,7 @@ if sys.platform != "win32" and sys.platform != "linux":
 if sys.platform != "win32":
     def chroot(path: StrOrBytesPath) -> None:
         """Change root directory to path."""
-        ...
+        unsafe()
     def chown(
         path: FileDescriptorOrPath, uid: int, gid: int, *, dir_fd: int | None = None, follow_symlinks: bool = True
     ) -> None:
@@ -1815,7 +1815,7 @@ if sys.platform != "win32":
         dir_fd and follow_symlinks may not be implemented on your platform.
           If they are unavailable, using them will raise a NotImplementedError.
         """
-        ...
+        unsafe()
     def lchown(path: StrOrBytesPath, uid: int, gid: int) -> None:
         """
         Change the owner and group id of path to the numeric uid and gid.
@@ -1823,7 +1823,7 @@ if sys.platform != "win32":
         This function will not follow symbolic links.
         Equivalent to os.chown(path, uid, gid, follow_symlinks=False).
         """
-        ...
+        unsafe()
 
 def link(
     src: StrOrBytesPath,
@@ -1846,7 +1846,7 @@ def link(
       platform.  If they are unavailable, using them will raise a
       NotImplementedError.
     """
-    ...
+    unsafe()
 def lstat(path: StrOrBytesPath, *, dir_fd: int | None = None) -> stat_result:
     """
     Perform a stat system call on the given path, without following symbolic links.
@@ -1867,7 +1867,7 @@ def mkdir(path: StrOrBytesPath, mode: int = 0o777, *, dir_fd: int | None = None)
     The mode argument is ignored on Windows. Where it is used, the current umask
     value is first masked out.
     """
-    ...
+    unsafe()
 
 if sys.platform != "win32":
     def mkfifo(path: StrOrBytesPath, mode: int = 0o666, *, dir_fd: int | None = None) -> None:
@@ -1879,9 +1879,9 @@ if sys.platform != "win32":
         dir_fd may not be implemented on your platform.
           If it is unavailable, using it will raise a NotImplementedError.
         """
-        ...
+        unsafe()
 
-def makedirs(name: StrOrBytesPath, mode: int = 0o777, exist_ok: bool = False) -> None: ...
+def makedirs(name: StrOrBytesPath, mode: int = 0o777, exist_ok: bool = False) -> None: unsafe()
 
 if sys.platform != "win32":
     def mknod(path: StrOrBytesPath, mode: int = 0o600, device: int = 0, *, dir_fd: int | None = None) -> None:
@@ -1900,7 +1900,7 @@ if sys.platform != "win32":
         dir_fd may not be implemented on your platform.
           If it is unavailable, using it will raise a NotImplementedError.
         """
-        ...
+        unsafe()
     def major(device: int, /) -> int:
         """Extracts a device major number from a raw device number."""
         no_effects()
@@ -1940,8 +1940,8 @@ def remove(path: StrOrBytesPath, *, dir_fd: int | None = None) -> None:
     dir_fd may not be implemented on your platform.
       If it is unavailable, using it will raise a NotImplementedError.
     """
-    ...
-def removedirs(name: StrOrBytesPath) -> None: ...
+    unsafe()
+def removedirs(name: StrOrBytesPath) -> None: unsafe()
 def rename(src: StrOrBytesPath, dst: StrOrBytesPath, *, src_dir_fd: int | None = None, dst_dir_fd: int | None = None) -> None:
     """
     Rename a file or directory.
@@ -1952,8 +1952,8 @@ def rename(src: StrOrBytesPath, dst: StrOrBytesPath, *, src_dir_fd: int | None =
     src_dir_fd and dst_dir_fd, may not be implemented on your platform.
       If they are unavailable, using them will raise a NotImplementedError.
     """
-    ...
-def renames(old: StrOrBytesPath, new: StrOrBytesPath) -> None: ...
+    unsafe()
+def renames(old: StrOrBytesPath, new: StrOrBytesPath) -> None: unsafe()
 def replace(
     src: StrOrBytesPath, dst: StrOrBytesPath, *, src_dir_fd: int | None = None, dst_dir_fd: int | None = None
 ) -> None:
@@ -1966,7 +1966,7 @@ def replace(
     src_dir_fd and dst_dir_fd, may not be implemented on your platform.
       If they are unavailable, using them will raise a NotImplementedError.
     """
-    ...
+    unsafe()
 def rmdir(path: StrOrBytesPath, *, dir_fd: int | None = None) -> None:
     """
     Remove a directory.
@@ -1976,7 +1976,7 @@ def rmdir(path: StrOrBytesPath, *, dir_fd: int | None = None) -> None:
     dir_fd may not be implemented on your platform.
       If it is unavailable, using it will raise a NotImplementedError.
     """
-    ...
+    unsafe()
 @final
 @type_check_only
 class _ScandirIterator(Generic[AnyStr]):
@@ -2075,12 +2075,12 @@ def symlink(
     dir_fd may not be implemented on your platform.
       If it is unavailable, using it will raise a NotImplementedError.
     """
-    ...
+    unsafe()
 
 if sys.platform != "win32":
     def sync() -> None:
         """Force write of everything to disk."""
-        ...
+        unsafe()
 
 def truncate(path: FileDescriptorOrPath, length: int) -> None:
     """
@@ -2089,7 +2089,7 @@ def truncate(path: FileDescriptorOrPath, length: int) -> None:
     On some platforms, path may also be specified as an open file descriptor.
       If this functionality is unavailable, using it raises an exception.
     """
-    ...
+    unsafe()
 def unlink(path: StrOrBytesPath, *, dir_fd: int | None = None) -> None:
     """
     Remove a file (same as remove()).
@@ -2099,7 +2099,7 @@ def unlink(path: StrOrBytesPath, *, dir_fd: int | None = None) -> None:
     dir_fd may not be implemented on your platform.
       If it is unavailable, using it will raise a NotImplementedError.
     """
-    ...
+    unsafe()
 def utime(
     path: FileDescriptorOrPath,
     times: tuple[int, int] | tuple[float, float] | None = None,
@@ -2133,7 +2133,7 @@ def utime(
     dir_fd and follow_symlinks may not be available on your platform.
       If they are unavailable, using them will raise a NotImplementedError.
     """
-    ...
+    unsafe()
 
 _OnError: TypeAlias = Callable[[OSError], object]
 
@@ -2163,7 +2163,7 @@ if sys.platform != "win32":
     if sys.platform == "linux":
         def getxattr(path: FileDescriptorOrPath, attribute: StrOrBytesPath, *, follow_symlinks: bool = True) -> bytes: no_effects()
         def listxattr(path: FileDescriptorOrPath | None = None, *, follow_symlinks: bool = True) -> list[str]: no_effects()
-        def removexattr(path: FileDescriptorOrPath, attribute: StrOrBytesPath, *, follow_symlinks: bool = True) -> None: ...
+        def removexattr(path: FileDescriptorOrPath, attribute: StrOrBytesPath, *, follow_symlinks: bool = True) -> None: unsafe()
         def setxattr(
             path: FileDescriptorOrPath,
             attribute: StrOrBytesPath,
@@ -2171,7 +2171,7 @@ if sys.platform != "win32":
             flags: int = 0,
             *,
             follow_symlinks: bool = True,
-        ) -> None: ...
+        ) -> None: unsafe()
 
 def abort() -> NoReturn:
     """
@@ -2180,19 +2180,19 @@ def abort() -> NoReturn:
     This function 'dumps core' or otherwise fails in the hardest way possible
     on the hosting operating system.  This function never returns.
     """
-    ...
+    unsafe()
 
 # These are defined as execl(file, *args) but the first *arg is mandatory.
-def execl(file: StrOrBytesPath, *args: Unpack[tuple[StrOrBytesPath, Unpack[tuple[StrOrBytesPath, ...]]]]) -> NoReturn: ...
-def execlp(file: StrOrBytesPath, *args: Unpack[tuple[StrOrBytesPath, Unpack[tuple[StrOrBytesPath, ...]]]]) -> NoReturn: ...
+def execl(file: StrOrBytesPath, *args: Unpack[tuple[StrOrBytesPath, Unpack[tuple[StrOrBytesPath, ...]]]]) -> NoReturn: unsafe()
+def execlp(file: StrOrBytesPath, *args: Unpack[tuple[StrOrBytesPath, Unpack[tuple[StrOrBytesPath, ...]]]]) -> NoReturn: unsafe()
 
 # These are: execle(file, *args, env) but env is pulled from the last element of the args.
 def execle(
     file: StrOrBytesPath, *args: Unpack[tuple[StrOrBytesPath, Unpack[tuple[StrOrBytesPath, ...]], _ExecEnv]]
-) -> NoReturn: ...
+) -> NoReturn: unsafe()
 def execlpe(
     file: StrOrBytesPath, *args: Unpack[tuple[StrOrBytesPath, Unpack[tuple[StrOrBytesPath, ...]], _ExecEnv]]
-) -> NoReturn: ...
+) -> NoReturn: unsafe()
 
 # The docs say `args: tuple or list of strings`
 # The implementation enforces tuple or list so we can't use Sequence.
@@ -2224,7 +2224,7 @@ def execv(path: StrOrBytesPath, argv: _ExecVArgs, /) -> NoReturn:
     argv
       Tuple or list of strings.
     """
-    ...
+    unsafe()
 def execve(path: FileDescriptorOrPath, argv: _ExecVArgs, env: _ExecEnv) -> NoReturn:
     """
     Execute an executable path with arguments, replacing current process.
@@ -2236,15 +2236,15 @@ def execve(path: FileDescriptorOrPath, argv: _ExecVArgs, env: _ExecEnv) -> NoRet
     env
       Dictionary of strings mapping to strings.
     """
-    ...
-def execvp(file: StrOrBytesPath, args: _ExecVArgs) -> NoReturn: ...
-def execvpe(file: StrOrBytesPath, args: _ExecVArgs, env: _ExecEnv) -> NoReturn: ...
+    unsafe()
+def execvp(file: StrOrBytesPath, args: _ExecVArgs) -> NoReturn: unsafe()
+def execvpe(file: StrOrBytesPath, args: _ExecVArgs, env: _ExecEnv) -> NoReturn: unsafe()
 def _exit(status: int) -> NoReturn:
     """Exit to the system with specified status, without normal exit processing."""
-    ...
+    unsafe()
 def kill(pid: int, signal: int, /) -> None:
     """Kill a process with a signal."""
-    ...
+    unsafe()
 
 if sys.platform != "win32":
     # Unix only
@@ -2254,7 +2254,7 @@ if sys.platform != "win32":
 
         Return 0 to child process and PID of child to parent process.
         """
-        ...
+        unsafe()
     def forkpty() -> tuple[int, int]:
         """
         Fork a new process with a new pseudo-terminal as controlling tty.
@@ -2264,13 +2264,13 @@ if sys.platform != "win32":
         and pid of child to the parent process.
         To both, return fd of newly opened pseudo-terminal.
         """
-        ...
+        unsafe()
     def killpg(pgid: int, signal: int, /) -> None:
         """Kill a process group with a signal."""
-        ...
+        unsafe()
     def nice(increment: int, /) -> int:
         """Add increment to the priority of process and return the new priority."""
-        ...
+        unsafe()
     if sys.platform != "darwin" and sys.platform != "linux":
         def plock(op: int, /) -> None: ...
 
@@ -2294,13 +2294,13 @@ class _wrap_close:
     def write(self, s: str, /) -> int: ...
     def writelines(self, lines: Iterable[str], /) -> None: ...
 
-def popen(cmd: str, mode: str = "r", buffering: int = -1) -> _wrap_close: ...
-def spawnl(mode: int, file: StrOrBytesPath, arg0: StrOrBytesPath, *args: StrOrBytesPath) -> int: ...
-def spawnle(mode: int, file: StrOrBytesPath, arg0: StrOrBytesPath, *args: Any) -> int: ...  # Imprecise sig
+def popen(cmd: str, mode: str = "r", buffering: int = -1) -> _wrap_close: unsafe()
+def spawnl(mode: int, file: StrOrBytesPath, arg0: StrOrBytesPath, *args: StrOrBytesPath) -> int: unsafe()
+def spawnle(mode: int, file: StrOrBytesPath, arg0: StrOrBytesPath, *args: Any) -> int: unsafe()  # Imprecise sig
 
 if sys.platform != "win32":
-    def spawnv(mode: int, file: StrOrBytesPath, args: _ExecVArgs) -> int: ...
-    def spawnve(mode: int, file: StrOrBytesPath, args: _ExecVArgs, env: _ExecEnv) -> int: ...
+    def spawnv(mode: int, file: StrOrBytesPath, args: _ExecVArgs) -> int: unsafe()
+    def spawnve(mode: int, file: StrOrBytesPath, args: _ExecVArgs, env: _ExecEnv) -> int: unsafe()
 
 else:
     def spawnv(mode: int, path: StrOrBytesPath, argv: _ExecVArgs, /) -> int: ...
@@ -2308,7 +2308,7 @@ else:
 
 def system(command: StrOrBytesPath) -> int:
     """Execute the command in a subshell."""
-    ...
+    unsafe()
 @final
 class times_result(structseq[float], tuple[float, float, float, float, float]):
     """
@@ -2363,7 +2363,7 @@ def waitpid(pid: int, options: int, /) -> tuple[int, int]:
 
     The options argument is ignored on Windows.
     """
-    ...
+    unsafe()
 
 if sys.platform == "win32":
     if sys.version_info >= (3, 10):
@@ -2378,10 +2378,10 @@ if sys.platform == "win32":
         def startfile(filepath: StrOrBytesPath, operation: str = ...) -> None: ...
 
 else:
-    def spawnlp(mode: int, file: StrOrBytesPath, arg0: StrOrBytesPath, *args: StrOrBytesPath) -> int: ...
-    def spawnlpe(mode: int, file: StrOrBytesPath, arg0: StrOrBytesPath, *args: Any) -> int: ...  # Imprecise signature
-    def spawnvp(mode: int, file: StrOrBytesPath, args: _ExecVArgs) -> int: ...
-    def spawnvpe(mode: int, file: StrOrBytesPath, args: _ExecVArgs, env: _ExecEnv) -> int: ...
+    def spawnlp(mode: int, file: StrOrBytesPath, arg0: StrOrBytesPath, *args: StrOrBytesPath) -> int: unsafe()
+    def spawnlpe(mode: int, file: StrOrBytesPath, arg0: StrOrBytesPath, *args: Any) -> int: unsafe()  # Imprecise signature
+    def spawnvp(mode: int, file: StrOrBytesPath, args: _ExecVArgs) -> int: unsafe()
+    def spawnvpe(mode: int, file: StrOrBytesPath, args: _ExecVArgs, env: _ExecEnv) -> int: unsafe()
     def wait() -> tuple[int, int]:
         """
         Wait for completion of a child process.
@@ -2389,7 +2389,7 @@ else:
         Returns a tuple of information about the child process:
             (pid, status)
         """
-        ...
+        unsafe()
     # Added to MacOS in 3.13
     if sys.platform != "darwin" or sys.version_info >= (3, 13):
         @final
@@ -2432,7 +2432,7 @@ else:
             Returns either waitid_result or None if WNOHANG is specified and there are
             no children in a waitable state.
             """
-            ...
+            unsafe()
 
     from resource import struct_rusage
 
@@ -2443,7 +2443,7 @@ else:
         Returns a tuple of information about the child process:
           (pid, status, rusage)
         """
-        ...
+        unsafe()
     def wait4(pid: int, options: int) -> tuple[int, int, struct_rusage]:
         """
         Wait for completion of a specific child process.
@@ -2451,7 +2451,7 @@ else:
         Returns a tuple of information about the child process:
           (pid, status, rusage)
         """
-        ...
+        unsafe()
     def WCOREDUMP(status: int, /) -> bool:
         """Return True if the process returning status was dumped to a core file."""
         no_effects()
@@ -2519,7 +2519,7 @@ else:
         scheduler
           A tuple with the scheduler policy (optional) and parameters.
         """
-        ...
+        unsafe()
     def posix_spawnp(
         path: StrOrBytesPath,
         argv: _ExecVArgs,
@@ -2558,7 +2558,7 @@ else:
         scheduler
           A tuple with the scheduler policy (optional) and parameters.
         """
-        ...
+        unsafe()
     POSIX_SPAWN_OPEN: Final = 0
     POSIX_SPAWN_CLOSE: Final = 1
     POSIX_SPAWN_DUP2: Final = 2
@@ -2589,7 +2589,7 @@ if sys.platform != "win32":
         no_effects()
     def sched_yield() -> None:
         """Voluntarily relinquish the CPU."""
-        ...
+        unsafe()
     if sys.platform != "darwin":
         def sched_setscheduler(pid: int, policy: int, param: sched_param, /) -> None:
             """
@@ -2598,7 +2598,7 @@ if sys.platform != "win32":
             If pid is 0, the calling process is changed.
             param is an instance of sched_param.
             """
-            ...
+            unsafe()
         def sched_getscheduler(pid: int, /) -> int:
             """
             Get the scheduling policy for the process identified by pid.
@@ -2620,7 +2620,7 @@ if sys.platform != "win32":
             If pid is 0, sets parameters for the calling process.
             param should be an instance of sched_param.
             """
-            ...
+            unsafe()
         def sched_getparam(pid: int, /) -> sched_param:
             """
             Returns scheduling parameters for the process identified by pid.
@@ -2635,7 +2635,7 @@ if sys.platform != "win32":
 
             mask should be an iterable of integers identifying CPUs.
             """
-            ...
+            unsafe()
         def sched_getaffinity(pid: int, /) -> set[int]:
             """
             Return the affinity of the process identified by pid (or the current process if zero).
@@ -2707,7 +2707,7 @@ if sys.platform != "win32":
         'before' callbacks are called in reverse order.
         'after_in_child' and 'after_in_parent' callbacks are called in order.
         """
-        ...
+        unsafe()
 
 if sys.platform == "win32":
     class _AddedDllDirectory:
@@ -2737,8 +2737,8 @@ if sys.platform == "linux":
     MFD_HUGE_1GB: Final[int]
     MFD_HUGE_2GB: Final[int]
     MFD_HUGE_16GB: Final[int]
-    def memfd_create(name: str, flags: int = ...) -> int: ...
-    def copy_file_range(src: int, dst: int, count: int, offset_src: int | None = ..., offset_dst: int | None = ...) -> int: ...
+    def memfd_create(name: str, flags: int = ...) -> int: unsafe()
+    def copy_file_range(src: int, dst: int, count: int, offset_src: int | None = ..., offset_dst: int | None = ...) -> int: unsafe()
 
 def waitstatus_to_exitcode(status: int) -> int:
     """
@@ -2759,7 +2759,7 @@ def waitstatus_to_exitcode(status: int) -> int:
     no_effects()
 
 if sys.platform == "linux":
-    def pidfd_open(pid: int, flags: int = ...) -> int: ...
+    def pidfd_open(pid: int, flags: int = ...) -> int: unsafe()
 
 if sys.version_info >= (3, 12) and sys.platform == "linux":
     PIDFD_NONBLOCK: Final = 2048
@@ -2776,9 +2776,9 @@ if sys.version_info >= (3, 10) and sys.platform == "linux":
     SPLICE_F_MORE: Final[int]
     SPLICE_F_MOVE: Final[int]
     SPLICE_F_NONBLOCK: Final[int]
-    def eventfd(initval: int, flags: int = 524288) -> FileDescriptor: ...
-    def eventfd_read(fd: FileDescriptor) -> int: ...
-    def eventfd_write(fd: FileDescriptor, value: int) -> None: ...
+    def eventfd(initval: int, flags: int = 524288) -> FileDescriptor: unsafe()
+    def eventfd_read(fd: FileDescriptor) -> int: unsafe()
+    def eventfd_write(fd: FileDescriptor, value: int) -> None: unsafe()
     def splice(
         src: FileDescriptor,
         dst: FileDescriptor,
@@ -2786,7 +2786,7 @@ if sys.version_info >= (3, 10) and sys.platform == "linux":
         offset_src: int | None = ...,
         offset_dst: int | None = ...,
         flags: int = 0,
-    ) -> int: ...
+    ) -> int: unsafe()
 
 if sys.version_info >= (3, 12) and sys.platform == "linux":
     CLONE_FILES: Final[int]
@@ -2803,13 +2803,13 @@ if sys.version_info >= (3, 12) and sys.platform == "linux":
     CLONE_SYSVSEM: Final[int]  # Linux 2.6.26+
     CLONE_THREAD: Final[int]
     CLONE_VM: Final[int]
-    def unshare(flags: int) -> None: ...
-    def setns(fd: FileDescriptorLike, nstype: int = 0) -> None: ...
+    def unshare(flags: int) -> None: unsafe()
+    def setns(fd: FileDescriptorLike, nstype: int = 0) -> None: unsafe()
 
 if sys.version_info >= (3, 13) and sys.platform != "win32":
-    def posix_openpt(oflag: int, /) -> int: ...
-    def grantpt(fd: FileDescriptorLike, /) -> None: ...
-    def unlockpt(fd: FileDescriptorLike, /) -> None: ...
+    def posix_openpt(oflag: int, /) -> int: unsafe()
+    def grantpt(fd: FileDescriptorLike, /) -> None: unsafe()
+    def unlockpt(fd: FileDescriptorLike, /) -> None: unsafe()
     def ptsname(fd: FileDescriptorLike, /) -> str: no_effects()
 
 if sys.version_info >= (3, 13) and sys.platform == "linux":
@@ -2819,11 +2819,11 @@ if sys.version_info >= (3, 13) and sys.platform == "linux":
     TFD_CLOEXEC: Final[int]
     POSIX_SPAWN_CLOSEFROM: Final[int]
 
-    def timerfd_create(clockid: int, /, *, flags: int = 0) -> int: ...
+    def timerfd_create(clockid: int, /, *, flags: int = 0) -> int: unsafe()
     def timerfd_settime(
         fd: FileDescriptor, /, *, flags: int = 0, initial: float = 0.0, interval: float = 0.0
-    ) -> tuple[float, float]: ...
-    def timerfd_settime_ns(fd: FileDescriptor, /, *, flags: int = 0, initial: int = 0, interval: int = 0) -> tuple[int, int]: ...
+    ) -> tuple[float, float]: unsafe()
+    def timerfd_settime_ns(fd: FileDescriptor, /, *, flags: int = 0, initial: int = 0, interval: int = 0) -> tuple[int, int]: unsafe()
     def timerfd_gettime(fd: FileDescriptor, /) -> tuple[float, float]: ...
     def timerfd_gettime_ns(fd: FileDescriptor, /) -> tuple[int, int]: ...
 
@@ -2843,7 +2843,7 @@ if sys.version_info >= (3, 13) or sys.platform != "win32":
 
         Equivalent to os.chmod(fd, mode).
         """
-        ...
+        unsafe()
 
 if sys.platform != "linux":
     if sys.version_info >= (3, 13) or sys.platform != "win32":
