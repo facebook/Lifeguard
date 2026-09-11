@@ -625,6 +625,28 @@ mod tests {
     use crate::test_lib::assert_str_keys;
     use crate::traits::AstExt;
 
+    fn build_definitions(code: &str) -> (DefinitionTable, ClassTable) {
+        let parsed_module = parse_source(code, ModuleName::from_str("test"), false);
+        build_definitions_and_classes(&parsed_module, &AnalysisConfig::default())
+    }
+
+    /// Turn a string like `["mod", "Class", "func"]` into a Cursor, by assuming
+    /// the first item is always a module and only classes start with an
+    /// uppercase character.
+    fn cursor_for(scopes: &[&str]) -> Cursor {
+        let mut cursor = Cursor::new();
+        for (i, scope_name) in scopes.iter().enumerate() {
+            if i == 0 {
+                cursor.enter_module_scope(&ModuleName::from_str(scope_name));
+            } else if scope_name.starts_with(char::is_uppercase) {
+                cursor.enter_class_scope_name(Name::new(scope_name));
+            } else {
+                cursor.enter_function_scope_name(Name::new(scope_name));
+            }
+        }
+        cursor
+    }
+
     #[test]
     fn test_module_reachability() {
         let code = r#"
@@ -647,20 +669,11 @@ class C:
         let exports = Exports::new(&parsed_module, &import_graph, &config.sys_info);
         let info = ModuleInfo::new(&parsed_module, &exports, &import_graph, &stubs, &config);
         let resolve = |scopes: &[&str], name: &str| -> Option<ResolvedName> {
-            // Turn a string like "mod.Class.func" into a Cursor, by assuming the first item is
-            // always a module and only classes start with an uppercase character.
-            let mut cursor = Cursor::new();
-            for (i, scope_name) in scopes.iter().enumerate() {
-                if i == 0 {
-                    cursor.enter_module_scope(&ModuleName::from_str(scope_name));
-                } else if scope_name.starts_with(char::is_uppercase) {
-                    cursor.enter_class_scope_name(Name::new(scope_name));
-                } else {
-                    cursor.enter_function_scope_name(Name::new(scope_name));
-                }
-            }
-            info.definitions
-                .resolve_name(&cursor, Name::new(name), TextRange::default())
+            info.definitions.resolve_name(
+                &cursor_for(scopes),
+                Name::new(name),
+                TextRange::default(),
+            )
         };
         let is_reachable = |scopes: &[&str], name: &str| -> bool {
             info.is_reachable(&resolve(scopes, name).unwrap())
@@ -759,10 +772,7 @@ class C:
     def method(self):
         pass
 "#;
-        let mod_name = ModuleName::from_str("test");
-        let parsed_module = parse_source(code, mod_name, false);
-        let config = AnalysisConfig::default();
-        let (definitions, _classes) = build_definitions_and_classes(&parsed_module, &config);
+        let (definitions, _classes) = build_definitions(code);
 
         let mut fn_scopes: Vec<&str> = definitions.function_scopes().map(|s| s.as_str()).collect();
         fn_scopes.sort();
@@ -782,7 +792,7 @@ class C:
         assert!(definitions.is_function_scope(&ModuleName::from_str("test.with_args.nested")));
 
         // Module and class scopes are not function scopes.
-        assert!(!definitions.is_function_scope(&mod_name));
+        assert!(!definitions.is_function_scope(&ModuleName::from_str("test")));
         assert!(!definitions.is_function_scope(&ModuleName::from_str("test.C")));
     }
 
@@ -800,17 +810,7 @@ class C:
         let config = AnalysisConfig::default();
         let exports = Exports::new(&parsed_module, &import_graph, &config.sys_info);
         let info = ModuleInfo::new(&parsed_module, &exports, &import_graph, &stubs, &config);
-
-        let mut cursor = Cursor::new();
-        for (i, scope_name) in scopes.iter().enumerate() {
-            if i == 0 {
-                cursor.enter_module_scope(&ModuleName::from_str(scope_name));
-            } else if scope_name.starts_with(char::is_uppercase) {
-                cursor.enter_class_scope_name(Name::new(scope_name));
-            } else {
-                cursor.enter_function_scope_name(Name::new(scope_name));
-            }
-        }
+        let cursor = cursor_for(scopes);
 
         // Parse a trivial expression to get a properly constructed Expr::Name
         let (ast, _) = Ast::parse_py(name);
