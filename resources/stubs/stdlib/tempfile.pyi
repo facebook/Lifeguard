@@ -52,7 +52,7 @@ if sys.version_info >= (3, 12):
         *,
         errors: str | None = None,
         delete_on_close: bool = True,
-    ) -> _TemporaryFileWrapper[str]: ...
+    ) -> _TemporaryFileWrapper[str]: unsafe()
     @overload
     def NamedTemporaryFile(
         mode: OpenBinaryMode = "w+b",
@@ -138,7 +138,7 @@ else:
         dir: GenericPath[AnyStr] | None = None,
         *,
         errors: str | None = None,
-    ) -> io.TextIOWrapper: ...
+    ) -> io.TextIOWrapper: unsafe()
     @overload
     def TemporaryFile(
         mode: OpenBinaryMode,
@@ -291,7 +291,7 @@ class SpooledTemporaryFile(IO[AnyStr], _SpooledTemporaryFileBase):
         dir: str | None = None,
         *,
         errors: str | None = None,
-    ) -> None: ...
+    ) -> None: unsafe()
     @overload
     def __init__(
         self: SpooledTemporaryFile[str],
@@ -350,7 +350,7 @@ class SpooledTemporaryFile(IO[AnyStr], _SpooledTemporaryFileBase):
     ) -> None: ...
     @property
     def errors(self) -> str | None: ...
-    def rollover(self) -> None: ...
+    def rollover(self) -> None: unsafe()
     def __enter__(self) -> Self: ...
     def __exit__(self, exc: type[BaseException] | None, value: BaseException | None, tb: TracebackType | None) -> None: ...
     # These methods are copied from the abstract methods of IO, because
@@ -396,7 +396,7 @@ class SpooledTemporaryFile(IO[AnyStr], _SpooledTemporaryFileBase):
     def seekable(self) -> bool: ...
     def writable(self) -> bool: ...
     def __next__(self) -> AnyStr: ...  # type: ignore[override]
-    def __class_getitem__(cls, item: Any, /) -> GenericAlias: ...
+    def __class_getitem__(cls, item: Any, /) -> GenericAlias: no_effects()
 
 class TemporaryDirectory(Generic[AnyStr]):
     name: AnyStr
@@ -410,7 +410,7 @@ class TemporaryDirectory(Generic[AnyStr]):
             ignore_cleanup_errors: bool = False,
             *,
             delete: bool = True,
-        ) -> None: ...
+        ) -> None: unsafe()
         @overload
         def __init__(
             self: TemporaryDirectory[bytes],
@@ -451,16 +451,16 @@ class TemporaryDirectory(Generic[AnyStr]):
             dir: BytesPath | None = None,
         ) -> None: ...
 
-    def cleanup(self) -> None: ...
-    def __enter__(self) -> AnyStr: ...
-    def __exit__(self, exc: type[BaseException] | None, value: BaseException | None, tb: TracebackType | None) -> None: ...
-    def __class_getitem__(cls, item: Any, /) -> GenericAlias: ...
+    def cleanup(self) -> None: unsafe()
+    def __enter__(self) -> AnyStr: no_effects()
+    def __exit__(self, exc: type[BaseException] | None, value: BaseException | None, tb: TracebackType | None) -> None: unsafe()
+    def __class_getitem__(cls, item: Any, /) -> GenericAlias: no_effects()
 
 # The overloads overlap, but they should still work fine.
 @overload
 def mkstemp(
     suffix: str | None = None, prefix: str | None = None, dir: StrPath | None = None, text: bool = False
-) -> tuple[int, str]: ...
+) -> tuple[int, str]: unsafe()
 @overload
 def mkstemp(
     suffix: bytes | None = None, prefix: bytes | None = None, dir: BytesPath | None = None, text: bool = False
@@ -468,11 +468,11 @@ def mkstemp(
 
 # The overloads overlap, but they should still work fine.
 @overload
-def mkdtemp(suffix: str | None = None, prefix: str | None = None, dir: StrPath | None = None) -> str: ...
+def mkdtemp(suffix: str | None = None, prefix: str | None = None, dir: StrPath | None = None) -> str: unsafe()
 @overload
 def mkdtemp(suffix: bytes | None = None, prefix: bytes | None = None, dir: BytesPath | None = None) -> bytes: ...
-def mktemp(suffix: str = "", prefix: str = "tmp", dir: StrPath | None = None) -> str: ...
-def gettempdirb() -> bytes: ...
-def gettempprefixb() -> bytes: ...
+def mktemp(suffix: str = "", prefix: str = "tmp", dir: StrPath | None = None) -> str: unsafe()
+def gettempdirb() -> bytes: no_effects()
+def gettempprefixb() -> bytes: no_effects()
 def gettempdir() -> str: no_effects()
-def gettempprefix() -> str: ...
+def gettempprefix() -> str: no_effects()

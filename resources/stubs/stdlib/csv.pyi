@@ -67,7 +67,7 @@ class Dialect:
     lineterminator: str
     quoting: _QuotingType
     strict: bool
-    def __init__(self) -> None: ...
+    def __init__(self) -> None: no_effects()
 
 class excel(Dialect): ...
 class excel_tab(excel): ...
@@ -97,7 +97,7 @@ class DictReader(Generic[_T]):
         lineterminator: str = "\r\n",
         quoting: _QuotingType = 0,
         strict: bool = False,
-    ) -> None: ...
+    ) -> None: no_effects()
     @overload
     def __init__(
         self: DictReader[str],
@@ -116,10 +116,10 @@ class DictReader(Generic[_T]):
         quoting: _QuotingType = 0,
         strict: bool = False,
     ) -> None: ...
-    def __iter__(self) -> Self: ...
+    def __iter__(self) -> Self: no_effects()
     def __next__(self) -> dict[_T | Any, str | Any]: ...
     if sys.version_info >= (3, 12):
-        def __class_getitem__(cls, item: Any, /) -> GenericAlias: ...
+        def __class_getitem__(cls, item: Any, /) -> GenericAlias: no_effects()
 
 class DictWriter(Generic[_T]):
     fieldnames: Collection[_T]
@@ -142,14 +142,14 @@ class DictWriter(Generic[_T]):
         lineterminator: str = "\r\n",
         quoting: _QuotingType = 0,
         strict: bool = False,
-    ) -> None: ...
-    def writeheader(self) -> Any: ...
-    def writerow(self, rowdict: Mapping[_T, Any]) -> Any: ...
-    def writerows(self, rowdicts: Iterable[Mapping[_T, Any]]) -> None: ...
+    ) -> None: no_effects()
+    def writeheader(self) -> Any: unsafe()
+    def writerow(self, rowdict: Mapping[_T, Any]) -> Any: unsafe()
+    def writerows(self, rowdicts: Iterable[Mapping[_T, Any]]) -> None: unsafe()
     if sys.version_info >= (3, 12):
-        def __class_getitem__(cls, item: Any, /) -> GenericAlias: ...
+        def __class_getitem__(cls, item: Any, /) -> GenericAlias: no_effects()
 
 class Sniffer:
     preferred: list[str]
-    def sniff(self, sample: str, delimiters: str | None = None) -> type[Dialect]: ...
-    def has_header(self, sample: str) -> bool: ...
+    def sniff(self, sample: str, delimiters: str | None = None) -> type[Dialect]: no_effects()
+    def has_header(self, sample: str) -> bool: no_effects()
