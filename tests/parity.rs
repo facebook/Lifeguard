@@ -20,6 +20,58 @@ mod tests {
     use lifeguard::test_lib::assert_paths_agree_sharded;
     use lifeguard::test_lib::path_differences;
 
+    /// Assert a known gap precisely, so that any new unknown failures still show up.
+    fn assert_known_gap(
+        modules: &Vec<(&str, &str)>,
+        whole_program_passing: &str,
+        incremental_passing: &str,
+        single_shard_reason: &str,
+    ) {
+        let differences = path_differences(modules, &[1, 2, 3]);
+
+        let diverging: Vec<usize> = differences.iter().map(|(count, _)| *count).collect();
+        assert_eq!(diverging, vec![2, 3], "{}", single_shard_reason);
+        for (count, difference) in &differences {
+            assert!(
+                difference.starts_with("passing modules:"),
+                "{count} shards: expected a passing-module difference, got: {difference}",
+            );
+            // Located by content and relative position rather than by matching
+            // the rendered label, so reformatting the message cannot turn this
+            // into an assertion that quietly checks nothing.
+            let whole_program = difference.find(whole_program_passing);
+            let incremental = difference.find(incremental_passing);
+            assert!(
+                matches!((whole_program, incremental), (Some(w), Some(i)) if w < i),
+                "{count} shards: expected whole-program to pass `app` and incremental to fail it \
+                 (conservative, not a false-safe), got: {difference}",
+            );
+        }
+    }
+
+    /// The two star fixtures diverge identically: the symbol's own safety does
+    /// not reach the outcome while the import is unresolved.
+    fn assert_star_import_gap(modules: &Vec<(&str, &str)>) {
+        assert_known_gap(
+            modules,
+            r#"["app", "starbase", "starmid"]"#,
+            r#"["starbase", "starmid"]"#,
+            "one shard can expand the star locally, so the gap needs a split to appear",
+        );
+    }
+
+    /// The chained-call fixtures below diverge the same way: A shard holding `app`
+    /// alone falls back to `UnknownFunctionCall <chained method>`, which the
+    /// reduce cannot resolve because it names no callee.
+    fn assert_chained_call_gap(modules: &Vec<(&str, &str)>) {
+        assert_known_gap(
+            modules,
+            r#"["app", "base", "sub"]"#,
+            r#"["base", "sub"]"#,
+            "one shard keeps every module in one library, so the gap needs a split to appear",
+        );
+    }
+
     #[test]
     fn mixed_safe_and_unsafe_modules_agree() {
         let safe_module = r#"
@@ -158,21 +210,7 @@ mod tests {
         ]);
     }
 
-    /// KNOWN GAP -- cross-library parameter forwarding.
-    ///
-    /// `app` passes an imported module into `forward`, which forwards it into
-    /// `sink`, which mutates it. Seeing that requires combining facts from three
-    /// modules, and the map phase serializes only its own action-local
-    /// mutated-parameter fixpoint, not the forwarding edges that would let the
-    /// reduce finish the closure. So once `sink`, `midlib` and `app` land in
-    /// different shards the mutation becomes invisible.
-    ///
-    /// The divergence is a false-safe, which is the dangerous direction: the
-    /// whole-program path fails `app`, the incremental path passes it. Closing it
-    /// needs the map to emit forwarding edges for the reduce to close over.
-    ///
-    /// Asserted as a precise disagreement so the gap stays visible without a
-    /// red build. Anything other than this exact divergence fails.
+    /// KNOWN GAP (T288043641) -- cross-library parameter forwarding.
     #[test]
     fn two_hop_cross_library_forwarding_is_a_known_gap() {
         let other = r#"
@@ -226,6 +264,216 @@ mod tests {
                  (a false-safe), got: {difference}",
             );
         }
+    }
+
+    #[test]
+    fn parent_fallback_shadowing_agrees() {
+        // `pkg.sub` is a real module, so `import pkg.sub` must resolve exactly.
+        // A shard holding `pkg` but not `pkg.sub` can only resolve the import to
+        // the parent, and the reduce has to refine that once the exact module
+        // shows up. Committing the parent early would attach the dependency to
+        // the wrong module.
+        let pkg = r#"
+            PARENT = 1
+        "#;
+        let pkg_sub = r#"
+            import os
+
+            CHILD = os.environ['HOME']
+        "#;
+        let app = r#"
+            import pkg.sub
+
+            value = pkg.sub.CHILD
+        "#;
+        assert_paths_agree_sharded(&[("pkg", pkg), ("pkg.sub", pkg_sub), ("app", app)]);
+    }
+
+    #[test]
+    fn ambiguous_from_import_agrees() {
+        // `from pkg import thing` is ambiguous in a shard that has `pkg` but not
+        // `pkg.thing`: it could be a submodule or an attribute of `pkg`. Here it
+        // is a submodule, so the reduce must resolve it to one once both are
+        // present. `attr` is the other reading, kept alongside so a fix that
+        // simply treats every ambiguous name as a submodule fails.
+        let pkg = r#"
+            attr = 1
+        "#;
+        let pkg_thing = r#"
+            import os
+
+            VALUE = os.environ['HOME']
+        "#;
+        let app = r#"
+            from pkg import thing
+            from pkg import attr
+        "#;
+        assert_paths_agree_sharded(&[("pkg", pkg), ("pkg.thing", pkg_thing), ("app", app)]);
+    }
+
+    /// KNOWN GAP (T288043164) -- star-import expansion.
+    #[test]
+    fn star_import_is_a_known_gap() {
+        let starbase = r#"
+            def helper():
+                return 1
+
+            VALUE = 2
+        "#;
+        let starmid = r#"
+            from starbase import *
+        "#;
+        let app = r#"
+            from starmid import helper
+
+            value = helper()
+        "#;
+        assert_star_import_gap(&vec![
+            ("starbase", starbase),
+            ("starmid", starmid),
+            ("app", app),
+        ]);
+    }
+
+    /// The same gap as [`star_import_is_a_known_gap`], with the star-imported
+    /// symbol unsafe rather than safe. Kept separate because the two exercise
+    /// different verdicts once the reduce can discharge the obligation.
+    #[test]
+    fn star_import_of_unsafe_symbol_is_a_known_gap() {
+        let starbase = r#"
+            import os
+
+            def helper():
+                return os.environ['HOME']
+        "#;
+        let starmid = r#"
+            from starbase import *
+        "#;
+        let app = r#"
+            from starmid import helper
+
+            value = helper()
+        "#;
+        assert_star_import_gap(&vec![
+            ("starbase", starbase),
+            ("starmid", starmid),
+            ("app", app),
+        ]);
+    }
+
+    #[test]
+    fn inherited_method_is_a_known_gap() {
+        // Calling `Sub.method` resolves through the MRO to a base class in
+        // another module, so the reduce has to complete the linearization from
+        // cached class bases rather than from a local class table.
+        let base = r#"
+            class Base:
+                def method(self):
+                    return 1
+        "#;
+        let sub = r#"
+            from base import Base
+
+            class Sub(Base):
+                pass
+        "#;
+        let app = r#"
+            from sub import Sub
+
+            value = Sub().method()
+        "#;
+        assert_chained_call_gap(&vec![("base", base), ("sub", sub), ("app", app)]);
+    }
+
+    #[test]
+    fn inherited_unsafe_method_is_a_known_gap() {
+        let base = r#"
+            import os
+
+            class Base:
+                def method(self):
+                    return os.environ['HOME']
+        "#;
+        let sub = r#"
+            from base import Base
+
+            class Sub(Base):
+                pass
+        "#;
+        let app = r#"
+            from sub import Sub
+
+            value = Sub().method()
+        "#;
+        assert_chained_call_gap(&vec![("base", base), ("sub", sub), ("app", app)]);
+    }
+
+    #[test]
+    fn overriding_method_shadows_base_is_a_known_gap() {
+        // The override must win over the inherited method in both paths; the
+        // reduce walks the MRO only when the class has no entry of its own.
+        let base = r#"
+            class Base:
+                def method(self):
+                    return 1
+        "#;
+        let sub = r#"
+            import os
+            from base import Base
+
+            class Sub(Base):
+                def method(self):
+                    return os.environ['HOME']
+        "#;
+        let app = r#"
+            from sub import Sub
+
+            value = Sub().method()
+        "#;
+        assert_chained_call_gap(&vec![("base", base), ("sub", sub), ("app", app)]);
+    }
+
+    #[test]
+    fn re_export_chain_agrees() {
+        let origin = r#"
+            import os
+
+            def thing():
+                return os.environ['HOME']
+        "#;
+        let hop_one = r#"
+            from origin import thing
+        "#;
+        let hop_two = r#"
+            from hop_one import thing
+        "#;
+        let app = r#"
+            from hop_two import thing
+
+            value = thing()
+        "#;
+        assert_paths_agree_sharded(&[
+            ("origin", origin),
+            ("hop_one", hop_one),
+            ("hop_two", hop_two),
+            ("app", app),
+        ]);
+    }
+
+    #[test]
+    fn re_export_cycle_agrees() {
+        // A cycle in the re-export graph: both paths resolve chains, and both
+        // have to terminate rather than loop.
+        let cyc_a = r#"
+            from cyc_b import thing
+        "#;
+        let cyc_b = r#"
+            from cyc_a import thing
+        "#;
+        let app = r#"
+            from cyc_a import thing
+        "#;
+        assert_paths_agree_sharded(&[("cyc_a", cyc_a), ("cyc_b", cyc_b), ("app", app)]);
     }
 
     #[test]
