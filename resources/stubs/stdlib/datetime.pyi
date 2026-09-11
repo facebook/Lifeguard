@@ -40,19 +40,19 @@ class timezone(tzinfo):
     def __new__(cls, offset: timedelta, name: str = ...) -> Self: no_effects()
     def tzname(self, dt: datetime | None, /) -> str:
         """If name is specified when timezone is created, returns the name.  Otherwise returns offset as 'UTC(+|-)HH:MM'."""
-        ...
+        no_effects()
     def utcoffset(self, dt: datetime | None, /) -> timedelta:
         """Return fixed offset."""
-        ...
+        no_effects()
     def dst(self, dt: datetime | None, /) -> None:
         """Return None."""
-        ...
+        no_effects()
     def __hash__(self) -> int:
         """Return hash(self)."""
-        ...
+        no_effects()
     def __eq__(self, value: object, /) -> bool:
         """Return self==value."""
-        ...
+        no_effects()
 
 if sys.version_info >= (3, 11):
     UTC: timezone
@@ -63,11 +63,11 @@ if sys.version_info >= (3, 11):
 @type_check_only
 class _IsoCalendarDate(tuple[int, int, int]):
     @property
-    def year(self) -> int: ...
+    def year(self) -> int: no_effects()
     @property
-    def week(self) -> int: ...
+    def week(self) -> int: no_effects()
     @property
-    def weekday(self) -> int: ...
+    def weekday(self) -> int: no_effects()
 
 @disjoint_base
 class date:
@@ -83,19 +83,19 @@ class date:
         The timestamp is a number, e.g. created via time.time(), that is interpreted
         as local time.
         """
-        ...
+        no_effects()
     @classmethod
     def today(cls) -> Self:
         """Current date or datetime:  same as self.__class__.fromtimestamp(time.time())."""
-        ...
+        no_effects()
     @classmethod
     def fromordinal(cls, n: int, /) -> Self:
         """int -> date corresponding to a proleptic Gregorian ordinal."""
-        ...
+        no_effects()
     @classmethod
     def fromisoformat(cls, date_string: str, /) -> Self:
         """str -> Construct a date from a string in ISO 8601 format."""
-        ...
+        no_effects()
     @classmethod
     def fromisocalendar(cls, year: int, week: int, day: int) -> Self:
         """
@@ -103,16 +103,16 @@ class date:
 
         This is the inverse of the date.isocalendar() function
         """
-        ...
+        no_effects()
     @property
-    def year(self) -> int: ...
+    def year(self) -> int: no_effects()
     @property
-    def month(self) -> int: ...
+    def month(self) -> int: no_effects()
     @property
-    def day(self) -> int: ...
+    def day(self) -> int: no_effects()
     def ctime(self) -> str:
         """Return ctime() style string."""
-        ...
+        no_effects()
 
     if sys.version_info >= (3, 14):
         @classmethod
@@ -133,44 +133,44 @@ class date:
         ...
     def isoformat(self) -> str:
         """Return string in ISO 8601 format, YYYY-MM-DD."""
-        ...
+        no_effects()
     def timetuple(self) -> struct_time:
         """Return time tuple, compatible with time.localtime()."""
         ...
     def toordinal(self) -> int:
         """Return proleptic Gregorian ordinal.  January 1 of year 1 is day 1."""
-        ...
+        no_effects()
     if sys.version_info >= (3, 13):
-        def __replace__(self, /, *, year: SupportsIndex = ..., month: SupportsIndex = ..., day: SupportsIndex = ...) -> Self: ...
+        def __replace__(self, /, *, year: SupportsIndex = ..., month: SupportsIndex = ..., day: SupportsIndex = ...) -> Self: no_effects()
 
     def replace(self, year: SupportsIndex = ..., month: SupportsIndex = ..., day: SupportsIndex = ...) -> Self:
         """Return date with new specified fields."""
-        ...
+        no_effects()
     def __le__(self, value: date, /) -> bool:
         """Return self<=value."""
-        ...
+        no_effects()
     def __lt__(self, value: date, /) -> bool:
         """Return self<value."""
-        ...
+        no_effects()
     def __ge__(self, value: date, /) -> bool:
         """Return self>=value."""
-        ...
+        no_effects()
     def __gt__(self, value: date, /) -> bool:
         """Return self>value."""
-        ...
+        no_effects()
     def __eq__(self, value: object, /) -> bool:
         """Return self==value."""
-        ...
+        no_effects()
     def __add__(self, value: timedelta, /) -> Self:
         """Return self+value."""
-        ...
+        no_effects()
     def __radd__(self, value: timedelta, /) -> Self:
         """Return value+self."""
-        ...
+        no_effects()
     @overload
     def __sub__(self, value: datetime, /) -> NoReturn:
         """Return self-value."""
-        ...
+        no_effects()
     @overload
     def __sub__(self, value: Self, /) -> timedelta:
         """Return self-value."""
@@ -181,22 +181,22 @@ class date:
         ...
     def __hash__(self) -> int:
         """Return hash(self)."""
-        ...
+        no_effects()
     def weekday(self) -> int:
         """
         Return the day of the week represented by the date.
         Monday == 0 ... Sunday == 6
         """
-        ...
+        no_effects()
     def isoweekday(self) -> int:
         """
         Return the day of the week represented by the date.
         Monday == 1 ... Sunday == 7
         """
-        ...
+        no_effects()
     def isocalendar(self) -> _IsoCalendarDate:
         """Return a named tuple containing ISO year, week number, and weekday."""
-        ...
+        no_effects()
 
 @disjoint_base
 class time:
@@ -214,17 +214,17 @@ class time:
         fold: int = 0,
     ) -> Self: no_effects()
     @property
-    def hour(self) -> int: ...
+    def hour(self) -> int: no_effects()
     @property
-    def minute(self) -> int: ...
+    def minute(self) -> int: no_effects()
     @property
-    def second(self) -> int: ...
+    def second(self) -> int: no_effects()
     @property
-    def microsecond(self) -> int: ...
+    def microsecond(self) -> int: no_effects()
     @property
-    def tzinfo(self) -> _TzInfo | None: ...
+    def tzinfo(self) -> _TzInfo | None: no_effects()
     @property
-    def fold(self) -> int: ...
+    def fold(self) -> int: no_effects()
     def __le__(self, value: time, /) -> bool:
         """Return self<=value."""
         ...
@@ -255,7 +255,7 @@ class time:
     @classmethod
     def fromisoformat(cls, time_string: str, /) -> Self:
         """string -> time from a string in ISO 8601 format"""
-        ...
+        no_effects()
 
     if sys.version_info >= (3, 14):
         @classmethod
@@ -294,7 +294,7 @@ class time:
             microsecond: SupportsIndex = ...,
             tzinfo: _TzInfo | None = ...,
             fold: int = ...,
-        ) -> Self: ...
+        ) -> Self: no_effects()
 
     def replace(
         self,
@@ -307,7 +307,7 @@ class time:
         fold: int = ...,
     ) -> Self:
         """Return time with new specified fields."""
-        ...
+        no_effects()
 
 _Date: TypeAlias = date
 _Time: TypeAlias = time
@@ -330,49 +330,49 @@ class timedelta:
     @property
     def days(self) -> int:
         """Number of days."""
-        ...
+        no_effects()
     @property
     def seconds(self) -> int:
         """Number of seconds (>= 0 and less than 1 day)."""
-        ...
+        no_effects()
     @property
     def microseconds(self) -> int:
         """Number of microseconds (>= 0 and less than 1 second)."""
-        ...
+        no_effects()
     def total_seconds(self) -> float:
         """Total seconds in the duration."""
-        ...
+        no_effects()
     def __add__(self, value: timedelta, /) -> timedelta:
         """Return self+value."""
-        ...
+        no_effects()
     def __radd__(self, value: timedelta, /) -> timedelta:
         """Return value+self."""
-        ...
+        no_effects()
     def __sub__(self, value: timedelta, /) -> timedelta:
         """Return self-value."""
-        ...
+        no_effects()
     def __rsub__(self, value: timedelta, /) -> timedelta:
         """Return value-self."""
-        ...
+        no_effects()
     def __neg__(self) -> timedelta:
         """-self"""
-        ...
+        no_effects()
     def __pos__(self) -> timedelta:
         """+self"""
-        ...
+        no_effects()
     def __abs__(self) -> timedelta:
         """abs(self)"""
-        ...
+        no_effects()
     def __mul__(self, value: float, /) -> timedelta:
         """Return self*value."""
-        ...
+        no_effects()
     def __rmul__(self, value: float, /) -> timedelta:
         """Return value*self."""
-        ...
+        no_effects()
     @overload
     def __floordiv__(self, value: timedelta, /) -> int:
         """Return self//value."""
-        ...
+        no_effects()
     @overload
     def __floordiv__(self, value: int, /) -> timedelta:
         """Return self//value."""
@@ -380,38 +380,38 @@ class timedelta:
     @overload
     def __truediv__(self, value: timedelta, /) -> float:
         """Return self/value."""
-        ...
+        no_effects()
     @overload
     def __truediv__(self, value: float, /) -> timedelta:
         """Return self/value."""
         ...
     def __mod__(self, value: timedelta, /) -> timedelta:
         """Return self%value."""
-        ...
+        no_effects()
     def __divmod__(self, value: timedelta, /) -> tuple[int, timedelta]:
         """Return divmod(self, value)."""
-        ...
+        no_effects()
     def __le__(self, value: timedelta, /) -> bool:
         """Return self<=value."""
-        ...
+        no_effects()
     def __lt__(self, value: timedelta, /) -> bool:
         """Return self<value."""
-        ...
+        no_effects()
     def __ge__(self, value: timedelta, /) -> bool:
         """Return self>=value."""
-        ...
+        no_effects()
     def __gt__(self, value: timedelta, /) -> bool:
         """Return self>value."""
-        ...
+        no_effects()
     def __eq__(self, value: object, /) -> bool:
         """Return self==value."""
-        ...
+        no_effects()
     def __bool__(self) -> bool:
         """True if self else False"""
-        ...
+        no_effects()
     def __hash__(self) -> int:
         """Return hash(self)."""
-        ...
+        no_effects()
 
 @disjoint_base
 class datetime(date):
@@ -431,17 +431,17 @@ class datetime(date):
         fold: int = 0,
     ) -> Self: no_effects()
     @property
-    def hour(self) -> int: ...
+    def hour(self) -> int: no_effects()
     @property
-    def minute(self) -> int: ...
+    def minute(self) -> int: no_effects()
     @property
-    def second(self) -> int: ...
+    def second(self) -> int: no_effects()
     @property
-    def microsecond(self) -> int: ...
+    def microsecond(self) -> int: no_effects()
     @property
-    def tzinfo(self) -> _TzInfo | None: ...
+    def tzinfo(self) -> _TzInfo | None: no_effects()
     @property
-    def fold(self) -> int: ...
+    def fold(self) -> int: no_effects()
     # On <3.12, the name of the first parameter in the pure-Python implementation
     # didn't match the name in the C implementation,
     # meaning it is only *safe* to pass it as a keyword argument on 3.12+
@@ -458,7 +458,7 @@ class datetime(date):
     @deprecated("Use timezone-aware objects to represent datetimes in UTC; e.g. by calling .fromtimestamp(datetime.timezone.utc)")
     def utcfromtimestamp(cls, t: float, /) -> Self:
         """Construct a naive UTC datetime from a POSIX timestamp."""
-        ...
+        no_effects()
     @classmethod
     def now(cls, tz: _TzInfo | None = None) -> Self:
         """
@@ -474,11 +474,11 @@ class datetime(date):
     @deprecated("Use timezone-aware objects to represent datetimes in UTC; e.g. by calling .now(datetime.timezone.utc)")
     def utcnow(cls) -> Self:
         """Return a new datetime representing UTC day and time."""
-        ...
+        no_effects()
     @classmethod
     def combine(cls, date: _Date, time: _Time, tzinfo: _TzInfo | None = ...) -> Self:
         """date, time -> datetime with same date and time fields"""
-        ...
+        no_effects()
     def timestamp(self) -> float:
         """Return POSIX timestamp as float."""
         ...
@@ -487,13 +487,13 @@ class datetime(date):
         ...
     def date(self) -> _Date:
         """Return date object with same year, month and day."""
-        ...
+        no_effects()
     def time(self) -> _Time:
         """Return time object with same time but with tzinfo=None."""
-        ...
+        no_effects()
     def timetz(self) -> _Time:
         """Return time object with same time and tzinfo."""
-        ...
+        no_effects()
     if sys.version_info >= (3, 13):
         def __replace__(
             self,
@@ -508,7 +508,7 @@ class datetime(date):
             microsecond: SupportsIndex = ...,
             tzinfo: _TzInfo | None = ...,
             fold: int = ...,
-        ) -> Self: ...
+        ) -> Self: no_effects()
 
     def replace(
         self,
@@ -524,7 +524,7 @@ class datetime(date):
         fold: int = ...,
     ) -> Self:
         """Return datetime with new specified fields."""
-        ...
+        no_effects()
     def astimezone(self, tz: _TzInfo | None = None) -> Self:
         """tz -> convert to local time in new timezone tz"""
         ...
