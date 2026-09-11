@@ -781,12 +781,11 @@ impl<'a, 'b> BindingsTableBuilder<'a, 'b> {
     fn ann_assign(&mut self, x: &StmtAnnAssign) {
         if let Some(val) = &x.value {
             self.assign_single(&x.target, val.as_ref())
-        } else if self.trust_annotations() {
-            if let Some(name) = x.target.as_var_name() {
-                if let Some(class_name) = self.resolve_to_class(&x.annotation) {
-                    self.add_binding(name, Value::Instance(class_name));
-                }
-            }
+        } else if self.trust_annotations()
+            && let Some(name) = x.target.as_var_name()
+            && let Some(class_name) = self.resolve_to_class(&x.annotation)
+        {
+            self.add_binding(name, Value::Instance(class_name));
         }
     }
 
