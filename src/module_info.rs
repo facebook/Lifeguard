@@ -136,7 +136,7 @@ impl DefinitionTable {
         name: Name,
         lookup_range: TextRange,
     ) -> Option<ResolvedName<'_>> {
-        for scope in cursor.legb_scope_names_iter() {
+        for (scope, _kind) in cursor.legb_scopes_iter() {
             if let Some((scope_definitions, definition)) =
                 self.get_at_range(&scope, &name, lookup_range)
             {
@@ -574,7 +574,7 @@ impl<'a> CombinedDefinitionClassBuilder<'a> {
     }
 
     fn resolve_name(&self, name: Name) -> Option<ResolvedName<'_>> {
-        for scope in self.cursor.legb_scope_names_iter() {
+        for (scope, _kind) in self.cursor.legb_scopes_iter() {
             if let Some(defs) = self.definitions_map.get(&scope) {
                 if let Some(def) = defs.definitions.get(&name) {
                     return Some(ResolvedName {

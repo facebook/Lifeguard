@@ -113,7 +113,7 @@ impl BlockStack {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ScopeKind {
     Module,
     Class,
@@ -235,49 +235,23 @@ impl Cursor {
         self.qualified_scopes.iter().rev().copied()
     }
 
-    /// Get an iterator over scopes following Python's LEGB rule:
+    /// Scopes in Python's LEGB order, each with its kind:
     /// Local -> Enclosing functions (skipping class scopes) -> Global (module scope).
     /// Builtins are handled separately.
-    pub fn legb_scope_names_iter(&self) -> impl Iterator<Item = ModuleName> {
-        let len = self.scopes.len();
-        let mut names = Vec::with_capacity(len);
-
-        if len > 0 {
-            // L: current (innermost) scope
-            names.push(self.qualified_scopes[len - 1]);
-
-            // E: walk outward, skipping class scopes, until we hit module scope
-            let mut in_function = self.scopes[len - 1].kind == ScopeKind::Function;
-            let mut included_module = false;
-            for i in (1..len - 1).rev() {
-                match self.scopes[i].kind {
-                    ScopeKind::Class => {
-                        // If we are inside a function looking outward, skip class scopes
-                        // (Python's LEGB rule: class bodies don't create enclosing scopes
-                        // for nested functions). But if we're in a class scope directly
-                        // (e.g. class body referencing class-level vars), include it.
-                        if !in_function {
-                            names.push(self.qualified_scopes[i]);
-                        }
-                    }
-                    ScopeKind::Function => {
-                        names.push(self.qualified_scopes[i]);
-                        in_function = true;
-                    }
-                    ScopeKind::Module => {
-                        names.push(self.qualified_scopes[i]);
-                        included_module = true;
-                    }
-                }
-            }
-
-            // G: module scope (index 0) - always included if not already
-            if len > 1 && !included_module {
-                names.push(self.qualified_scopes[0]);
-            }
-        }
-
-        names.into_iter()
+    pub fn legb_scopes_iter(&self) -> impl Iterator<Item = (ModuleName, ScopeKind)> + '_ {
+        let mut in_function = false;
+        self.scopes
+            .iter()
+            .zip(&self.qualified_scopes)
+            .rev()
+            // A class body is not an enclosing scope for a function nested in it,
+            // so once the walk is inside a function, outer class scopes are skipped.
+            .filter(move |(scope, _)| {
+                let keep = scope.kind != ScopeKind::Class || !in_function;
+                in_function |= scope.kind == ScopeKind::Function;
+                keep
+            })
+            .map(|(scope, qualified)| (*qualified, scope.kind))
     }
 
     /// Get a vector containing the base name of each scope, starting with the outermost scope.
@@ -408,11 +382,11 @@ mod tests {
         c.enter_function_scope_name(Name::new("f"));
 
         // LEGB should be: f (local) -> mod (global), skipping A (class)
-        let expected = ["mod.A.f", "mod"]
-            .iter()
-            .map(|s| ModuleName::from_str(s))
-            .collect::<Vec<_>>();
-        let actual = c.legb_scope_names_iter().collect::<Vec<_>>();
+        let expected = vec![
+            (ModuleName::from_str("mod.A.f"), ScopeKind::Function),
+            (ModuleName::from_str("mod"), ScopeKind::Module),
+        ];
+        let actual = c.legb_scopes_iter().collect::<Vec<_>>();
         assert_eq!(expected, actual);
     }
 
@@ -423,11 +397,11 @@ mod tests {
         c.enter_class_scope_name(Name::new("A"));
 
         // LEGB should be: A (local/class) -> mod (global)
-        let expected = ["mod.A", "mod"]
-            .iter()
-            .map(|s| ModuleName::from_str(s))
-            .collect::<Vec<_>>();
-        let actual = c.legb_scope_names_iter().collect::<Vec<_>>();
+        let expected = vec![
+            (ModuleName::from_str("mod.A"), ScopeKind::Class),
+            (ModuleName::from_str("mod"), ScopeKind::Module),
+        ];
+        let actual = c.legb_scopes_iter().collect::<Vec<_>>();
         assert_eq!(expected, actual);
     }
 
@@ -526,11 +500,12 @@ mod tests {
         c.enter_function_scope_name(Name::new("f"));
         c.enter_function_scope_name(Name::new("g"));
 
-        let expected = ["mod.f.g", "mod.f", "mod"]
-            .iter()
-            .map(|s| ModuleName::from_str(s))
-            .collect::<Vec<_>>();
-        let actual = c.legb_scope_names_iter().collect::<Vec<_>>();
+        let expected = vec![
+            (ModuleName::from_str("mod.f.g"), ScopeKind::Function),
+            (ModuleName::from_str("mod.f"), ScopeKind::Function),
+            (ModuleName::from_str("mod"), ScopeKind::Module),
+        ];
+        let actual = c.legb_scopes_iter().collect::<Vec<_>>();
         assert_eq!(expected, actual);
     }
 }
