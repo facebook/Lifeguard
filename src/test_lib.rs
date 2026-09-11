@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs;
+use std::num::NonZeroUsize;
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -21,6 +22,9 @@ use rayon::prelude::*;
 use tempfile::TempDir;
 
 use crate::analyzer::analyze;
+use crate::cache::CachedError;
+use crate::cache::CachedModuleSafety;
+use crate::cache::CachedSafety;
 use crate::cache::LibraryCache;
 use crate::cache::ReduceWorkspace;
 use crate::config::AnalysisConfig;
@@ -743,13 +747,35 @@ pub fn verbose_test_options() -> Options {
 /// directly when the test needs to build its own [`TestSources`], for example
 /// to inject parse errors.
 pub fn run_analysis_on(sources: &TestSources) -> (AnalysisOutput, ImportGraph, Exports) {
-    let config = AnalysisConfig::default();
-    let (import_graph, exports, in_scope) = ImportGraph::make_with_exports(sources, &config);
+    run_analysis_configured(sources, &AnalysisConfig::default())
+}
+
+/// [`run_analysis_on`] with the analysis configured from `options`, the way
+/// `runner::analyze_whole_program` configures the real whole-program run.
+///
+/// The parity harness needs this: the incremental side applies `main_module` at
+/// reduce time, so a whole-program side pinned to `AnalysisConfig::default()`
+/// answers a different question -- it analyzes a `__main__` guard the other
+/// path has already filtered out -- and no fixture can exercise the guard
+/// through both paths.
+fn run_analysis_with_options(
+    sources: &TestSources,
+    options: &Options,
+) -> (AnalysisOutput, ImportGraph, Exports) {
+    let config = AnalysisConfig::with_python_version(options.python_version, options.main_module);
+    run_analysis_configured(sources, &config)
+}
+
+fn run_analysis_configured(
+    sources: &TestSources,
+    config: &AnalysisConfig,
+) -> (AnalysisOutput, ImportGraph, Exports) {
+    let (import_graph, exports, in_scope) = ImportGraph::make_with_exports(sources, config);
     let output = project::run_analysis(
         sources,
         &exports,
         &import_graph,
-        &config,
+        config,
         project::ExecutionMode::WholeProgram,
         &in_scope,
     );
@@ -770,12 +796,7 @@ pub fn run_lifeguard_analysis_with(
 
 pub fn run_lifeguard_analysis_on(sources: &TestSources, options: &Options) -> LifeGuardAnalysis {
     let (output, import_graph, exports) = run_analysis_on(sources);
-    for entry in output.parse_errors.iter() {
-        output.safety_map.insert(
-            *entry.key(),
-            SafetyResult::AnalysisError(anyhow::anyhow!("Parse error: {}", entry.value())),
-        );
-    }
+    surface_parse_errors(&output);
     LifeGuardAnalysis::from_whole_program(
         output.safety_map,
         import_graph,
@@ -819,6 +840,442 @@ pub fn check_buck_availability() -> bool {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Cross-path parity
+// ---------------------------------------------------------------------------
+
+/// How the incremental side of a parity check splits its input.
+///
+/// Sharding is what distinguishes the two paths in practice: with one shard the
+/// map phase still sees every module, so cross-library resolution is never
+/// exercised. Splitting the same modules across shards forces the analysis to
+/// travel through cached facts, missing-import obligations, and the merge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Shards(NonZeroUsize);
+
+impl Shards {
+    /// Zero shards is not a partition, and `of` would divide by it. Rejected at
+    /// construction so the count cannot be zero anywhere downstream; the panic
+    /// names the problem rather than surfacing as an arithmetic fault.
+    pub fn new(count: usize) -> Self {
+        Self(NonZeroUsize::new(count).expect("a parity check needs at least one shard"))
+    }
+
+    fn count(self) -> usize {
+        self.0.get()
+    }
+
+    /// Assign a module to a shard by position. Deterministic, and it interleaves
+    /// neighbouring modules into different shards to simulate library boundaries.
+    fn of(self, index: usize) -> usize {
+        index % self.count()
+    }
+}
+
+/// Partition `modules` into `shards` groups, preserving relative order within
+/// each group. Empty groups are dropped: a library with no sources is a
+/// different code path (`LibraryCache::empty`) and not what these tests target.
+pub fn partition_modules<'a>(
+    modules: &[(&'a str, &'a str)],
+    shards: Shards,
+) -> Vec<Vec<(&'a str, &'a str)>> {
+    let mut groups = vec![Vec::new(); shards.count()];
+    for (index, module) in modules.iter().enumerate() {
+        groups[shards.of(index)].push(*module);
+    }
+    groups.retain(|group| !group.is_empty());
+    groups
+}
+
+/// Build one library cache, the way the map phase (`analyze-library`) does.
+pub fn build_library_cache(sources: &TestSources) -> LibraryCache {
+    let config = AnalysisConfig::default();
+    let (import_graph, exports, in_scope) = ImportGraph::make_with_exports(sources, &config);
+    let output = project::run_analysis(
+        sources,
+        &exports,
+        &import_graph,
+        &config,
+        project::ExecutionMode::Incremental,
+        &in_scope,
+    );
+    surface_parse_errors(&output);
+
+    let mut cache = LibraryCache::build(
+        &output.safety_map,
+        &import_graph,
+        &exports,
+        &output.side_effect_imports,
+    );
+    cache.set_class_bases(output.class_bases);
+    cache.set_constructor_callees(output.constructor_callees);
+    cache
+}
+
+/// Per-module errors, keyed by module and rendered as `<kind> <metadata>`.
+/// Regular errors and eager-loading overrides are kept apart because they drive
+/// different parts of the output.
+type ModuleErrors = Vec<(String, Vec<String>, Vec<String>)>;
+
+fn sorted_strings(mut values: Vec<String>) -> Vec<String> {
+    values.sort();
+    values
+}
+
+fn module_name_strings<'a>(names: impl IntoIterator<Item = &'a ModuleName>) -> Vec<String> {
+    names
+        .into_iter()
+        .map(|name| name.as_str().to_owned())
+        .collect()
+}
+
+fn sorted_module_name_strings<'a>(names: impl IntoIterator<Item = &'a ModuleName>) -> Vec<String> {
+    sorted_strings(module_name_strings(names))
+}
+
+fn surface_parse_errors(output: &AnalysisOutput) {
+    for entry in output.parse_errors.iter() {
+        output.safety_map.insert(
+            *entry.key(),
+            SafetyResult::AnalysisError(anyhow::anyhow!("Parse error: {}", entry.value())),
+        );
+    }
+}
+
+trait ErrorLists {
+    type Error;
+
+    fn errors(&self) -> &[Self::Error];
+    fn overrides(&self) -> &[Self::Error];
+}
+
+impl ErrorLists for ModuleSafety {
+    type Error = SafetyError;
+
+    fn errors(&self) -> &[SafetyError] {
+        &self.errors
+    }
+
+    fn overrides(&self) -> &[SafetyError] {
+        &self.force_imports_eager_overrides
+    }
+}
+
+impl ErrorLists for CachedModuleSafety {
+    type Error = CachedError;
+
+    fn errors(&self) -> &[CachedError] {
+        &self.errors
+    }
+
+    fn overrides(&self) -> &[CachedError] {
+        &self.force_imports_eager_overrides
+    }
+}
+
+fn module_errors_entry<S: ErrorLists>(
+    name: &ModuleName,
+    safety: &S,
+    render: impl Fn(&S::Error) -> String,
+) -> Option<(String, Vec<String>, Vec<String>)> {
+    let errors = sorted_strings(safety.errors().iter().map(&render).collect());
+    let overrides = sorted_strings(safety.overrides().iter().map(render).collect());
+    (!errors.is_empty() || !overrides.is_empty())
+        .then(|| (name.as_str().to_owned(), errors, overrides))
+}
+
+/// Per-module errors from the whole-program safety map.
+fn whole_program_module_errors(safety_map: &SafetyMap) -> ModuleErrors {
+    let mut errors: ModuleErrors = safety_map
+        .iter()
+        .filter_map(|entry| {
+            let safety = entry.value().as_safety()?;
+            let render =
+                |error: &SafetyError| format!("{:?} {}", error.kind, error.metadata.as_str());
+            module_errors_entry(entry.key(), safety, render)
+        })
+        .collect();
+    errors.sort();
+    errors
+}
+
+/// Per-module errors from a resolved cache, rendered to match
+/// [`whole_program_module_errors`].
+fn cached_module_errors(cache: &LibraryCache) -> ModuleErrors {
+    let mut errors: ModuleErrors = cache
+        .modules
+        .iter()
+        .filter_map(|module| {
+            let CachedSafety::Ok(safety) = &module.safety else {
+                return None;
+            };
+            let render = |error: &CachedError| format!("{:?} {}", error.kind, error.metadata);
+            module_errors_entry(&module.name, safety, render)
+        })
+        .collect();
+    errors.sort();
+    errors
+}
+
+/// One path's result: the analysis plus the per-module errors behind it.
+///
+/// `LifeGuardAnalysis` aggregates errors program-wide, so it cannot show which
+/// module raised which. Two paths can therefore produce identical aggregate
+/// counts while attributing errors to different modules.
+pub struct PathRun {
+    analysis: LifeGuardAnalysis,
+    module_errors: ModuleErrors,
+}
+
+/// Run `modules` through the whole-program path.
+pub fn run_whole_program_path(modules: &[(&str, &str)], options: &Options) -> PathRun {
+    let sources = TestSources::new(modules);
+    let (output, import_graph, exports) = run_analysis_with_options(&sources, options);
+    surface_parse_errors(&output);
+
+    // Read the errors before `from_whole_program` consumes the safety map.
+    let module_errors = whole_program_module_errors(&output.safety_map);
+    let analysis = LifeGuardAnalysis::from_whole_program(
+        output.safety_map,
+        import_graph,
+        &exports,
+        &output.side_effect_imports,
+        options,
+    );
+    PathRun {
+        analysis,
+        module_errors,
+    }
+}
+
+/// Run `modules` through the incremental path: map each shard to a cache, then
+/// merge and reduce them exactly as `analyze-binary` does.
+pub fn run_incremental_analysis(
+    modules: &[(&str, &str)],
+    shards: Shards,
+    options: &Options,
+) -> PathRun {
+    let caches: Vec<LibraryCache> = partition_modules(modules, shards)
+        .into_iter()
+        .map(|group| build_library_cache(&TestSources::new(&group)))
+        .collect();
+    let resolved = ReduceWorkspace::merge(caches, options.python_version)
+        .expect("a parity fixture should produce at least one cache")
+        .resolve();
+    PathRun {
+        analysis: LifeGuardAnalysis::from_resolved_cache(&resolved, options),
+        module_errors: cached_module_errors(resolved.resolved_cache()),
+    }
+}
+
+/// The parts of an analysis the two paths are required to agree on.
+///
+/// Source ranges are the one contract field missing: `CachedError` drops them,
+/// so the incremental path cannot report them at all and comparing locations
+/// would be comparing nothing. Everything else an analysis can express is here,
+/// including per-module error attribution -- aggregate counts alone would let an
+/// error move between two already-failing modules unnoticed.
+#[derive(Debug, PartialEq, Eq)]
+struct ParityFacts {
+    passing: Vec<String>,
+    failing: Vec<String>,
+    load_imports_eagerly: Vec<String>,
+    lazy_eligible: Vec<(String, Vec<String>)>,
+    errors: Vec<(String, usize)>,
+    module_errors: ModuleErrors,
+    implicit_imports: Vec<(String, Vec<String>)>,
+    import_cycles: Vec<Vec<String>>,
+    report: Vec<String>,
+}
+
+impl ParityFacts {
+    fn of(run: &PathRun) -> Self {
+        let analysis = &run.analysis;
+
+        let mut lazy_eligible: Vec<(String, Vec<String>)> = analysis
+            .output
+            .lazy_eligible
+            .iter()
+            .map(|entry| {
+                (
+                    entry.key().as_str().to_owned(),
+                    sorted_module_name_strings(entry.value()),
+                )
+            })
+            .collect();
+        lazy_eligible.sort();
+
+        let mut errors: Vec<(String, usize)> = analysis
+            .summary
+            .aggregated_errors
+            .iter()
+            .map(|((kind, metadata), count)| (format!("{:?} {}", kind, metadata.as_str()), *count))
+            .collect();
+        errors.sort();
+
+        // Populated only in verbose mode, which is why the harness runs verbose.
+        // Unwrapped rather than flattened: `None` and `Some(empty)` would compare
+        // equal, so a path that stopped populating these would read as agreement.
+        let mut implicit_imports: Vec<(String, Vec<String>)> = analysis
+            .output
+            .implicit_imports
+            .as_ref()
+            .expect("the parity harness runs verbose, which populates implicit_imports")
+            .iter()
+            .map(|(module, imports)| {
+                (
+                    module.as_str().to_owned(),
+                    sorted_module_name_strings(imports),
+                )
+            })
+            .collect();
+        implicit_imports.sort();
+
+        let mut import_cycles: Vec<Vec<String>> = analysis
+            .output
+            .import_cycles
+            .as_ref()
+            .expect("the parity harness runs verbose, which populates import_cycles")
+            .iter()
+            .map(sorted_module_name_strings)
+            .collect();
+        import_cycles.sort();
+
+        Self {
+            passing: sorted_module_name_strings(&analysis.summary.passing_modules),
+            failing: sorted_module_name_strings(&analysis.summary.failing_modules),
+            load_imports_eagerly: sorted_module_name_strings(&analysis.output.load_imports_eagerly),
+            lazy_eligible,
+            errors,
+            module_errors: run.module_errors.clone(),
+            implicit_imports,
+            import_cycles,
+            // Compared as a sorted line multiset (the report renders `aggregated_errors` in
+            // hash-map order)
+            report: sorted_strings(analysis.get_report().lines().map(str::to_owned).collect()),
+        }
+    }
+}
+
+/// Report the first field on which two analyses disagree, or `None` if they
+/// agree. Returning one field keeps the failure readable; a whole-struct
+/// `assert_eq!` on a large fixture prints two walls of text.
+/// The parameters are named for the paths they are labelled as: the rendered
+/// message says `whole-program` for the first and `incremental` for the second,
+/// and `parity.rs` asserts on that order.
+fn first_parity_difference(
+    whole_program: &ParityFacts,
+    incremental: &ParityFacts,
+) -> Option<String> {
+    fn diff<T: std::fmt::Debug + PartialEq>(
+        field: &str,
+        whole_program: &T,
+        incremental: &T,
+    ) -> Option<String> {
+        (whole_program != incremental).then(|| {
+            format!(
+                "{field}:\n  whole-program: {whole_program:?}\n  incremental:   {incremental:?}"
+            )
+        })
+    }
+
+    diff(
+        "passing modules",
+        &whole_program.passing,
+        &incremental.passing,
+    )
+    .or_else(|| {
+        diff(
+            "failing modules",
+            &whole_program.failing,
+            &incremental.failing,
+        )
+    })
+    .or_else(|| {
+        diff(
+            "load_imports_eagerly",
+            &whole_program.load_imports_eagerly,
+            &incremental.load_imports_eagerly,
+        )
+    })
+    .or_else(|| {
+        diff(
+            "lazy_eligible",
+            &whole_program.lazy_eligible,
+            &incremental.lazy_eligible,
+        )
+    })
+    .or_else(|| {
+        diff(
+            "aggregated errors",
+            &whole_program.errors,
+            &incremental.errors,
+        )
+    })
+    .or_else(|| {
+        diff(
+            "per-module errors",
+            &whole_program.module_errors,
+            &incremental.module_errors,
+        )
+    })
+    .or_else(|| {
+        diff(
+            "implicit imports",
+            &whole_program.implicit_imports,
+            &incremental.implicit_imports,
+        )
+    })
+    .or_else(|| {
+        diff(
+            "import cycles",
+            &whole_program.import_cycles,
+            &incremental.import_cycles,
+        )
+    })
+    .or_else(|| diff("report", &whole_program.report, &incremental.report))
+}
+
+/// The shard counts on which the two paths disagree, with the first differing
+/// field for each. Empty when they agree everywhere.
+///
+/// Known-gap tests assert on this rather than on a panic, so that a *different*
+/// divergence -- another shard count, module, field, or direction -- fails
+/// instead of silently satisfying the same expectation.
+pub fn path_differences(modules: &[(&str, &str)], shard_counts: &[usize]) -> Vec<(usize, String)> {
+    // Verbose output is what carries implicit imports and import cycles; it does
+    // not write a file, since the harness builds the analysis directly.
+    let options = verbose_test_options();
+    let whole_program = ParityFacts::of(&run_whole_program_path(modules, &options));
+
+    shard_counts
+        .iter()
+        .filter_map(|&count| {
+            let incremental = ParityFacts::of(&run_incremental_analysis(
+                modules,
+                Shards::new(count),
+                &options,
+            ));
+            first_parity_difference(&whole_program, &incremental)
+                .map(|difference| (count, difference))
+        })
+        .collect()
+}
+
+/// Assert that the whole-program and incremental paths agree on `modules`,
+/// checking every shard count in `shard_counts`.
+pub fn assert_paths_agree(modules: &[(&str, &str)], shard_counts: &[usize]) {
+    if let Some((count, difference)) = path_differences(modules, shard_counts).into_iter().next() {
+        panic!("paths disagree with {count} shard(s) -- {difference}");
+    }
+}
+
+/// [`assert_paths_agree`] over one, two and three shards: enough to cover the
+/// single-library case and to split related modules apart in two different ways.
+pub fn assert_paths_agree_sharded(modules: &[(&str, &str)]) {
+    assert_paths_agree(modules, &[1, 2, 3]);
+}
+
 /// Create a new temp directory and write each `(rel_path, contents)` pair
 /// into it, creating intermediate directories as needed. The returned
 /// [`TempDir`] owns the path and deletes it on drop.
@@ -837,7 +1294,7 @@ pub fn populate_temp_dir(files: &[(&str, &str)]) -> TempDir {
 /// Wrap an already merged cache and the graph-only stubs injected into it,
 /// skipping the stub injection `ReduceWorkspace::single` and `merge` perform.
 ///
-/// Test support only. Production reduces have to go through those two, which
+/// Test support only. Production reduces have to go through a path which
 /// establish the stub-set invariant; this exists so a test can hand the reduce
 /// a cache it assembled itself, or replay one it just took apart.
 pub fn reduce_workspace_from_merged(
