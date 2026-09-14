@@ -87,24 +87,6 @@ impl DefinitionTable {
         defs.definitions.get(name)
     }
 
-    fn get_at_range(
-        &self,
-        scope: &ModuleName,
-        name: &Name,
-        lookup_range: TextRange,
-    ) -> Option<(&Definitions, &Definition)> {
-        let defs = self.definitions.get(scope)?;
-        let definition = defs.definitions.get(name).or_else(|| {
-            defs.comp_targets.get(name)?.iter().find_map(|target| {
-                target
-                    .comp_range
-                    .contains_range(lookup_range)
-                    .then_some(&target.definition)
-            })
-        })?;
-        Some((defs, definition))
-    }
-
     /// Classify how `param_name` of `func_scope` matches call arguments:
     /// `Unresolved` when the function's signature is unknown (so a positional
     /// parameter is never silently treated as keyword-only), `Positional(idx)`
@@ -120,37 +102,72 @@ impl DefinitionTable {
     }
 
     pub fn resolve(&self, cursor: &Cursor, value: &Expr) -> Option<ResolvedName<'_>> {
-        let name = value.base_name()?;
-        let mut res = self.resolve_name(cursor, name, value.range())?;
+        self.scope_resolver().resolve_expr(cursor, value)
+    }
+
+    fn scope_resolver(&self) -> ScopeResolver<'_> {
+        ScopeResolver {
+            definitions: &self.definitions,
+        }
+    }
+}
+
+/// The LEGB scope walk over a module's per-scope definitions, shared with the
+/// class table's builder while it is still filling that map in.
+#[derive(Clone, Copy)]
+struct ScopeResolver<'a> {
+    definitions: &'a AHashMap<ModuleName, Definitions>,
+}
+
+impl<'a> ScopeResolver<'a> {
+    fn resolve_expr(self, cursor: &Cursor, value: &Expr) -> Option<ResolvedName<'a>> {
+        let mut res = self.resolve_name(cursor, value.base_name()?, value.range())?;
         res.expr_full_name = value.full_name();
         Some(res)
     }
 
-    // Look up a name following Python's LEGB (Local-Enclosing-Global-Builtin) rule.
-    // Class scopes are skipped when looking up from an enclosed function scope.
-    // Builtins are handled separately in ModuleInfo::resolve_builtins.
-    // `lookup_range` bounds comprehension-target visibility to the comprehension body.
+    /// LEGB lookup: class scopes are skipped from an enclosed function scope, and
+    /// builtins resolve separately. `read_at` bounds comprehension-target visibility.
     fn resolve_name(
-        &self,
+        self,
         cursor: &Cursor,
         name: Name,
-        lookup_range: TextRange,
-    ) -> Option<ResolvedName<'_>> {
+        read_at: TextRange,
+    ) -> Option<ResolvedName<'a>> {
         for (scope, _kind) in cursor.legb_scopes_iter() {
-            if let Some((scope_definitions, definition)) =
-                self.get_at_range(&scope, &name, lookup_range)
-            {
-                return Some(ResolvedName {
-                    name,
-                    definition,
-                    scope,
-                    scope_definitions,
-                    expr_full_name: None,
-                });
-            }
+            let Some(scope_definitions) = self.definitions.get(&scope) else {
+                continue;
+            };
+            let Some(definition) = scope_definitions
+                .definitions
+                .get(&name)
+                .or_else(|| comp_target_at(scope_definitions, &name, read_at))
+            else {
+                continue;
+            };
+            return Some(ResolvedName {
+                name,
+                definition,
+                scope,
+                scope_definitions,
+                expr_full_name: None,
+            });
         }
         None
     }
+}
+
+fn comp_target_at<'a>(
+    defs: &'a Definitions,
+    name: &Name,
+    read_at: TextRange,
+) -> Option<&'a Definition> {
+    defs.comp_targets.get(name)?.iter().find_map(|target| {
+        target
+            .comp_range
+            .contains_range(read_at)
+            .then_some(&target.definition)
+    })
 }
 
 #[derive(Debug)]
@@ -567,27 +584,10 @@ impl<'a> CombinedDefinitionClassBuilder<'a> {
     }
 
     fn resolve_expr(&self, x: &Expr) -> Option<ResolvedName<'_>> {
-        let name = x.base_name()?;
-        let mut res = self.resolve_name(name)?;
-        res.expr_full_name = x.full_name();
-        Some(res)
-    }
-
-    fn resolve_name(&self, name: Name) -> Option<ResolvedName<'_>> {
-        for (scope, _kind) in self.cursor.legb_scopes_iter() {
-            if let Some(defs) = self.definitions_map.get(&scope) {
-                if let Some(def) = defs.definitions.get(&name) {
-                    return Some(ResolvedName {
-                        name,
-                        definition: def,
-                        scope,
-                        scope_definitions: defs,
-                        expr_full_name: None,
-                    });
-                }
-            }
+        ScopeResolver {
+            definitions: &self.definitions_map,
         }
-        None
+        .resolve_expr(&self.cursor, x)
     }
 
     fn method_kind_from_decorator(&self, expr: &Expr) -> Option<crate::class::FieldKind> {
@@ -669,7 +669,7 @@ class C:
         let exports = Exports::new(&parsed_module, &import_graph, &config.sys_info);
         let info = ModuleInfo::new(&parsed_module, &exports, &import_graph, &stubs, &config);
         let resolve = |scopes: &[&str], name: &str| -> Option<ResolvedName> {
-            info.definitions.resolve_name(
+            info.definitions.scope_resolver().resolve_name(
                 &cursor_for(scopes),
                 Name::new(name),
                 TextRange::default(),
