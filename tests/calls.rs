@@ -502,6 +502,94 @@ Foo.__getstate__ = lambda self: self.__dict__.copy()
         check(code);
     }
 
+    /// Run `body` against a `helpers` module defining a safe `field` function.
+    fn check_field(body: &str) {
+        let helpers = "def field(default=None):\n    return default\n";
+        check_all_effects(vec![("helpers", helpers), ("test", body)]);
+    }
+
+    #[test]
+    fn test_class_attribute_does_not_shadow_earlier_use() {
+        check_field(
+            r#"
+from helpers import field
+
+class Question:
+    choices = field(default=[])  # E: imported-function-call
+    field: str = ""
+"#,
+        );
+    }
+
+    #[test]
+    fn test_class_attribute_shadows_later_use() {
+        check_field(
+            r#"
+from helpers import field
+
+class Question:
+    field: str = ""
+    choices = field(default=[])  # E: function-call
+"#,
+        );
+    }
+
+    #[test]
+    fn test_class_decorator_does_not_shadow_earlier_use() {
+        let helpers = "def register(f):\n    return f\n";
+        let body = r#"
+from helpers import register
+
+class Handlers:
+    @register  # E: imported-decorator-call
+    def register(self): ...
+"#;
+        check_all_effects(vec![("helpers", helpers), ("test", body)]);
+    }
+
+    #[test]
+    fn test_class_attribute_bound_twice_does_not_shadow_earlier_use() {
+        check_field(
+            r#"
+from helpers import field
+
+class Question:
+    choices = field(default=[])  # E: imported-function-call
+    field: str = ""
+    field = "x"
+"#,
+        );
+    }
+
+    // Text position stands in for execution order. These two are where they part
+    // company: a binding's own initializer runs before the target it is
+    // positioned after, and a loop back-edge re-runs a read above a binding.
+    #[test]
+    fn test_class_attribute_still_shadows_its_own_initializer() {
+        check_field(
+            r#"
+from helpers import field
+
+class Question:
+    field = field(default=[])  # E: function-call
+"#,
+        );
+    }
+
+    #[test]
+    fn test_class_loop_read_above_binding_resolves_outward() {
+        check_field(
+            r#"
+from helpers import field
+
+class Question:
+    for _ in range(2):
+        choices = field(default=[])  # E: imported-function-call
+        field = "x"
+"#,
+        );
+    }
+
     #[test]
     fn test_builtins() {
         let code = r#"

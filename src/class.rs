@@ -133,6 +133,42 @@ mod tests {
     }
 
     #[test]
+    fn test_nested_class_base_ignores_later_attribute() {
+        let code = r#"
+class B:
+    pass
+
+class Outer:
+    class Inner(B):
+        pass
+
+    class B:
+        pass
+"#;
+        let cls_table = make_class_table(code);
+        let cls = cls_table.lookup_str("test.Outer.Inner").unwrap();
+        assert_eq!(cls.bases, vec![ModuleName::from_str("test.B")]);
+    }
+
+    #[test]
+    fn test_nested_class_base_uses_earlier_attribute() {
+        let code = r#"
+class B:
+    pass
+
+class Outer:
+    class B:
+        pass
+
+    class Inner(B):
+        pass
+"#;
+        let cls_table = make_class_table(code);
+        let cls = cls_table.lookup_str("test.Outer.Inner").unwrap();
+        assert_eq!(cls.bases, vec![ModuleName::from_str("test.Outer.B")]);
+    }
+
+    #[test]
     fn test_basic() {
         let code = r#"
 class B:

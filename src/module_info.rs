@@ -24,6 +24,7 @@ use crate::class::Field;
 use crate::class::FieldKind;
 use crate::config::AnalysisConfig;
 use crate::cursor::Cursor;
+use crate::cursor::ScopeKind;
 use crate::exports::Exports;
 use crate::hasher::AHashMap;
 use crate::hasher::AHashSet;
@@ -58,6 +59,8 @@ pub struct DefinitionTable {
     // Holds an entry for exactly the function scopes (see `process_function_def`),
     // so its keys double as the set of function scopes.
     pub param_names: AHashMap<ModuleName, Vec<Name>>,
+    // A `.pyi` is never executed, so no read in one is bounded by its position.
+    pub is_stub: bool,
 }
 
 impl DefinitionTable {
@@ -68,6 +71,7 @@ impl DefinitionTable {
             eager_scopes: AHashSet::new(),
             enclosing_functions: AHashMap::new(),
             param_names: AHashMap::new(),
+            is_stub: false,
         }
     }
 
@@ -108,6 +112,7 @@ impl DefinitionTable {
     fn scope_resolver(&self) -> ScopeResolver<'_> {
         ScopeResolver {
             definitions: &self.definitions,
+            is_stub: self.is_stub,
         }
     }
 }
@@ -117,6 +122,7 @@ impl DefinitionTable {
 #[derive(Clone, Copy)]
 struct ScopeResolver<'a> {
     definitions: &'a AHashMap<ModuleName, Definitions>,
+    is_stub: bool,
 }
 
 impl<'a> ScopeResolver<'a> {
@@ -134,13 +140,15 @@ impl<'a> ScopeResolver<'a> {
         name: Name,
         read_at: TextRange,
     ) -> Option<ResolvedName<'a>> {
-        for (scope, _kind) in cursor.legb_scopes_iter() {
+        for (scope, kind) in cursor.legb_scopes_iter() {
             let Some(scope_definitions) = self.definitions.get(&scope) else {
                 continue;
             };
+            let position_bounded = kind == ScopeKind::Class && !self.is_stub;
             let Some(definition) = scope_definitions
                 .definitions
                 .get(&name)
+                .filter(|d| !position_bounded || visible_in_class_body(d, read_at))
                 .or_else(|| comp_target_at(scope_definitions, &name, read_at))
             else {
                 continue;
@@ -168,6 +176,16 @@ fn comp_target_at<'a>(
             .contains_range(read_at)
             .then_some(&target.definition)
     })
+}
+
+/// A class namespace fills as the body runs, so `x = f()` above `def f()` calls
+/// the module-level `f`. A `global`/`nonlocal` declaration is the exception: it
+/// covers the whole block.
+fn visible_in_class_body(definition: &Definition, read_at: TextRange) -> bool {
+    matches!(definition.style, DefinitionStyle::MutableCapture(_))
+        // `<=`, not `<`: a target is resolved at its own binding site. With `<`,
+        // `class C: bar = 1` under an imported `bar` would look like a mutation.
+        || definition.first_binding <= read_at.start()
 }
 
 #[derive(Debug)]
@@ -357,6 +375,7 @@ pub fn get_import_module_state_from_def(
 struct CombinedDefinitionClassBuilder<'a> {
     module_name: ModuleName,
     is_init: bool,
+    is_stub: bool,
     config: &'a AnalysisConfig,
     cursor: Cursor,
 
@@ -375,6 +394,7 @@ impl<'a> CombinedDefinitionClassBuilder<'a> {
         Self {
             module_name: parsed_module.name,
             is_init: parsed_module.is_init,
+            is_stub: parsed_module.is_stub(),
             config,
             cursor: Cursor::new(),
             definitions_map: AHashMap::new(),
@@ -438,14 +458,16 @@ impl<'a> CombinedDefinitionClassBuilder<'a> {
             let Some(def) = self.definitions_map.get_mut(&scope) else {
                 continue;
             };
-            if let Some(module_name) = import_module_state.match_call(call) {
-                let import_def = Definition {
-                    range: target_name.range,
-                    style: DefinitionStyle::ImportAs(module_name, target_name.id.clone()),
-                    needs_anywhere: false,
-                    docstring_range: None,
-                };
-                def.definitions.insert(target_name.id.clone(), import_def);
+            // `Definitions::make` has already recorded every target in this scope,
+            // so rebinding keeps the earliest binding site rather than moving it
+            // to this statement.
+            if let Some(module_name) = import_module_state.match_call(call)
+                && let Some(existing) = def.definitions.get_mut(&target_name.id)
+            {
+                existing.rebind(
+                    DefinitionStyle::ImportAs(module_name, target_name.id.clone()),
+                    target_name.range,
+                );
             }
         }
     }
@@ -497,6 +519,7 @@ impl<'a> CombinedDefinitionClassBuilder<'a> {
             for p in params.iter_non_variadic_params() {
                 let def = Definition {
                     range: p.range,
+                    first_binding: p.range.start(),
                     style: DefinitionStyle::Unannotated(SymbolKind::Parameter),
                     needs_anywhere: false,
                     docstring_range: None,
@@ -583,9 +606,12 @@ impl<'a> CombinedDefinitionClassBuilder<'a> {
         res.try_qualified_name()
     }
 
+    /// A base or metaclass is evaluated in the header, above every attribute of
+    /// the class bodies it sits in.
     fn resolve_expr(&self, x: &Expr) -> Option<ResolvedName<'_>> {
         ScopeResolver {
             definitions: &self.definitions_map,
+            is_stub: self.is_stub,
         }
         .resolve_expr(&self.cursor, x)
     }
@@ -611,6 +637,7 @@ impl<'a> CombinedDefinitionClassBuilder<'a> {
             eager_scopes: self.eager_scopes,
             enclosing_functions: self.enclosing_functions,
             param_names: self.param_names,
+            is_stub: self.is_stub,
         };
         let classes = ClassTable::new(self.classes_map);
         (definitions, classes)
@@ -619,11 +646,12 @@ impl<'a> CombinedDefinitionClassBuilder<'a> {
 
 #[cfg(test)]
 mod tests {
+    use ruff_text_size::TextSize;
+
     use super::*;
     use crate::config::AnalysisConfig;
     use crate::module_parser::parse_source;
     use crate::test_lib::assert_str_keys;
-    use crate::traits::AstExt;
 
     fn build_definitions(code: &str) -> (DefinitionTable, ClassTable) {
         let parsed_module = parse_source(code, ModuleName::from_str("test"), false);
@@ -669,10 +697,12 @@ class C:
         let exports = Exports::new(&parsed_module, &import_graph, &config.sys_info);
         let info = ModuleInfo::new(&parsed_module, &exports, &import_graph, &stubs, &config);
         let resolve = |scopes: &[&str], name: &str| -> Option<ResolvedName> {
+            // From the end of the module, so class-body definitions are in scope.
+            let eof = TextRange::empty(parsed_module.ast.range.end());
             info.definitions.scope_resolver().resolve_name(
                 &cursor_for(scopes),
                 Name::new(name),
-                TextRange::default(),
+                eof,
             )
         };
         let is_reachable = |scopes: &[&str], name: &str| -> bool {
@@ -732,6 +762,68 @@ import pkg.sub
                 .map(|x| x.as_str())
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn test_import_module_rebind_keeps_first_binding_site() {
+        // `process_assign` rewrites the definition of an `import_module` target,
+        // and must leave `first_binding` at the earliest binding site so a read
+        // between the two bindings still sees the class attribute. `importlib` is
+        // imported in the class body because that is the scope whose importlib
+        // state `process_assign` reads.
+        let code = r#"
+class C:
+    import importlib
+    x = 1
+    x = importlib.import_module("m")
+"#;
+        let (definitions, _classes) = build_definitions(code);
+        let def = definitions
+            .get(&ModuleName::from_str("test.C"), &Name::new("x"))
+            .unwrap();
+        assert!(
+            matches!(def.style, DefinitionStyle::ImportAs(..)),
+            "the last binding should still win for `style`, got {:?}",
+            def.style
+        );
+        let first_binding = TextSize::try_from(code.find("x = 1").unwrap()).unwrap();
+        assert_eq!(def.first_binding, first_binding);
+    }
+
+    /// Resolve `name` from inside `test.C`'s body, reading at the first
+    /// occurrence of `read_at`. Yields the scope it resolved to and whether the
+    /// definition is a `global` capture.
+    fn resolve_in_class_body(code: &str, name: &str, read_at: &str) -> Option<(ModuleName, bool)> {
+        let (definitions, _classes) = build_definitions(code);
+        let offset =
+            TextSize::try_from(code.find(read_at).expect("read site not in code")).unwrap();
+        definitions
+            .scope_resolver()
+            .resolve_name(
+                &cursor_for(&["test", "C"]),
+                Name::new(name),
+                TextRange::empty(offset),
+            )
+            .map(|res| (res.scope, res.is_global()))
+    }
+
+    #[test]
+    fn test_class_global_declaration_covers_reads_above_it() {
+        // `global` declares for the whole block, so a read above the declaration
+        // still resolves to the class scope's capture, not outwards.
+        let code = "class C:\n    y = x\n    global x\n    x = 2\n";
+        assert_eq!(
+            resolve_in_class_body(code, "x", "x\n"),
+            Some((ModuleName::from_str("test.C"), true)),
+        );
+    }
+
+    #[test]
+    fn test_class_attribute_is_not_visible_above_its_binding() {
+        // Same shape without the declaration: the attribute is bound below the
+        // read, so nothing in the scope chain defines the name.
+        let code = "class C:\n    y = x\n    x = 2\n";
+        assert_eq!(resolve_in_class_body(code, "x", "x\n"), None);
     }
 
     #[test]
@@ -801,23 +893,37 @@ class C:
         scopes: &[&str],
         name: &str,
     ) -> Option<(ModuleName, bool)> {
-        use pyrefly_python::ast::Ast;
-
+        // Resolve `name` as if written on the last line, so its range is a real
+        // position in the module rather than an offset into a second source.
+        let appended_at = TextSize::try_from(code.len() + 1).unwrap();
+        let source = format!("{code}\n{name}\n");
         let mod_name = ModuleName::from_str("test");
-        let parsed_module = parse_source(code, mod_name, false);
+        let parsed_module = parse_source(&source, mod_name, false);
         let import_graph = ImportGraph::new();
         let stubs = Stubs::new();
         let config = AnalysisConfig::default();
         let exports = Exports::new(&parsed_module, &import_graph, &config.sys_info);
         let info = ModuleInfo::new(&parsed_module, &exports, &import_graph, &stubs, &config);
-        let cursor = cursor_for(scopes);
 
-        // Parse a trivial expression to get a properly constructed Expr::Name
-        let (ast, _) = Ast::parse_py(name);
-        let stmt = ast.body.first()?;
-        let Stmt::Expr(expr_stmt) = stmt else {
+        let mut cursor = Cursor::new();
+        for (i, scope_name) in scopes.iter().enumerate() {
+            if i == 0 {
+                cursor.enter_module_scope(&ModuleName::from_str(scope_name));
+            } else if scope_name.starts_with(char::is_uppercase) {
+                cursor.enter_class_scope_name(Name::new(scope_name));
+            } else {
+                cursor.enter_function_scope_name(Name::new(scope_name));
+            }
+        }
+
+        let Stmt::Expr(expr_stmt) = parsed_module.ast.body.last()? else {
             return None;
         };
+        assert!(
+            expr_stmt.range.start() >= appended_at,
+            "`{name}` did not parse as its own statement; resolved `{:?}` from `code` instead",
+            expr_stmt.value
+        );
         let res = info.resolve(&cursor, &expr_stmt.value)?;
         Some((res.scope, res.definition.is_import()))
     }

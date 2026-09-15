@@ -102,6 +102,33 @@ bar += 1
     }
 
     #[test]
+    fn test_class_attribute_shadowing_import_is_not_a_mutation() {
+        // The class attribute is itself the assignment target, so the target's
+        // own lookup has to reach it rather than the import it shadows --
+        // otherwise binding a class attribute reads as mutating the import.
+        let code = r#"
+from foo import bar
+
+class C:
+    bar = 1
+"#;
+        check_effects(code);
+    }
+
+    #[test]
+    fn test_class_augmented_assign_shadowing_import_is_not_a_mutation() {
+        // The half of `<=` its sibling above does not reach: an augmented target
+        // reads and binds at the same site.
+        let code = r#"
+from foo import bar
+
+class C:
+    bar += 1
+"#;
+        check_effects(code);
+    }
+
+    #[test]
     fn test_subscript_assign_to_alias() {
         let code1 = r#"
 A = []

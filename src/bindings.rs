@@ -851,6 +851,7 @@ fn get_numeric_type(n: &ExprNumberLiteral) -> ModuleName {
 mod tests {
 
     use ruff_text_size::TextRange;
+    use ruff_text_size::TextSize;
 
     use super::*;
     use crate::config::AnalysisConfig;
@@ -939,6 +940,7 @@ mod tests {
         let definition = Definition {
             style: DefinitionStyle::ImplicitGlobal,
             range: TextRange::default(),
+            first_binding: TextSize::default(),
             needs_anywhere: false,
             docstring_range: None,
         };
@@ -1374,6 +1376,20 @@ x: MyType
         let modules = vec![("types_mod", types), ("test", stub)];
         let bt = make_stub_bindings("test", &modules);
         test_instances(&bt, vec![("test", "x", "types_mod.MyType")]);
+    }
+
+    #[test]
+    fn test_stub_annotation_sees_class_body_binding_below_it() {
+        let mod_src = "class Widget: ...\n";
+        let stub = r#"
+class C:
+    x: Widget
+
+    from mod import Widget
+"#;
+        let modules = vec![("mod", mod_src), ("test", stub)];
+        let bt = make_stub_bindings("test", &modules);
+        test_instances(&bt, vec![("test.C", "x", "mod.Widget")]);
     }
 
     #[test]

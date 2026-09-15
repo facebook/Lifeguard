@@ -33,6 +33,7 @@ use ruff_python_ast::StmtFunctionDef;
 use ruff_python_ast::name::Name;
 use ruff_text_size::Ranged;
 use ruff_text_size::TextRange;
+use ruff_text_size::TextSize;
 use starlark_map::small_map::Entry;
 use starlark_map::small_map::SmallMap;
 use starlark_map::small_set::SmallSet;
@@ -87,6 +88,9 @@ pub struct Definition {
     pub style: DefinitionStyle,
     /// A location where the name is defined. Always matches the source of `self.style`.
     pub range: TextRange,
+    /// LIFEGUARD: start of the earliest binding site. `range` follows `style`, so it
+    /// can jump backwards or forwards on merge; this only ever moves earlier.
+    pub first_binding: TextSize,
     /// Does this definition require an `Anywhere` binding at binding time? Typically yes if there
     /// are multiple definitions, but mutable captures and `del` both require special handling.
     pub needs_anywhere: bool,
@@ -103,6 +107,22 @@ impl Definition {
         }
     }
 
+    /// LIFEGUARD: sole writer of `first_binding` outside construction.
+    fn update_first_binding(&mut self, range: TextRange) {
+        self.first_binding = self.first_binding.min(range.start());
+    }
+
+    /// LIFEGUARD: replace this definition outright, for the callers whose style
+    /// must win over the lower-ordered one `merge` would keep. Only
+    /// `first_binding` survives.
+    pub fn rebind(&mut self, style: DefinitionStyle, range: TextRange) {
+        self.update_first_binding(range);
+        self.style = style;
+        self.range = range;
+        self.needs_anywhere = false;
+        self.docstring_range = None;
+    }
+
     fn merge(&mut self, other: DefinitionStyle, range: TextRange) {
         // To ensure binding code cannot produce invalid lookups, we ensure that
         // `self.style` and `self.range` always match.
@@ -110,6 +130,7 @@ impl Definition {
             self.style = other;
             self.range = range;
         }
+        self.update_first_binding(range);
         // If we've merged a Definition, then there are multiple definition sites.
         //
         // We want an Anywhere at bindings time unless either:
@@ -279,6 +300,7 @@ impl Definitions {
                 global.name().clone(),
                 Definition {
                     range: TextRange::default(),
+                    first_binding: TextSize::default(),
                     style: DefinitionStyle::ImplicitGlobal,
                     needs_anywhere: false,
                     docstring_range: None,
@@ -346,6 +368,7 @@ impl<'a> DefinitionsBuilder<'a> {
             Entry::Vacant(e) => {
                 e.insert(Definition {
                     range,
+                    first_binding: range.start(),
                     style,
                     needs_anywhere: false,
                     docstring_range: body.and_then(Docstring::range_from_stmts),
@@ -437,6 +460,7 @@ impl<'a> DefinitionsBuilder<'a> {
         Ast::expr_lvalue(target, &mut |x: &ExprName| {
             let definition = Definition {
                 range: x.range,
+                first_binding: x.range.start(),
                 style: DefinitionStyle::Unannotated(SymbolKind::Variable),
                 needs_anywhere: false,
                 docstring_range: None,
