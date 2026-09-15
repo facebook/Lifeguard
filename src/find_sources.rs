@@ -19,6 +19,7 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use anyhow::Result;
+use itertools::Itertools;
 use ruff_python_ast::Stmt;
 use ruff_python_parser::ParseOptions;
 use serde::Deserialize;
@@ -40,6 +41,12 @@ struct PyprojectToml {
 #[derive(Deserialize)]
 struct LifeguardConfig {
     site_packages: Option<String>,
+}
+
+fn build_source_db_key(path: &Path) -> String {
+    path.components()
+        .map(|part| part.as_os_str().to_string_lossy())
+        .join("/")
 }
 
 /// Try to resolve a dotted module name to a .py file under the given root.
@@ -273,7 +280,7 @@ pub fn build_source_db(
                     .strip_prefix(&input_dir)
                     .context("file resolved to a path outside of input_dir")?;
                 build_map.insert(
-                    rel_path.to_string_lossy().into_owned(),
+                    build_source_db_key(rel_path),
                     full_path.to_string_lossy().into_owned(),
                 );
                 queue.push_back(full_path);
@@ -316,9 +323,10 @@ pub fn build_source_db(
                     let Some(rel_key) = rel_key else {
                         continue;
                     };
-                    let rel_key = rel_key.to_string_lossy().into_owned();
-
-                    build_map.insert(rel_key, resolved.to_string_lossy().into_owned());
+                    build_map.insert(
+                        build_source_db_key(rel_key),
+                        resolved.to_string_lossy().into_owned(),
+                    );
                     queue.push_back(resolved);
                 }
             }
