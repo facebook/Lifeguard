@@ -91,8 +91,8 @@ impl<'a> StubAnalyzer<'a> {
         let name = func.as_var_name()?;
         let eff_name = name.as_str().replace("_", "-");
         let kind = EffectKind::from_str(&eff_name).ok()?;
-        let box args = &call.arguments.args;
-        let arg = match &args {
+        let args = &call.arguments.args;
+        let arg = match &**args {
             [Expr::StringLiteral(e), ..] => Some(ModuleName::from_str(e.value.to_str())),
             [] => Some(ModuleName::empty()),
             _ => None,

@@ -150,8 +150,8 @@ pub fn format_expr(expr: &Expr) -> String {
         }
         Expr::YieldFrom(x) => format!("yield from {}", format_expr(&x.value)),
         Expr::Compare(x) => {
-            let mut result = format_expr(&x.left);
-            for (op, comparator) in x.ops.iter().zip(x.comparators.iter()) {
+            let mut result = format_expr(x.first_operand());
+            for (op, comparator) in x.ops.iter().zip(x.comparators()) {
                 let op_str = match op {
                     CmpOp::Eq => " == ",
                     CmpOp::NotEq => " != ",

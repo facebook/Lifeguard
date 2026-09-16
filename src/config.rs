@@ -27,10 +27,9 @@ fn is_name_main_guard(expr: &Expr) -> bool {
     if cmp.ops.len() != 1 || cmp.ops[0] != CmpOp::Eq {
         return false;
     }
-    let Some(right) = cmp.comparators.first() else {
-        return false;
-    };
-    is_name_eq_main(cmp.left.as_ref(), right) || is_name_eq_main(right, cmp.left.as_ref())
+    let left = cmp.first_operand();
+    let right = cmp.second_operand();
+    is_name_eq_main(left, right) || is_name_eq_main(right, left)
 }
 
 #[derive(Debug, Clone)]

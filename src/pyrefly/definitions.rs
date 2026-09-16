@@ -819,8 +819,13 @@ impl<'a> DefinitionsBuilder<'a> {
             }
             Expr::ListComp(ExprListComp { generators, .. })
             | Expr::SetComp(ExprSetComp { generators, .. })
-            | Expr::DictComp(ExprDictComp { generators, .. })
             | Expr::Generator(ExprGenerator { generators, .. }) => {
+                let comp_range = x.range();
+                for generator in generators {
+                    self.comp_target_lvalue(&generator.target, comp_range);
+                }
+            }
+            Expr::DictComp(ExprDictComp { generators, .. }) => {
                 let comp_range = x.range();
                 for generator in generators {
                     self.comp_target_lvalue(&generator.target, comp_range);

@@ -235,9 +235,9 @@ fn sys_modules_probed_keys(ast: &ModModule) -> AHashSet<ModuleName> {
         // tested against `y`.
         if let Expr::Compare(cmp) = x
             && matches!(cmp.ops.as_ref(), [CmpOp::In] | [CmpOp::NotIn])
-            && cmp.comparators.first().is_some_and(is_sys_modules_expr)
+            && is_sys_modules_expr(cmp.second_operand())
         {
-            keys.extend(string_literal_module(&cmp.left));
+            keys.extend(string_literal_module(cmp.first_operand()));
         }
         // `Visit<Expr>` yields statement-position expressions only, so a nested
         // test is reached by recursing.
@@ -310,7 +310,7 @@ impl<'a> SourceAnalyzer<'a> {
     }
 
     fn check_getattr(&self, args: &Arguments, output: &mut ModuleEffects) {
-        let box args = &args.args;
+        let args = &args.args;
         if args.len() < 2 {
             // Invalid getattr call
             return;
@@ -377,7 +377,7 @@ impl<'a> SourceAnalyzer<'a> {
     }
 
     fn check_setattr(&self, args: &Arguments, output: &mut ModuleEffects) {
-        let box args = &args.args;
+        let args = &args.args;
         if args.len() < 3 {
             // Invalid setattr call
             return;
@@ -1100,8 +1100,8 @@ impl<'a> SourceAnalyzer<'a> {
     }
 
     fn check_compare(&self, e: &ExprCompare, output: &mut ModuleEffects) {
-        let box left = &e.left;
-        let box comparators = &e.comparators;
+        let left = e.first_operand();
+        let comparators = e.comparators();
 
         let mut check_and_add_effect = |expr: &Expr| {
             if let Some(res) = self.info.resolve(&self.cursor, expr) {
