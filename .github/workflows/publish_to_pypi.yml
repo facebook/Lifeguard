@@ -6,12 +6,29 @@ on:
       - version.bzl
     branches: [main]
   workflow_dispatch:
+    inputs:
+      force:
+        description: "Publish even if the version tag already exists"
+        type: boolean
+        default: false
 
 permissions: {}
 
 jobs:
+  check-publish:
+    name: Check whether this version needs publishing
+    permissions:
+      contents: read
+    uses: ./.github/workflows/check_publish.yml
+    with:
+      # `inputs` is empty on a push event, and passing null to the callee's
+      # boolean input is an error.
+      force: ${{ inputs.force || false }}
+
   build-binaries:
     name: Build binaries
+    needs: check-publish
+    if: needs.check-publish.outputs.should_publish == 'true'
     permissions:
       contents: read
     uses: ./.github/workflows/build_binaries.yml
@@ -20,6 +37,7 @@ jobs:
     name: Upload to PyPI
     runs-on: ubuntu-latest
     needs:
+      - check-publish
       - build-binaries
     environment:
       name: pypi
@@ -48,19 +66,25 @@ jobs:
   push-tag:
     name: Push version tag
     runs-on: ubuntu-latest
-    needs: publish
+    needs:
+      - check-publish
+      - publish
     permissions:
       contents: write
+    env:
+      LIFEGUARD_VERSION: ${{ needs.check-publish.outputs.version }}
     steps:
       - name: Checkout repo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # zizmor: ignore[artipacked] -- tag push needs the persisted credentials v7.0.1
         with:
           fetch-depth: 0
-      - name: Get version
-        run: |
-          VERSION=$(sed -n -e 's/^VERSION = "\(.*\)"/\1/p' version.bzl)
-          echo "LIFEGUARD_VERSION=$VERSION" >> $GITHUB_ENV
+      # `git tag` errors on an existing tag, so a forced re-publish of an
+      # already-tagged version would fail here after the upload succeeded.
       - name: Tag commit
-        run: git tag "$LIFEGUARD_VERSION"
-      - name: Push tag
-        run: git push origin tag "$LIFEGUARD_VERSION"
+        run: |
+          if git rev-parse -q --verify "refs/tags/$LIFEGUARD_VERSION" >/dev/null; then
+            echo "Tag $LIFEGUARD_VERSION already exists; leaving it alone."
+          else
+            git tag "$LIFEGUARD_VERSION"
+            git push origin tag "$LIFEGUARD_VERSION"
+          fi
