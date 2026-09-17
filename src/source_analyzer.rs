@@ -923,9 +923,24 @@ impl<'a> SourceAnalyzer<'a> {
 
     fn check_call(&self, call: &ExprCall, output: &mut ModuleEffects) {
         let box func = &call.func;
+        self.check_subclasses_access(func, output);
         if !self.check_call_for_import(call, output) {
             self.check_unpacked_call(func, Some(&call.arguments), call.range(), output);
         }
+    }
+
+    /// Matched on the attribute name alone: the receiver is routinely a parameter
+    /// (`def walk(cls): cls.__subclasses__()`), which resolves to nothing.
+    fn check_subclasses_access(&self, func: &Expr, output: &mut ModuleEffects) {
+        let Expr::Attribute(attr) = func else { return };
+        if attr.attr.id.as_str() != "__subclasses__" {
+            return;
+        }
+        let name = ModuleName::from_str("__subclasses__");
+        self.add_effect(
+            Effect::new(EffectKind::SubclassesAccess, name, attr.range()),
+            output,
+        );
     }
 
     fn check_call_for_import(&self, call: &ExprCall, output: &mut ModuleEffects) -> bool {

@@ -6,7 +6,7 @@ The LOAD_IMPORTS_EAGERLY set is distinct from the LAZY_ELIGIBLE dict:
 - **LOAD_IMPORTS_EAGERLY set**: Disables lazy imports entirely within a module. A module can both be safe to load lazily and in the LOAD_IMPORTS_EAGERLY set.
 
 ## The LOAD_IMPORTS_EAGERLY Cases
-A module is added to the LOAD_IMPORTS_EAGERLY set when any of these cases are detected anywhere in the module, regardless of scope or reachability from top-level code.
+A module is added to the LOAD_IMPORTS_EAGERLY set when any of these four cases are detected anywhere in the module, regardless of scope or reachability from top-level code.
 
 ### 1. Custom Finalizers
 **Trigger**: A class defines a `__del__` method.
@@ -67,4 +67,32 @@ sys.modules.setdefault("constants", sys.modules["signals.ahp.draftcrew.constants
 sys.modules["my.module"]         # subscript read
 sys.modules["alias"] = my_mod    # subscript write
 sys.modules.pop("old_module")    # method call
+```
+
+### 4. `__subclasses__()` Access
+
+**Trigger**: A call to `__subclasses__()` on any receiver, at any scope.
+
+**Why this may be unsafe**: A class joins `Base.__subclasses__()` when its `class`
+statement executes, which happens when its defining module is imported. Registries built
+by walking that list therefore report whatever happens to have been imported. Under lazy
+imports the modules holding the subclasses are never executed, so they never appear — the
+registry silently comes up short rather than raising. Nothing about this is visible as
+user code: the list is maintained by `type.__new__`, so there is no call for the analyzer
+to follow. Eagerly loading the walking module's imports is what makes the answer complete.
+
+The receiver is matched by attribute name alone, without resolving it. The common shape
+indirects through a helper, where the receiver is a parameter and resolves to nothing:
+
+**Python examples**:
+
+```python
+import plugins.alpha  # noqa: F401   # deferred under lazy imports, so Alpha never registers
+import plugins.beta   # noqa: F401
+from base import Plugin
+
+def _all_subclasses(cls):
+    return set(cls.__subclasses__())  # parameter receiver, still detected
+
+REGISTRY = {c.__name__: c for c in Plugin.__subclasses__()}
 ```

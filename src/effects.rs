@@ -82,6 +82,8 @@ pub enum EffectKind {
     ExecCall,
     // Accessing `sys.modules`.
     SysModulesAccess,
+    // Calling `__subclasses__()`.
+    SubclassesAccess,
     // Passing an imported variable as a function argument.
     ImportedVarArgument,
     // Re-assigning an imported variable (for re-export tracking).
@@ -135,7 +137,10 @@ impl EffectKind {
     pub fn requires_eager_loading_imports(&self) -> bool {
         matches!(
             self,
-            Self::CustomFinalizer | Self::ExecCall | Self::SysModulesAccess
+            Self::CustomFinalizer
+                | Self::ExecCall
+                | Self::SysModulesAccess
+                | Self::SubclassesAccess
         )
     }
 

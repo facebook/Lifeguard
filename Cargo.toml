@@ -5,14 +5,9 @@ cxx-build = { git = "https://github.com/facebookexperimental/cxx.git", rev = "b8
 
 [workspace]
 members = ["resources", "src", "tests", "tests/e2e"]
+exclude = ["pyrefly"]
 resolver = "2"
 
 [workspace.package]
 license = "MIT"
 repository = "https://github.com/facebook/Lifeguard"
-
-[workspace.lints.clippy]
-dbg_macro = { level = "deny" }
-
-[workspace.lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fbcode_build)"]}

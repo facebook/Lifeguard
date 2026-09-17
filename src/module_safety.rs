@@ -401,7 +401,8 @@ mod tests {
         safety.add_force_import_override(make_error(ErrorKind::CustomFinalizer));
         safety.add_force_import_override(make_error(ErrorKind::ExecCall));
         safety.add_force_import_override(make_error(ErrorKind::SysModulesAccess));
-        assert_eq!(safety.force_imports_eager_overrides.len(), 3);
+        safety.add_force_import_override(make_error(ErrorKind::SubclassesAccess));
+        assert_eq!(safety.force_imports_eager_overrides.len(), 4);
     }
 
     #[test]
