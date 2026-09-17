@@ -1,0 +1,38 @@
+name: Create GitHub Release
+
+# Creates the GitHub Release for a version after it is published to PyPI and
+# its tag is pushed. Called by publish_to_pypi.yml once the tag push succeeds.
+
+on:
+  workflow_call:
+    inputs:
+      tag_name:
+        description: "The version tag (e.g. 0.2.0)"
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      LIFEGUARD_VERSION: ${{ inputs.tag_name }}
+      GH_TOKEN: ${{ github.token }}
+      # `gh` only needs to know which repo to act on. Both commands below are
+      # API calls against the already-pushed tag, so this job needs no checkout.
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Create release
+        run: |
+          set -euo pipefail
+          if gh release view "$LIFEGUARD_VERSION" >/dev/null 2>&1; then
+            echo "Release $LIFEGUARD_VERSION already exists; leaving it alone."
+            exit 0
+          fi
+          gh release create "$LIFEGUARD_VERSION" \
+            --title "Lifeguard $LIFEGUARD_VERSION" \
+            --generate-notes

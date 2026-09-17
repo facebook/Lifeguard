@@ -99,3 +99,14 @@ jobs:
             git tag "$LIFEGUARD_VERSION"
             git push origin tag "$LIFEGUARD_VERSION"
           fi
+
+  create-release:
+    name: Create release
+    needs:
+      - check-publish
+      - push-tag
+    permissions:
+      contents: write
+    uses: ./.github/workflows/create_release.yml
+    with:
+      tag_name: ${{ needs.check-publish.outputs.version }}
