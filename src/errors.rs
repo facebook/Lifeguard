@@ -90,6 +90,10 @@ pub enum ErrorKind {
     /// ordering that lazy imports disrupts.
     SysModulesAccess,
 
+    /// `__subclasses__()` is being called. A class only joins that list once its
+    /// defining module has executed, so the answer depends on what was imported.
+    SubclassesAccess,
+
     /// An attribute on an imported module is explicitly being assigned, mutating the other module.
     ImportedModuleAssignment,
 
@@ -110,7 +114,10 @@ impl ErrorKind {
     pub fn requires_eager_loading_imports(&self) -> bool {
         matches!(
             self,
-            Self::CustomFinalizer | Self::ExecCall | Self::SysModulesAccess
+            Self::CustomFinalizer
+                | Self::ExecCall
+                | Self::SysModulesAccess
+                | Self::SubclassesAccess
         )
     }
 
@@ -212,6 +219,7 @@ impl SafetyError {
             EffectKind::CustomFinalizer => Some(ErrorKind::CustomFinalizer),
             EffectKind::ExecCall => Some(ErrorKind::ExecCall),
             EffectKind::SysModulesAccess => Some(ErrorKind::SysModulesAccess),
+            EffectKind::SubclassesAccess => Some(ErrorKind::SubclassesAccess),
             EffectKind::UnknownDecoratorCall => Some(ErrorKind::UnknownDecoratorCall),
             EffectKind::UnknownEffects => Some(ErrorKind::UnknownEffects),
             EffectKind::UnknownObject => Some(ErrorKind::UnknownObject),
