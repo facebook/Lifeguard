@@ -1,0 +1,76 @@
+name: check_publish
+
+# Gate for publish_to_pypi.yml. The push trigger there fires on any edit to
+# version.bzl, including comment-only ones, so it cannot tell "cut a release"
+# from "reword the header". The version tag is the record of what actually
+# shipped: if it already exists, this version is published and the run has
+# nothing to do. Without this the whole matrix rebuilds and the tag push fails
+# on the existing tag.
+
+on:
+  workflow_call:
+    inputs:
+      force:
+        description: "Publish even if the version tag already exists."
+        type: boolean
+        default: false
+    outputs:
+      should_publish:
+        description: '"true" if the downstream publish jobs should run, "false" otherwise.'
+        value: ${{ jobs.gate.outputs.should_publish }}
+      version:
+        description: "The version read from version.bzl."
+        value: ${{ jobs.gate.outputs.version }}
+
+permissions: {}
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      should_publish: ${{ steps.gate.outputs.should_publish }}
+      version: ${{ steps.gate.outputs.version }}
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Tags are what the check reads, and a default shallow checkout does
+          # not fetch them.
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Compare version.bzl against the pushed tags
+        id: gate
+        env:
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          # `[^"]*` rather than `.*`: a trailing comment on the VERSION line is
+          # a supported format (validate_version.py parses it, and a unit test
+          # covers it), and a greedy match would carry that comment into the
+          # version string and on into the git tag. The `q` has to sit inside an
+          # address block -- after the substitution rewrites the pattern space
+          # there is no longer a `VERSION =` for a trailing address to match.
+          # This is the only place version.bzl is parsed. Everything downstream
+          # consumes the `version` output rather than re-reading the file, so
+          # the tag that gets pushed is by construction the one this gate
+          # looked up and the two cannot drift.
+          VERSION=$(sed -n -e '/^VERSION = /{s/^VERSION = "\([^"]*\)".*/\1/p;q}' version.bzl)
+          # A sed miss yields an empty string, which would tag the commit "" and
+          # publish whatever maturin happened to build.
+          if [ -z "$VERSION" ]; then
+            echo "No VERSION line found in version.bzl" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [ "$FORCE" = "true" ]; then
+            echo "Forced: publishing $VERSION even if it is already tagged."
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+          elif git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
+            echo "Tag $VERSION already exists; version.bzl changed without a version bump. Nothing to publish."
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "No tag for $VERSION yet; publishing."
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+          fi
