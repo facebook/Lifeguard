@@ -8,6 +8,9 @@ on:
   pull_request:
   schedule:
     - cron: '0 12 * * 1' # 12pm Monday
+  # Lets publish_to_pypi.yml block a release on this suite rather than racing
+  # the copy the same push starts independently.
+  workflow_call:
 
 permissions:
   contents: read
