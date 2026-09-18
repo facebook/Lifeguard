@@ -2318,6 +2318,37 @@ impl ProjectInfo {
 mod tests {
     use super::*;
 
+    /// Assert that `callee` is placed in an earlier call-graph level than `caller`,
+    /// which is what lets the caller read a finished verdict for it.
+    fn assert_leveled_before(module: &str, callee: &str, caller: &str) {
+        let sources = crate::test_lib::TestSources::new(&[("m", module)]);
+        let config = AnalysisConfig::default();
+        let (import_graph, exports, in_scope) = ImportGraph::make_with_exports(&sources, &config);
+        let (analysis_map, _) = analyze_all(&sources, &exports, &import_graph, &config, &in_scope);
+        let project = ProjectInfo::new(analysis_map, &exports);
+
+        let graph = project.build_call_graph();
+        let levels = graph.csr.dependency_levels(&graph.in_cycle);
+        let level_of = |name: &str| {
+            let module_name = ModuleName::from_str(name);
+            levels
+                .iter()
+                .position(|level| {
+                    level
+                        .iter()
+                        .any(|&node| graph.names[node as usize] == module_name)
+                })
+                .unwrap_or_else(|| panic!("{name} should be leveled, names: {:?}", graph.names))
+        };
+
+        let callee_level = level_of(callee);
+        let caller_level = level_of(caller);
+        assert!(
+            callee_level < caller_level,
+            "{callee} must be leveled before {caller}, got {callee_level} and {caller_level}",
+        );
+    }
+
     /// A parameterized decorator applied inside a function: the caller reads the
     /// verdicts of the factory's immediate nested functions, so those have to be
     /// leveled before it.
@@ -2347,36 +2378,7 @@ mod tests {
                     pass
         "#;
 
-        let sources = crate::test_lib::TestSources::new(&[("m", module)]);
-        let config = AnalysisConfig::default();
-        let (import_graph, exports, in_scope) = ImportGraph::make_with_exports(&sources, &config);
-        let (analysis_map, _) = analyze_all(&sources, &exports, &import_graph, &config, &in_scope);
-        let project = ProjectInfo::new(analysis_map, &exports);
-
-        let graph = project.build_call_graph();
-        let levels = graph.csr.dependency_levels(&graph.in_cycle);
-
-        let level_of = |name: &str| {
-            let name = ModuleName::from_str(name);
-            levels
-                .iter()
-                .position(|level| level.iter().any(|&node| graph.names[node as usize] == name))
-                .unwrap_or_else(|| {
-                    panic!(
-                        "{} should be leveled, names: {:?}",
-                        name.as_str(),
-                        graph.names
-                    )
-                })
-        };
-
-        let wrapper = level_of("m.deco.wrapper");
-        let caller = level_of("m.caller");
-        assert!(
-            wrapper < caller,
-            "the decorator's nested function must be leveled before the function \
-             applying the decorator, got wrapper={wrapper} caller={caller}",
-        );
+        assert_leveled_before(module, "m.deco.wrapper", "m.caller");
     }
 
     /// A call that resolves through the MRO reads the base class's verdict, so
@@ -2407,36 +2409,7 @@ mod tests {
                 Sub.static_method()
         "#;
 
-        let sources = crate::test_lib::TestSources::new(&[("m", module)]);
-        let config = AnalysisConfig::default();
-        let (import_graph, exports, in_scope) = ImportGraph::make_with_exports(&sources, &config);
-        let (analysis_map, _) = analyze_all(&sources, &exports, &import_graph, &config, &in_scope);
-        let project = ProjectInfo::new(analysis_map, &exports);
-
-        let graph = project.build_call_graph();
-        let levels = graph.csr.dependency_levels(&graph.in_cycle);
-
-        let level_of = |name: &str| {
-            let name = ModuleName::from_str(name);
-            levels
-                .iter()
-                .position(|level| level.iter().any(|&node| graph.names[node as usize] == name))
-                .unwrap_or_else(|| {
-                    panic!(
-                        "{} should be leveled, names: {:?}",
-                        name.as_str(),
-                        graph.names
-                    )
-                })
-        };
-
-        let target = level_of("m.Base.static_method");
-        let caller = level_of("m.caller");
-        assert!(
-            target < caller,
-            "the inherited callee must be leveled before the caller that reads \
-             its verdict, got target={target} caller={caller}",
-        );
+        assert_leveled_before(module, "m.Base.static_method", "m.caller");
     }
 
     /// `check_constructor_call` resolves each constructor method through the MRO,
@@ -2463,36 +2436,7 @@ mod tests {
                 Sub()
         "#;
 
-        let sources = crate::test_lib::TestSources::new(&[("m", module)]);
-        let config = AnalysisConfig::default();
-        let (import_graph, exports, in_scope) = ImportGraph::make_with_exports(&sources, &config);
-        let (analysis_map, _) = analyze_all(&sources, &exports, &import_graph, &config, &in_scope);
-        let project = ProjectInfo::new(analysis_map, &exports);
-
-        let graph = project.build_call_graph();
-        let levels = graph.csr.dependency_levels(&graph.in_cycle);
-
-        let level_of = |name: &str| {
-            let name = ModuleName::from_str(name);
-            levels
-                .iter()
-                .position(|level| level.iter().any(|&node| graph.names[node as usize] == name))
-                .unwrap_or_else(|| {
-                    panic!(
-                        "{} should be leveled, names: {:?}",
-                        name.as_str(),
-                        graph.names
-                    )
-                })
-        };
-
-        let inherited = level_of("m.Base.__init__");
-        let class = level_of("m.Sub");
-        assert!(
-            inherited < class,
-            "the inherited constructor must be leveled before the class whose \
-             instantiation reads its verdict, got inherited={inherited} class={class}",
-        );
+        assert_leveled_before(module, "m.Base.__init__", "m.Sub");
     }
 
     #[test]
