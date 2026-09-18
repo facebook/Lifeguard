@@ -141,6 +141,81 @@ impl CsrGraph {
 
         in_cycle
     }
+
+    /// Group nodes into levels such that every out-neighbor of a node sits in an
+    /// earlier level. Walking the levels in order then ensures a caller's analysis
+    /// reads finished results for all of its callees.
+    ///
+    /// `settled` marks nodes whose result is already known; they are omitted from
+    /// the levels and ignored when leveling their predecessors.
+    ///
+    /// NOTE: A node reachable only through a cycle among unsettled nodes would have
+    /// no valid level. Rather than loop forever, a back edge contributes nothing to
+    /// the level, which places such a node no later than its cycle peers. Callers
+    /// that need cycle members handled first should *settle them beforehand* --
+    /// `nodes_in_cycles` identifies them.
+    pub fn dependency_levels(&self, settled: &[bool]) -> Vec<Vec<u32>> {
+        assert_eq!(
+            settled.len(),
+            self.num_nodes(),
+            "settled flags must cover every node",
+        );
+
+        const UNLEVELED: u32 = u32::MAX;
+        let n = self.num_nodes();
+        let mut level = vec![UNLEVELED; n];
+        // Distinguishes a back edge (node still being expanded) from a node whose
+        // level is genuinely not computed yet.
+        let mut expanding = vec![false; n];
+        // Explicit DFS work stack: (node, cursor into that node's adjacency).
+        let mut work: Vec<(u32, u32)> = Vec::new();
+
+        for start in 0..n as u32 {
+            if settled[start as usize] || level[start as usize] != UNLEVELED {
+                continue;
+            }
+            work.push((start, self.offsets[start as usize]));
+            expanding[start as usize] = true;
+
+            while let Some(&(v, cursor)) = work.last() {
+                if cursor < self.offsets[v as usize + 1] {
+                    work.last_mut().expect("work stack is non-empty here").1 = cursor + 1;
+                    let w = self.adj[cursor as usize];
+                    let skip = settled[w as usize]
+                        || level[w as usize] != UNLEVELED
+                        || expanding[w as usize];
+                    if !skip {
+                        expanding[w as usize] = true;
+                        work.push((w, self.offsets[w as usize]));
+                    }
+                    continue;
+                }
+
+                // Every out-neighbor is either settled, leveled, or a back edge, so
+                // this node's level is one past the deepest leveled neighbor.
+                level[v as usize] = self
+                    .neighbors(v)
+                    .iter()
+                    .filter(|&&w| !settled[w as usize] && level[w as usize] != UNLEVELED)
+                    .map(|&w| level[w as usize] + 1)
+                    .max()
+                    .unwrap_or(0);
+                expanding[v as usize] = false;
+                work.pop();
+            }
+        }
+
+        let Some(deepest) = level.iter().filter(|&&l| l != UNLEVELED).max().copied() else {
+            return Vec::new();
+        };
+        let mut levels = vec![Vec::new(); deepest as usize + 1];
+        for (node, &node_level) in level.iter().enumerate() {
+            if node_level != UNLEVELED {
+                levels[node_level as usize].push(node as u32);
+            }
+        }
+        levels
+    }
 }
 
 #[cfg(test)]
@@ -224,5 +299,83 @@ mod tests {
     fn empty_graph() {
         assert_eq!(cyclic(0, &[]), Vec::<usize>::new());
         assert_eq!(cyclic(3, &[]), Vec::<usize>::new());
+    }
+
+    /// Levels of an `n`-node graph with no node settled.
+    fn levels(n: usize, edges: &[(u32, u32)]) -> Vec<Vec<u32>> {
+        CsrGraph::from_edges(n, edges).dependency_levels(&vec![false; n])
+    }
+
+    #[test]
+    fn isolated_nodes_share_the_first_level() {
+        assert_eq!(levels(3, &[]), vec![vec![0, 1, 2]]);
+    }
+
+    #[test]
+    fn a_chain_levels_callees_before_callers() {
+        // 0 -> 1 -> 2: node 2 has no out-edges, so it must come first.
+        assert_eq!(
+            levels(3, &[(0, 1), (1, 2)]),
+            vec![vec![2], vec![1], vec![0]]
+        );
+    }
+
+    #[test]
+    fn a_node_follows_its_deepest_neighbor() {
+        // 0 points at both 1 (level 0) and 2 (level 1 via 3), so 0 is level 2.
+        assert_eq!(
+            levels(4, &[(0, 1), (0, 2), (2, 3)]),
+            vec![vec![1, 3], vec![2], vec![0]],
+        );
+    }
+
+    #[test]
+    fn settled_nodes_are_omitted_and_ignored() {
+        // 0 -> 1 -> 2 with 1 settled: 2 still levels on its own, and 0 no longer
+        // waits on anything, so both land in the first level.
+        let graph = CsrGraph::from_edges(3, &[(0, 1), (1, 2)]);
+        assert_eq!(
+            graph.dependency_levels(&[false, true, false]),
+            vec![vec![0, 2]],
+        );
+    }
+
+    #[test]
+    fn every_node_settled_yields_no_levels() {
+        let graph = CsrGraph::from_edges(2, &[(0, 1)]);
+        assert!(graph.dependency_levels(&[true, true]).is_empty());
+    }
+
+    #[test]
+    fn a_cycle_among_unsettled_nodes_terminates() {
+        // Callers are expected to settle cycle members first. If they do not, the
+        // back edge is ignored rather than looping, and every node still appears
+        // exactly once.
+        let levels = levels(3, &[(0, 1), (1, 2), (2, 0)]);
+        let mut nodes: Vec<u32> = levels.into_iter().flatten().collect();
+        nodes.sort();
+        assert_eq!(nodes, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn levels_place_every_out_neighbor_earlier() {
+        // The defining property, over a graph with a diamond and a shared tail.
+        let edges = [(0, 1), (0, 2), (1, 3), (2, 3), (3, 4), (5, 0)];
+        let levels = levels(6, &edges);
+
+        let mut level_of = [usize::MAX; 6];
+        for (index, level) in levels.iter().enumerate() {
+            for &node in level {
+                level_of[node as usize] = index;
+            }
+        }
+        for (from, to) in edges {
+            assert!(
+                level_of[to as usize] < level_of[from as usize],
+                "edge {from}->{to} must point at an earlier level, got {} -> {}",
+                level_of[from as usize],
+                level_of[to as usize],
+            );
+        }
     }
 }
