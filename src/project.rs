@@ -1265,8 +1265,11 @@ impl ProjectInfo {
     }
 
     fn resolve_callable(&self, name: &ModuleName) -> Option<ModuleName> {
-        if self.contains_callable(name) {
+        if self.functions.contains_key(name) || self.classes.contains(name) {
             return Some(*name);
+        }
+        if self.contains_callable(name) {
+            return Some(self.methods.get(name).copied().unwrap_or(*name));
         }
         let (class, method) = name.split_attr()?;
         if !self.classes.contains(&class) {

@@ -231,6 +231,61 @@ import os
     }
 
     #[test]
+    fn test_method_call_on_reexported_class_instance() {
+        let code1 = r#"
+            class Pure:
+                def m(self):
+                    pass
+
+            class C:
+                def m(self):
+                    raise Exception()
+        "#;
+        let code2 = r#"
+            from m1 import Pure, C
+        "#;
+        let code3 = r#"
+            from m2 import Pure, C
+            Pure().m()
+            pure = Pure()
+            pure.m()
+            C().m() # E: unsafe-method-call
+            c = C()
+            c.m() # E: unsafe-method-call
+        "#;
+        check_all(vec![("m1", code1), ("m2", code2), ("m3", code3)]);
+    }
+
+    #[test]
+    fn test_nested_class_method_shadowed_by_submodule_reexport() {
+        let code1 = r#"
+            class C:
+                def m(self):
+                    pass
+        "#;
+        let code2 = r#"
+            class Outer:
+                class C:
+                    def m(self):
+                        raise Exception()
+        "#;
+        let code3 = r#"
+            from m1 import C
+        "#;
+        let code4 = r#"
+            from pkg import Outer
+            c = Outer.C()
+            c.m() # E: unsafe-method-call
+        "#;
+        check_all(vec![
+            ("m1", code1),
+            ("pkg", code2),
+            ("pkg.Outer", code3),
+            ("m4", code4),
+        ]);
+    }
+
+    #[test]
     fn test_method_call_on_constructor_result() {
         let code = r#"
 class Widget:
