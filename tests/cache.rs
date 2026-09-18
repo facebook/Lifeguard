@@ -21,7 +21,6 @@ mod tests {
     use lifeguard::cache::LibraryCache;
     use lifeguard::cache::MergedClassFacts;
     use lifeguard::cache::dedupe_implicit_imports;
-    use lifeguard::cache::is_call_verified_safe;
     use lifeguard::config::AnalysisConfig;
     use lifeguard::effects::ImportedArgs;
     use lifeguard::errors::ErrorKind;
@@ -46,6 +45,7 @@ mod tests {
     use lifeguard::pyrefly::module_name::ModuleName;
     use lifeguard::runner::Options;
     use lifeguard::runner::default_python_version;
+    use lifeguard::safety_resolver::is_call_verified_safe;
     use lifeguard::test_lib::TestSources;
     use lifeguard::test_lib::reduce_workspace_from_merged;
 

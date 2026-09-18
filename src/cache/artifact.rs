@@ -142,7 +142,7 @@ impl ConstructorCallees {
 
     /// Each recorded callee as the FQN that owns it paired with the method name,
     /// which together rebuild the callee without allocating an interned FQN.
-    pub(super) fn iter(
+    pub(crate) fn iter(
         &self,
         class_fqn: ModuleName,
     ) -> impl Iterator<Item = (ModuleName, &'static str)> {

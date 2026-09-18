@@ -38,4 +38,4 @@ pub use crate::cache::reduce::MergedClassFacts;
 pub use crate::cache::reduce::ReduceWorkspace;
 pub use crate::cache::reduce::ResolvedCache;
 #[doc(hidden)]
-pub use crate::cache::reduce::is_call_verified_safe;
+pub use crate::safety_resolver::is_call_verified_safe;

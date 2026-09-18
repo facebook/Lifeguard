@@ -36,6 +36,7 @@ pub mod project;
 pub mod pyrefly;
 mod resolution;
 pub mod runner;
+pub mod safety_resolver;
 pub mod source_analyzer;
 pub mod source_map;
 pub mod stub_analyzer;
