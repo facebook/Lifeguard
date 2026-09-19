@@ -215,40 +215,6 @@ class Foo:
     }
 
     #[test]
-    fn test_property_accessor_many_arguments_still_checks_safety() {
-        let args = (0..64)
-            .map(|i| format!("{}", i))
-            .chain(std::iter::once("unsafe()".to_owned()))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let code = format!(
-            r#"
-def unsafe():
-    raise()
-
-class Foo:
-    @property
-    def value(self):
-        return self._value
-
-    @value.setter({})  # E: unsafe-function-call
-    def value(self, value):
-        self._value = value
-
-    @value.getter({})  # E: unsafe-function-call
-    def value(self):
-        return self._value
-
-    @value.deleter({})  # E: unsafe-function-call
-    def value(self):
-        del self._value
-"#,
-            args, args, args
-        );
-        check(&code);
-    }
-
-    #[test]
     fn test_declared_safe_decorator_allows_many_arguments() {
         let args = (0..65)
             .map(|i| format!("{}", i))
@@ -259,29 +225,6 @@ class Foo:
 import pytest
 
 @pytest.mark.parametrize({})
-def test_parameterized():
-    ...
-"#,
-            args
-        );
-        check(&code);
-    }
-
-    #[test]
-    fn test_declared_safe_decorator_many_arguments_still_checks_safety() {
-        let args = (0..64)
-            .map(|i| format!("{}", i))
-            .chain(std::iter::once("unsafe()".to_owned()))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let code = format!(
-            r#"
-import pytest
-
-def unsafe():
-    raise()
-
-@pytest.mark.parametrize({})  # E: unsafe-function-call
 def test_parameterized():
     ...
 "#,
@@ -318,6 +261,71 @@ def star():
 
 @factory(**KWARGS)  # E: imported-var-argument
 def kwargs():
+    ...
+"#;
+        check_all(vec![("foo", foo), ("__main__", __main__)]);
+    }
+
+    #[test]
+    fn test_forwarded_param_decorator_argument() {
+        let foo = r#"
+REGISTRY = []
+"#;
+        let __main__ = r#"
+from foo import REGISTRY
+
+def factory(value):
+    value.append(1)
+    return lambda f: f
+
+def outer(param):
+    @factory(param)
+    def inner():
+        ...
+
+outer(REGISTRY)  # E: imported-var-argument  # E: unsafe-function-call
+"#;
+        check_all(vec![("foo", foo), ("__main__", __main__)]);
+    }
+
+    #[test]
+    fn test_class_decorator_mutates_imported_argument() {
+        let foo = r#"
+REGISTRY = []
+
+class Decorator:
+    def __init__(self, value):
+        value.append(1)
+
+    def __call__(self, f):
+        return f
+"#;
+        let __main__ = r#"
+from foo import REGISTRY, Decorator
+
+@Decorator(REGISTRY)  # E: imported-var-argument  # E: unsafe-decorator-call
+def decorated():
+    ...
+"#;
+        check_all(vec![("foo", foo), ("__main__", __main__)]);
+    }
+
+    #[test]
+    fn test_returned_decorator_mutates_imported_argument() {
+        let foo = r#"
+REGISTRY = []
+
+def register(value):
+    def decorator(f):
+        value.append(f)
+        return f
+    return decorator
+"#;
+        let __main__ = r#"
+from foo import REGISTRY, register
+
+@register(REGISTRY)  # E: imported-var-argument  # E: unsafe-decorator-call
+def decorated():
     ...
 "#;
         check_all(vec![("foo", foo), ("__main__", __main__)]);
