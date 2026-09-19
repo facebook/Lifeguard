@@ -550,6 +550,23 @@ impl<'a> SourceAnalyzer<'a> {
             .is_some_and(|stub| stub.definitions.get(&module, &name).is_some())
     }
 
+    fn check_call_arg_limit(
+        &self,
+        args: Option<&Arguments>,
+        fname: Option<&ModuleName>,
+        output: &mut ModuleEffects,
+    ) {
+        // Argument indices beyond MAX_ARGS overflow the bitset; a stub's effects
+        // can still govern the call without relying on argument tracking.
+        if let Some(args) = args
+            && args.args.len() > MAX_ARGS
+            && !fname.is_some_and(|fname| self.call_effect_from_stub(fname))
+        {
+            let eff = Effect::new(EffectKind::TooManyArgs, ModuleName::empty(), args.range());
+            self.add_effect(eff, output);
+        }
+    }
+
     fn check_unresolved_call(
         &self,
         func: &Expr,
@@ -665,18 +682,7 @@ impl<'a> SourceAnalyzer<'a> {
 
         let resolved = self.resolve_function_name(func, args, output);
 
-        // More than MAX_ARGS positional args overflow the `unsafe_indices` bitset,
-        // so we fall back to a conservative `TooManyArgs` error — unless a stub
-        // provides the callee's effect, in which case that effect governs instead.
-        if let Some(a) = args
-            && a.args.len() > MAX_ARGS
-            && !resolved
-                .as_ref()
-                .is_some_and(|(_, fname)| self.call_effect_from_stub(fname))
-        {
-            let eff = Effect::new(EffectKind::TooManyArgs, ModuleName::empty(), a.range());
-            self.add_effect(eff, output);
-        }
+        self.check_call_arg_limit(args, resolved.as_ref().map(|(_, fname)| fname), output);
 
         let Some((res, fname)) = resolved else {
             return;
@@ -1295,32 +1301,45 @@ impl<'a> SourceAnalyzer<'a> {
         // Treat a decorator as a call. If the decorator does not have explicit call syntax,
         // treat it as a call with no arguments.
         for dec in decs {
-            let mut call = &dec.expression;
+            let mut callee = &dec.expression;
             let mut args = None;
-            if let Expr::Call(func) = call {
-                args = Some(&func.arguments);
-                call = &func.func;
+            let mut call_data = CallData::empty();
+            if let Expr::Call(decorator_call) = callee {
+                for arg in &decorator_call.arguments.args {
+                    self.expr(arg, output);
+                }
+                for keyword in &decorator_call.arguments.keywords {
+                    self.expr(&keyword.value, output);
+                }
+                call_data = self.check_call_args(&decorator_call.arguments, output);
+                args = Some(&decorator_call.arguments);
+                callee = &decorator_call.func;
             }
-            if Self::is_property_decorator(call) {
+            if Self::is_property_decorator(callee) {
                 continue;
             }
-            // Decorator expressions are not routed through the generic
+            let resolved = self.info.resolve(&self.cursor, callee);
+            let fname = resolved.as_ref().and_then(|res| self.resolved_fname(res));
+            if !fname.as_ref().is_some_and(manual_override::declared_safe) {
+                self.check_call_arg_limit(args, fname.as_ref(), output);
+            }
+            // Decorator callee expressions are not routed through the generic
             // expression walk, so an attribute chain that crosses a submodule
             // this module never imported would otherwise go unrecorded. Record
             // the chain up to the module rather than the decorator itself: the
             // decorator's own name goes into `called_functions` below, which
             // would otherwise eliminate it as an implicit import.
-            if let Expr::Attribute(attr_expr) = call
+            if let Expr::Attribute(attr_expr) = callee
                 && let Expr::Attribute(inner) = &*attr_expr.value
             {
                 self.check_attr(inner, output);
             }
-            let Some(res) = self.info.resolve(&self.cursor, call) else {
-                self.check_unresolved_call(call, args, output, Some(CallKind::Decorator));
+            let Some(res) = resolved else {
+                self.check_unresolved_call(callee, args, output, Some(CallKind::Decorator));
                 continue;
             };
-            let Some(call_name) = res.expr_full_name else {
-                let name = match call {
+            let Some(fname) = fname else {
+                let name = match callee {
                     Expr::Subscript(_) => "<subscript>",
                     _ => "<unknown>",
                 };
@@ -1329,10 +1348,6 @@ impl<'a> SourceAnalyzer<'a> {
                 self.add_effect(eff, output);
                 continue;
             };
-            let fname = self
-                .fname_replace_import_alias(&call_name, &res)
-                .unwrap_or_else(|| res.qualified_name());
-
             if manual_override::declared_safe(&fname) {
                 continue;
             }
@@ -1353,7 +1368,7 @@ impl<'a> SourceAnalyzer<'a> {
                     kind,
                     fname,
                     dec.range,
-                    EffectData::Call(Box::new(CallData::empty())),
+                    EffectData::Call(Box::new(call_data)),
                 )
             } else {
                 Effect::new(kind, fname, dec.range)
