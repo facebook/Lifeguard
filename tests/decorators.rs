@@ -145,6 +145,316 @@ def g(x):
     }
 
     #[test]
+    fn test_decorator_arguments_on_definitions() {
+        let code = r#"
+def safe_factory(*args, **kwargs):
+    return lambda f: f
+
+def unsafe():
+    raise()
+
+@safe_factory(unsafe())  # E: unsafe-function-call
+def function():
+    ...
+
+@safe_factory(value=unsafe())  # E: unsafe-function-call
+class Class:
+    ...
+
+@safe_factory(*[unsafe()])  # E: unsafe-function-call
+async def async_function():
+    ...
+
+class Container:
+    @safe_factory(**{"value": unsafe()})  # E: unsafe-function-call
+    def method(self):
+        ...
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_declared_safe_decorator_still_checks_arguments() {
+        let code = r#"
+import pytest
+
+def unsafe():
+    raise()
+
+@pytest.mark.parametrize(unsafe())  # E: unsafe-function-call
+def test_parameterized():
+    ...
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_property_accessor_arguments() {
+        let code = r#"
+def unsafe():
+    raise()
+
+class Foo:
+    @property(unsafe())  # E: unsafe-function-call
+    def value(self):
+        return self._value
+
+    @value.setter(unsafe())  # E: unsafe-function-call
+    def value(self, value):
+        self._value = value
+
+    @value.getter(unsafe())  # E: unsafe-function-call
+    def value(self):
+        return self._value
+
+    @value.deleter(unsafe())  # E: unsafe-function-call
+    def value(self):
+        del self._value
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_declared_safe_decorator_allows_many_arguments() {
+        let args = (0..65)
+            .map(|i| format!("{}", i))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let code = format!(
+            r#"
+import pytest
+
+@pytest.mark.parametrize({})
+def test_parameterized():
+    ...
+"#,
+            args
+        );
+        check(&code);
+    }
+
+    #[test]
+    fn test_imported_mutating_decorator_arguments() {
+        let foo = r#"
+REGISTRY = {}
+ARGS = (REGISTRY,)
+KWARGS = {"value": REGISTRY}
+
+def factory(value):
+    value["seen"] = True
+    return lambda f: f
+"#;
+        let __main__ = r#"
+from foo import ARGS, KWARGS, REGISTRY, factory
+
+@factory(REGISTRY)  # E: imported-var-argument
+def positional():
+    ...
+
+@factory(value=REGISTRY)  # E: imported-var-argument
+def keyword():
+    ...
+
+@factory(*ARGS)  # E: imported-var-argument
+def star():
+    ...
+
+@factory(**KWARGS)  # E: imported-var-argument
+def kwargs():
+    ...
+"#;
+        check_all(vec![("foo", foo), ("__main__", __main__)]);
+    }
+
+    #[test]
+    fn test_forwarded_param_decorator_argument() {
+        let foo = r#"
+REGISTRY = []
+"#;
+        let __main__ = r#"
+from foo import REGISTRY
+
+def factory(value):
+    value.append(1)
+    return lambda f: f
+
+def outer(param):
+    @factory(param)
+    def inner():
+        ...
+
+outer(REGISTRY)  # E: imported-var-argument  # E: unsafe-function-call
+"#;
+        check_all(vec![("foo", foo), ("__main__", __main__)]);
+    }
+
+    #[test]
+    fn test_class_decorator_mutates_imported_argument() {
+        let foo = r#"
+REGISTRY = []
+
+class Decorator:
+    def __init__(self, value):
+        value.append(1)
+
+    def __call__(self, f):
+        return f
+"#;
+        let __main__ = r#"
+from foo import REGISTRY, Decorator
+
+@Decorator(REGISTRY)  # E: imported-var-argument  # E: unsafe-decorator-call
+def decorated():
+    ...
+"#;
+        check_all(vec![("foo", foo), ("__main__", __main__)]);
+    }
+
+    #[test]
+    fn test_returned_decorator_mutates_imported_argument() {
+        let foo = r#"
+REGISTRY = []
+
+def register(value):
+    def decorator(f):
+        value.append(f)
+        return f
+    return decorator
+"#;
+        let __main__ = r#"
+from foo import REGISTRY, register
+
+@register(REGISTRY)  # E: imported-var-argument  # E: unsafe-decorator-call
+def decorated():
+    ...
+"#;
+        check_all(vec![("foo", foo), ("__main__", __main__)]);
+    }
+
+    #[test]
+    fn test_decorator_argument_safety_controls() {
+        let code = r#"
+def read_only(value):
+    return lambda f: f
+
+local = {}
+
+@read_only(local)
+def fresh_mutable():
+    ...
+
+@read_only(1)
+def pure_argument():
+    ...
+
+def factory(value):
+    def decorator(fn):
+        raise()
+    return decorator
+
+@factory(1)  # E: unsafe-decorator-call
+def returned_decorator_raises():
+    ...
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_imported_read_only_and_local_mutating_decorator_arguments() {
+        let foo = r#"
+REGISTRY = {}
+
+def read_only(value):
+    return lambda f: f
+"#;
+        let __main__ = r#"
+from foo import REGISTRY, read_only
+
+@read_only(REGISTRY)
+def imported_read_only():
+    ...
+
+def mutator(value):
+    value["seen"] = True
+    return lambda f: f
+
+local = {}
+
+@mutator(local)
+def local_mutating():
+    ...
+"#;
+        check_all(vec![("foo", foo), ("__main__", __main__)]);
+    }
+
+    #[test]
+    fn test_decorator_argument_overflow() {
+        let args = (0..65)
+            .map(|i| format!("{}", i))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let code = format!(
+            r#"
+def factory(*args):
+    return lambda f: f
+
+@factory({})  # E: too-many-args
+def decorated():
+    ...
+"#,
+            args
+        );
+        check(&code);
+    }
+
+    #[test]
+    fn test_decorator_argument_overflow_stub_callee_allowed() {
+        let args = (0..65)
+            .map(|i| format!("{}", i))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let code = format!(
+            r#"
+import lifeguard_test
+
+@lifeguard_test.bar({})
+def decorated():
+    ...
+"#,
+            args
+        );
+        check(&code);
+    }
+
+    #[test]
+    fn test_safe_and_deferred_decorator_arguments() {
+        let code = r#"
+def safe_factory(*args, **kwargs):
+    return lambda f: f
+
+def pure():
+    return 1
+
+def unsafe():
+    raise()
+
+@safe_factory(1)
+def constant_argument():
+    ...
+
+@safe_factory(pure())
+def pure_call_argument():
+    ...
+
+def outer():
+    @safe_factory(unsafe())
+    def nested():
+        ...
+"#;
+        check(code);
+    }
+
+    #[test]
     fn test_unknown_decorator() {
         let code = r#"
     @dec # E: unknown-decorator-call
