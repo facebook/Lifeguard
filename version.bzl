@@ -28,4 +28,4 @@
 # facebook/RELEASE.md for the full process; the usual entry point is:
 #
 #     buck2 run fbcode//safer_lazy_imports/lifeguard/facebook/scripts:release -- --bump-minor
-VERSION = "0.1.0"
+VERSION = "0.2.0"
