@@ -146,11 +146,34 @@ mod tests {
             self
         }
 
+        fn function_safety_map(mut self, entries: AHashMap<String, FunctionSafetyInfo>) -> Self {
+            self.0.function_safety = entries;
+            self
+        }
+
         fn function_safety<const N: usize>(
             mut self,
             entries: [(String, FunctionSafetyInfo); N],
         ) -> Self {
             self.0.function_safety = fsmap(entries);
+            self
+        }
+
+        fn missing_imports(mut self, missing: &[&str]) -> Self {
+            self.0.missing_imports = missing.iter().map(|name| mn(name)).collect();
+            self
+        }
+
+        fn implicit_imports(mut self, implicit: &[&str]) -> Self {
+            let CachedSafety::Ok(safety) = &mut self.0.safety else {
+                unreachable!("test builder always creates cached safety")
+            };
+            safety.implicit_imports = implicit.iter().map(|name| mn(name)).collect();
+            self
+        }
+
+        fn mutation_candidates(mut self, candidates: Vec<MutationCandidate>) -> Self {
+            self.0.mutation_candidates = candidates;
             self
         }
 
@@ -230,19 +253,10 @@ mod tests {
     }
 
     fn safe_cached_module(name: &str, imports: &[&str], implicit: &[&str]) -> CachedModule {
-        CachedModule {
-            name: mn(name),
-            safety: CachedSafety::Ok(CachedModuleSafety {
-                implicit_imports: implicit.iter().map(|s| mn(s)).collect(),
-                ..Default::default()
-            }),
-            imports: imports.iter().map(|s| mn(s)).collect(),
-            missing_imports: Default::default(),
-            ambiguous_imports: Default::default(),
-            side_effect_imports: Default::default(),
-            function_safety: AHashMap::new(),
-            mutation_candidates: Vec::new(),
-        }
+        cached_module(name)
+            .imports(imports)
+            .implicit_imports(implicit)
+            .build()
     }
 
     fn temp_cache_path(prefix: &str) -> PathBuf {
@@ -431,16 +445,12 @@ mod tests {
         };
 
         let cache = LibraryCache {
-            modules: vec![CachedModule {
-                name: mn("m"),
-                safety: CachedSafety::Ok(CachedModuleSafety::default()),
-                imports: Default::default(),
-                missing_imports: Default::default(),
-                ambiguous_imports: Default::default(),
-                side_effect_imports: Default::default(),
-                function_safety,
-                mutation_candidates: vec![candidate.clone()],
-            }],
+            modules: vec![
+                cached_module("m")
+                    .function_safety_map(function_safety)
+                    .mutation_candidates(vec![candidate.clone()])
+                    .build(),
+            ],
             exports: CachedExports {
                 re_exports: Vec::new(),
             },
@@ -1456,30 +1466,20 @@ mod tests {
         // verdict.
         let mut cache = LibraryCache::empty();
 
-        cache.modules.push(CachedModule {
-            name: mn("c"),
-            safety: CachedSafety::Ok(CachedModuleSafety::default()),
-            imports: Default::default(),
-            missing_imports: Default::default(),
-            ambiguous_imports: Default::default(),
-            side_effect_imports: Default::default(),
-            function_safety: fsmap([unsafe_if_imported("foo")]),
-            mutation_candidates: Vec::new(),
-        });
+        cache.modules.push(
+            cached_module("c")
+                .function_safety([unsafe_if_imported("foo")])
+                .build(),
+        );
 
-        cache.modules.push(CachedModule {
-            name: mn("b"),
-            safety: CachedSafety::Ok(CachedModuleSafety::default()),
-            imports: Default::default(),
-            missing_imports: Default::default(),
-            ambiguous_imports: Default::default(),
-            side_effect_imports: Default::default(),
-            function_safety: fsmap([(
-                "foo".to_string(),
-                FunctionSafetyInfo::new(FunctionSafety::UnsafeMissingDep),
-            )]),
-            mutation_candidates: Vec::new(),
-        });
+        cache.modules.push(
+            cached_module("b")
+                .function_safety([(
+                    "foo".to_string(),
+                    FunctionSafetyInfo::new(FunctionSafety::UnsafeMissingDep),
+                )])
+                .build(),
+        );
 
         cache.exports.re_exports.push(CachedReExport {
             exported_module: mn("b"),
@@ -2116,37 +2116,17 @@ mod tests {
     fn test_reduce_keeps_unsafe_method_error_with_safe_class_prefix() {
         let mut cache = LibraryCache {
             modules: vec![
-                CachedModule {
-                    name: mn("app"),
-                    safety: CachedSafety::Ok(CachedModuleSafety {
-                        errors: vec![CachedError {
-                            kind: ErrorKind::UnsafeMethodCall,
-                            metadata: "dep.Widget.configure".to_owned(),
-                            parameterized_decorator: false,
-                        }],
-                        ..Default::default()
-                    }),
-                    imports: Default::default(),
-                    missing_imports: Default::default(),
-                    ambiguous_imports: Default::default(),
-                    side_effect_imports: Default::default(),
-                    function_safety: [unsafe_missing_dep("wrapper", "dep.safe")]
-                        .into_iter()
-                        .collect(),
-                    mutation_candidates: Vec::new(),
-                },
-                CachedModule {
-                    name: mn("dep"),
-                    safety: CachedSafety::Ok(CachedModuleSafety::default()),
-                    imports: Default::default(),
-                    missing_imports: Default::default(),
-                    ambiguous_imports: Default::default(),
-                    side_effect_imports: Default::default(),
-                    function_safety: [safe("Widget"), unsafe_("Widget.configure"), safe("safe")]
-                        .into_iter()
-                        .collect(),
-                    mutation_candidates: Vec::new(),
-                },
+                cached_module("app")
+                    .errors(vec![CachedError {
+                        kind: ErrorKind::UnsafeMethodCall,
+                        metadata: "dep.Widget.configure".to_owned(),
+                        parameterized_decorator: false,
+                    }])
+                    .function_safety([unsafe_missing_dep("wrapper", "dep.safe")])
+                    .build(),
+                cached_module("dep")
+                    .function_safety([safe("Widget"), unsafe_("Widget.configure"), safe("safe")])
+                    .build(),
             ],
             exports: empty_exports(),
             ..Default::default()
@@ -2175,35 +2155,17 @@ mod tests {
     fn test_reduce_keeps_unknown_method_error_without_exact_method_verdict() {
         let mut cache = LibraryCache {
             modules: vec![
-                CachedModule {
-                    name: mn("app"),
-                    safety: CachedSafety::Ok(CachedModuleSafety {
-                        errors: vec![CachedError {
-                            kind: ErrorKind::UnknownFunctionCall,
-                            metadata: "dep.Widget.configure".to_owned(),
-                            parameterized_decorator: false,
-                        }],
-                        ..Default::default()
-                    }),
-                    imports: Default::default(),
-                    missing_imports: Default::default(),
-                    ambiguous_imports: Default::default(),
-                    side_effect_imports: Default::default(),
-                    function_safety: [unsafe_missing_dep("wrapper", "dep.safe")]
-                        .into_iter()
-                        .collect(),
-                    mutation_candidates: Vec::new(),
-                },
-                CachedModule {
-                    name: mn("dep"),
-                    safety: CachedSafety::Ok(CachedModuleSafety::default()),
-                    imports: Default::default(),
-                    missing_imports: Default::default(),
-                    ambiguous_imports: Default::default(),
-                    side_effect_imports: Default::default(),
-                    function_safety: [safe("Widget"), safe("safe")].into_iter().collect(),
-                    mutation_candidates: Vec::new(),
-                },
+                cached_module("app")
+                    .errors(vec![CachedError {
+                        kind: ErrorKind::UnknownFunctionCall,
+                        metadata: "dep.Widget.configure".to_owned(),
+                        parameterized_decorator: false,
+                    }])
+                    .function_safety([unsafe_missing_dep("wrapper", "dep.safe")])
+                    .build(),
+                cached_module("dep")
+                    .function_safety([safe("Widget"), safe("safe")])
+                    .build(),
             ],
             exports: empty_exports(),
             ..Default::default()
@@ -2232,33 +2194,15 @@ mod tests {
     fn test_reduce_keeps_unqualified_unknown_call_from_resolved_module() {
         let mut cache = LibraryCache {
             modules: vec![
-                CachedModule {
-                    name: mn("app"),
-                    safety: CachedSafety::Ok(CachedModuleSafety {
-                        errors: vec![CachedError {
-                            kind: ErrorKind::UnknownFunctionCall,
-                            metadata: "b()".to_owned(),
-                            parameterized_decorator: false,
-                        }],
-                        ..Default::default()
-                    }),
-                    imports: Default::default(),
-                    missing_imports: [mn("dep")].into_iter().collect(),
-                    ambiguous_imports: Default::default(),
-                    side_effect_imports: Default::default(),
-                    function_safety: AHashMap::new(),
-                    mutation_candidates: Vec::new(),
-                },
-                CachedModule {
-                    name: mn("dep"),
-                    safety: CachedSafety::Ok(CachedModuleSafety::default()),
-                    imports: Default::default(),
-                    missing_imports: Default::default(),
-                    ambiguous_imports: Default::default(),
-                    side_effect_imports: Default::default(),
-                    function_safety: fsmap([safe("b")]),
-                    mutation_candidates: Vec::new(),
-                },
+                cached_module("app")
+                    .errors(vec![CachedError {
+                        kind: ErrorKind::UnknownFunctionCall,
+                        metadata: "b()".to_owned(),
+                        parameterized_decorator: false,
+                    }])
+                    .missing_imports(&["dep"])
+                    .build(),
+                cached_module("dep").function_safety([safe("b")]).build(),
             ],
             exports: empty_exports(),
             ..Default::default()
@@ -2283,33 +2227,17 @@ mod tests {
     fn test_reduce_keeps_unqualified_unknown_call_despite_global_safe_name() {
         let mut cache = LibraryCache {
             modules: vec![
-                CachedModule {
-                    name: mn("app"),
-                    safety: CachedSafety::Ok(CachedModuleSafety {
-                        errors: vec![CachedError {
-                            kind: ErrorKind::UnknownFunctionCall,
-                            metadata: "b()".to_owned(),
-                            parameterized_decorator: false,
-                        }],
-                        ..Default::default()
-                    }),
-                    imports: Default::default(),
-                    missing_imports: Default::default(),
-                    ambiguous_imports: Default::default(),
-                    side_effect_imports: Default::default(),
-                    function_safety: fsmap([unsafe_missing_dep("wrapper", "dep.safe")]),
-                    mutation_candidates: Vec::new(),
-                },
-                CachedModule {
-                    name: mn("dep"),
-                    safety: CachedSafety::Ok(CachedModuleSafety::default()),
-                    imports: Default::default(),
-                    missing_imports: Default::default(),
-                    ambiguous_imports: Default::default(),
-                    side_effect_imports: Default::default(),
-                    function_safety: fsmap([safe("b"), safe("safe")]),
-                    mutation_candidates: Vec::new(),
-                },
+                cached_module("app")
+                    .errors(vec![CachedError {
+                        kind: ErrorKind::UnknownFunctionCall,
+                        metadata: "b()".to_owned(),
+                        parameterized_decorator: false,
+                    }])
+                    .function_safety([unsafe_missing_dep("wrapper", "dep.safe")])
+                    .build(),
+                cached_module("dep")
+                    .function_safety([safe("b"), safe("safe")])
+                    .build(),
             ],
             exports: empty_exports(),
             ..Default::default()
@@ -2486,37 +2414,19 @@ mod tests {
     fn test_reduce_keeps_unsafe_decorator_error_after_unrelated_promotion() {
         let mut cache = LibraryCache {
             modules: vec![
-                CachedModule {
-                    name: mn("app"),
-                    safety: CachedSafety::Ok(CachedModuleSafety {
-                        errors: vec![CachedError {
-                            kind: ErrorKind::UnsafeDecoratorCall,
-                            metadata: "app.deco".to_owned(),
-                            parameterized_decorator: true,
-                        }],
-                        ..Default::default()
-                    }),
-                    imports: Default::default(),
-                    missing_imports: Default::default(),
-                    ambiguous_imports: Default::default(),
-                    side_effect_imports: Default::default(),
-                    function_safety: fsmap([
+                cached_module("app")
+                    .errors(vec![CachedError {
+                        kind: ErrorKind::UnsafeDecoratorCall,
+                        metadata: "app.deco".to_owned(),
+                        parameterized_decorator: true,
+                    }])
+                    .function_safety([
                         safe("deco"),
                         unsafe_if_imported("deco.builder"),
                         unsafe_missing_dep("wrapper", "dep.safe"),
-                    ]),
-                    mutation_candidates: Vec::new(),
-                },
-                CachedModule {
-                    name: mn("dep"),
-                    safety: CachedSafety::Ok(CachedModuleSafety::default()),
-                    imports: Default::default(),
-                    missing_imports: Default::default(),
-                    ambiguous_imports: Default::default(),
-                    side_effect_imports: Default::default(),
-                    function_safety: fsmap([safe("safe")]),
-                    mutation_candidates: Vec::new(),
-                },
+                    ])
+                    .build(),
+                cached_module("dep").function_safety([safe("safe")]).build(),
             ],
             exports: empty_exports(),
             ..Default::default()
@@ -2545,23 +2455,15 @@ mod tests {
     #[test]
     fn test_reduce_clears_bare_decorator_error_without_nested_function_check() {
         let mut cache = LibraryCache {
-            modules: vec![CachedModule {
-                name: mn("app"),
-                safety: CachedSafety::Ok(CachedModuleSafety {
-                    errors: vec![CachedError {
-                        kind: ErrorKind::UnsafeDecoratorCall,
-                        metadata: "app.deco".to_owned(),
-                        parameterized_decorator: false,
-                    }],
-                    ..Default::default()
-                }),
-                imports: Default::default(),
-                missing_imports: Default::default(),
-                ambiguous_imports: Default::default(),
-                side_effect_imports: Default::default(),
-                function_safety: fsmap([safe("deco"), unsafe_if_imported("deco.unused_helper")]),
-                mutation_candidates: Vec::new(),
-            }],
+            modules: vec![
+                cached_module("app")
+                    .errors(vec![cached_error(
+                        ErrorKind::UnsafeDecoratorCall,
+                        "app.deco",
+                    )])
+                    .function_safety([safe("deco"), unsafe_if_imported("deco.unused_helper")])
+                    .build(),
+            ],
             exports: empty_exports(),
             ..Default::default()
         };
@@ -2582,37 +2484,19 @@ mod tests {
     fn test_reduce_clears_decorator_error_when_nested_functions_are_safe() {
         let mut cache = LibraryCache {
             modules: vec![
-                CachedModule {
-                    name: mn("app"),
-                    safety: CachedSafety::Ok(CachedModuleSafety {
-                        errors: vec![CachedError {
-                            kind: ErrorKind::UnsafeDecoratorCall,
-                            metadata: "app.deco".to_owned(),
-                            parameterized_decorator: true,
-                        }],
-                        ..Default::default()
-                    }),
-                    imports: Default::default(),
-                    missing_imports: Default::default(),
-                    ambiguous_imports: Default::default(),
-                    side_effect_imports: Default::default(),
-                    function_safety: fsmap([
+                cached_module("app")
+                    .errors(vec![CachedError {
+                        kind: ErrorKind::UnsafeDecoratorCall,
+                        metadata: "app.deco".to_owned(),
+                        parameterized_decorator: true,
+                    }])
+                    .function_safety([
                         safe("deco"),
                         safe("deco.builder"),
                         unsafe_missing_dep("wrapper", "dep.safe"),
-                    ]),
-                    mutation_candidates: Vec::new(),
-                },
-                CachedModule {
-                    name: mn("dep"),
-                    safety: CachedSafety::Ok(CachedModuleSafety::default()),
-                    imports: Default::default(),
-                    missing_imports: Default::default(),
-                    ambiguous_imports: Default::default(),
-                    side_effect_imports: Default::default(),
-                    function_safety: fsmap([safe("safe")]),
-                    mutation_candidates: Vec::new(),
-                },
+                    ])
+                    .build(),
+                cached_module("dep").function_safety([safe("safe")]).build(),
             ],
             exports: empty_exports(),
             ..Default::default()
