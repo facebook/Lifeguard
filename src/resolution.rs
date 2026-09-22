@@ -100,6 +100,53 @@ fn lookup_callee_info<'a>(
     None
 }
 
+fn apply_confirmed_candidate(
+    module: ModuleName,
+    candidate: &MutationCandidate,
+    function_safety: &mut AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
+    module_scope_error: &mut impl FnMut(ModuleName, String),
+) {
+    match &candidate.site {
+        MutationCandidateSite::ModuleScope { call } => {
+            module_scope_error(module, call.as_str().to_owned());
+        }
+        MutationCandidateSite::Function { name } => {
+            if let Some(info) = get_function_safety_mut(function_safety, &module, name.as_str()) {
+                info.verdict.insert(FunctionSafety::Unsafe);
+                // The callee is resolved as mutating the imported argument;
+                // discharge that missing dependency while retaining `Unsafe`.
+                info.missing_dep_callees.remove(&candidate.callee);
+                if info.missing_dep_callees.is_empty() {
+                    info.verdict.remove(FunctionSafety::UnsafeMissingDep);
+                }
+            }
+        }
+    }
+}
+
+fn discharge_candidate(
+    module: ModuleName,
+    candidate: &MutationCandidate,
+    function_safety: &mut AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
+) -> bool {
+    let MutationCandidateSite::Function { name } = &candidate.site else {
+        return false;
+    };
+    let Some(info) = get_function_safety_mut(function_safety, &module, name.as_str()) else {
+        return false;
+    };
+
+    info.missing_dep_callees.remove(&candidate.callee);
+    if !info.verdict.has(FunctionSafety::UnsafeMissingDep) || !info.missing_dep_callees.is_empty() {
+        return false;
+    }
+
+    info.verdict.remove(FunctionSafety::UnsafeMissingDep);
+    // Other concerns such as `UnsafeIfImported` still make cross-module calls
+    // unsafe and cannot verify callers.
+    info.verdict.is_safe()
+}
+
 /// Resolve cached cross-library mutation candidates against merged function verdicts.
 ///
 /// Confirmed module-scope candidates emit `ImportedVarArgument`; confirmed
@@ -118,6 +165,10 @@ fn apply_mutation_candidates<'a>(
             candidates.iter().map(move |candidate| (module, candidate))
         })
         .collect();
+
+    // Apply in two phases (confirm unsafe, then discharge to safe), so that
+    // the result does not depend on the sequence the candidates arrive in.
+
     // Confirmation reads only `mutated_params`, which this phase never writes,
     // so all candidates can be checked against the same frozen state in parallel.
     let confirmed: Vec<bool> = pairs
@@ -125,49 +176,30 @@ fn apply_mutation_candidates<'a>(
         .map(|(_, candidate)| candidate_mutates(candidate, module_names, function_safety))
         .collect();
 
-    // Apply in original order: verdict writes and `callee_resolves_unsafe`
-    // reads are order-dependent even though confirmation above is not.
+    for (&(module, candidate), _) in pairs.iter().zip(&confirmed).filter(|(_, c)| **c) {
+        apply_confirmed_candidate(module, candidate, function_safety, &mut module_scope_error);
+    }
+
+    // Now compute discharges from the confirmed-unsafe set.
+    //
+    // A resolved non-safe callee still blocks its caller. Only an unresolved or
+    // verified-safe callee discharges the dependency. Decided for every candidate
+    // against the same state, so one discharge cannot enable another within this
+    // pass; `promote_fixpoint` runs straight after and iterates that cascade to a
+    // fixpoint.
+    let discharges: Vec<bool> = pairs
+        .par_iter()
+        .zip(confirmed.par_iter())
+        .map(|(&(_, candidate), &confirmed)| {
+            !confirmed
+                && matches!(candidate.site, MutationCandidateSite::Function { .. })
+                && !callee_resolves_unsafe(&candidate.callee, module_names, function_safety)
+        })
+        .collect();
+
     let mut resolved_to_safe = false;
-    for (&(module, candidate), &confirmed) in pairs.iter().zip(&confirmed) {
-        match (&candidate.site, confirmed) {
-            (MutationCandidateSite::ModuleScope { call }, true) => {
-                module_scope_error(module, call.as_str().to_owned());
-            }
-            (MutationCandidateSite::ModuleScope { .. }, false) => {}
-            (MutationCandidateSite::Function { name }, true) => {
-                if let Some(info) = get_function_safety_mut(function_safety, &module, name.as_str())
-                {
-                    info.verdict.insert(FunctionSafety::Unsafe);
-                    // The callee is resolved as mutating the imported argument;
-                    // discharge that missing dependency while retaining `Unsafe`.
-                    info.missing_dep_callees.remove(&candidate.callee);
-                    if info.missing_dep_callees.is_empty() {
-                        info.verdict.remove(FunctionSafety::UnsafeMissingDep);
-                    }
-                }
-            }
-            (MutationCandidateSite::Function { name }, false) => {
-                // A resolved non-safe callee still blocks its caller. Only an
-                // unresolved or verified-safe callee discharges this dependency.
-                if callee_resolves_unsafe(&candidate.callee, module_names, function_safety) {
-                    continue;
-                }
-                if let Some(info) = get_function_safety_mut(function_safety, &module, name.as_str())
-                {
-                    info.missing_dep_callees.remove(&candidate.callee);
-                    if info.verdict.has(FunctionSafety::UnsafeMissingDep)
-                        && info.missing_dep_callees.is_empty()
-                    {
-                        info.verdict.remove(FunctionSafety::UnsafeMissingDep);
-                        // Other concerns such as `UnsafeIfImported` still make
-                        // cross-module calls unsafe and cannot verify callers.
-                        if info.verdict.is_safe() {
-                            resolved_to_safe = true;
-                        }
-                    }
-                }
-            }
-        }
+    for (&(module, candidate), _) in pairs.iter().zip(&discharges).filter(|(_, d)| **d) {
+        resolved_to_safe |= discharge_candidate(module, candidate, function_safety);
     }
     resolved_to_safe
 }
@@ -527,5 +559,112 @@ mod tests {
 
         assert_eq!(errors, vec![(caller, "helper".to_owned())]);
         assert!(outcome.globally_safe.contains("helper"));
+    }
+
+    /// The confirmation has to win over the discharge regardless of which
+    /// candidate is applied first, to avoid a false-safe.
+    #[test]
+    fn confirmation_blocks_discharge_in_either_candidate_order() {
+        let caller = ModuleName::from_str("caller");
+        let dependency = ModuleName::from_str("dependency");
+
+        // `dependency.mutate` mutates its first parameter, so a call passing an
+        // imported object to it is confirmed.
+        let mut mutator = FunctionSafetyInfo::new(FunctionSafety::Safe);
+        mutator.mutated_params.push(MutatedParam {
+            name: ModuleName::from_str("value"),
+            position: ParamPosition::Positional(0),
+        });
+
+        // `caller.helper` is only blocked by its unresolved dependency on it.
+        let mut helper = FunctionSafetyInfo::new(FunctionSafety::UnsafeMissingDep);
+        helper
+            .missing_dep_callees
+            .insert(ModuleName::from_str("dependency.mutate"));
+
+        let confirmed_candidate = MutationCandidate {
+            callee: ModuleName::from_str("elsewhere.sink"),
+            site: MutationCandidateSite::Function {
+                name: ModuleName::from_str("mutate"),
+            },
+            arg_offset: 0,
+            imported_args: ImportedArgs {
+                unsafe_arg_indices: 1,
+                ..Default::default()
+            },
+        };
+        // Passes its imported object at index 1, which misses the parameter
+        // `dependency.mutate` mutates, so this candidate is not confirmed. The
+        // arg has to be tracked: `ImportedArgs::default()` means nothing was
+        // tracked at all, which `hits_param` treats as conservatively matching.
+        let discharge_candidate = MutationCandidate {
+            callee: ModuleName::from_str("dependency.mutate"),
+            site: MutationCandidateSite::Function {
+                name: ModuleName::from_str("helper"),
+            },
+            arg_offset: 0,
+            imported_args: ImportedArgs {
+                unsafe_arg_indices: 0b10,
+                ..Default::default()
+            },
+        };
+
+        // `elsewhere.sink` mutates its argument, which is what confirms the first
+        // candidate and turns `dependency.mutate` unsafe.
+        let sink = ModuleName::from_str("elsewhere");
+        let mut sink_info = FunctionSafetyInfo::new(FunctionSafety::Safe);
+        sink_info.mutated_params.push(MutatedParam {
+            name: ModuleName::from_str("value"),
+            position: ParamPosition::Positional(0),
+        });
+
+        let resolve_with = |dependency_first: bool| {
+            let mut function_safety = AHashMap::from_iter([
+                (
+                    caller,
+                    AHashMap::from_iter([("helper".to_owned(), helper.clone())]),
+                ),
+                (
+                    dependency,
+                    AHashMap::from_iter([("mutate".to_owned(), mutator.clone())]),
+                ),
+                (
+                    sink,
+                    AHashMap::from_iter([("sink".to_owned(), sink_info.clone())]),
+                ),
+            ]);
+            let module_names = AHashSet::from_iter([caller, dependency, sink]);
+            let modules: Vec<(ModuleName, &[MutationCandidate])> = if dependency_first {
+                vec![
+                    (dependency, std::slice::from_ref(&confirmed_candidate)),
+                    (caller, std::slice::from_ref(&discharge_candidate)),
+                ]
+            } else {
+                vec![
+                    (caller, std::slice::from_ref(&discharge_candidate)),
+                    (dependency, std::slice::from_ref(&confirmed_candidate)),
+                ]
+            };
+
+            resolve_program(
+                &module_names,
+                &mut function_safety,
+                modules.into_iter(),
+                AHashSet::new(),
+                |_, _| {},
+            );
+            function_safety[&caller]["helper"].clone()
+        };
+
+        for dependency_first in [true, false] {
+            let helper = resolve_with(dependency_first);
+            assert!(
+                helper
+                    .missing_dep_callees
+                    .contains(&ModuleName::from_str("dependency.mutate")),
+                "dependency_first={dependency_first}: a callee confirmed unsafe must keep \
+                 blocking its caller, got {helper:?}",
+            );
+        }
     }
 }
