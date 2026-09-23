@@ -220,6 +220,20 @@ def install(hook):
     }
 
     #[test]
+    fn test_setattr_reports_the_store_once() {
+        // The override covers the store, so `builtins` is not reported as a mutation too
+        let code = r#"
+import builtins
+
+def hook(name, *args, **kwargs):
+    return name
+
+setattr(builtins, "__import__", hook)  # E: builtins-import-override
+"#;
+        check(code);
+    }
+
+    #[test]
     fn test_assign_to_other_builtins_attr() {
         // only `__import__` redirects the import machinery
         let code = r#"

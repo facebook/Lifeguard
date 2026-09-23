@@ -389,18 +389,27 @@ impl<'a> SourceAnalyzer<'a> {
             // Treat `setattr(foo, "bar", baz)` as equivalent to `foo.bar = baz`
             Expr::StringLiteral(x) => {
                 let attr = Identifier::new(x.value.to_str(), x.range);
-                self.check_attr_impl(obj, &attr, &ExprContext::Store, output)
+                self.check_attr_impl(obj, &attr, &ExprContext::Store, output);
+                // `check_attr_impl` already reports the store for an import binding;
+                // checking `obj` too would report the same store a second time.
+                if !self.resolves_to_import(obj) {
+                    self.check_assign_target(obj, output);
+                }
             }
             // Treat `setattr(foo, var, ...)` as a side effect
             _ => {
                 let name = ModuleName::from_str("setattr");
                 let eff = Effect::new(EffectKind::ProhibitedFunctionCall, name, attr.range());
                 self.add_effect(eff, output);
+                self.check_assign_target(obj, output);
             }
         }
-        // Check obj as a potentially dangerous assignment target (even though obj.attr is the
-        // actual assignment target, we are still potentially modifying obj)
-        self.check_assign_target(obj, output);
+    }
+
+    fn resolves_to_import(&self, expr: &Expr) -> bool {
+        self.info
+            .resolve(&self.cursor, expr)
+            .is_some_and(|res| res.is_import())
     }
 
     fn run_body(
@@ -1015,7 +1024,10 @@ impl<'a> SourceAnalyzer<'a> {
 
             // Check for store context (mutation) regardless of whether we could resolve the full module
             if *ctx == ExprContext::Store {
-                let eff = Self::imported_store_effect(&res, Some(attr), obj.range());
+                // Cover the attribute too, so the span matches what `check_assign_target`
+                // reports for the same store written as `obj.attr = value`.
+                let range = obj.range().cover(attr.range());
+                let eff = Self::imported_store_effect(&res, Some(attr), range);
                 self.add_effect(eff, output);
             }
         };
