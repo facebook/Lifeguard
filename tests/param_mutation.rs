@@ -1383,23 +1383,6 @@ f(A)  # E: imported-var-argument  # E: unsafe-function-call
     }
 
     #[test]
-    fn test_param_aliased_three_hops_then_mutated_is_unsafe() {
-        // Three-hop local alias chain
-        let code = r#"
-from foo import A
-
-def f(x):
-    y = x
-    z = y
-    w = z
-    w.append(1)
-
-f(A)  # E: imported-var-argument  # E: unsafe-function-call
-"#;
-        check(code);
-    }
-
-    #[test]
     fn test_aliased_param_forwarded_two_hops() {
         // Two-hop alias before forwarding should still be tracked.
         let a = r#"

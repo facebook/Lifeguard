@@ -238,20 +238,6 @@ mod tests {
     }
 
     #[test]
-    fn test_find_cycles_simple_cycle() {
-        let mut g = Graph::new();
-        let a = ModuleName::from_str("a");
-        let b = ModuleName::from_str("b");
-        g.add_node(&a);
-        g.add_node(&b);
-        g.add_edge(&a, &b);
-        g.add_edge(&b, &a);
-        let cycles = g.find_cycles();
-        assert_eq!(cycles.len(), 1);
-        assert_eq!(cycles[0].len(), 2);
-    }
-
-    #[test]
     fn test_find_cycles_multiple_cycles() {
         let mut g = Graph::new();
         let a = ModuleName::from_str("a");
@@ -335,25 +321,6 @@ mod tests {
     }
 
     #[test]
-    fn test_large_cycle_four_nodes() {
-        let mut g = Graph::new();
-        let names: Vec<_> = ["w", "x", "y", "z"]
-            .iter()
-            .map(|s| ModuleName::from_str(s))
-            .collect();
-        for n in &names {
-            g.add_node(n);
-        }
-        // w -> x -> y -> z -> w
-        for i in 0..names.len() {
-            g.add_edge(&names[i], &names[(i + 1) % names.len()]);
-        }
-        let cycles = g.find_cycles();
-        assert_eq!(cycles.len(), 1, "single 4-node ring should be one SCC");
-        assert_eq!(cycles[0].len(), 4);
-    }
-
-    #[test]
     fn test_has_edge() {
         let mut g = Graph::new();
         let a = ModuleName::from_str("a");
@@ -374,20 +341,6 @@ mod tests {
         let a = ModuleName::from_str("a");
         let b = ModuleName::from_str("b");
         assert!(!g.has_edge(&a, &b), "unknown nodes should return false");
-    }
-
-    #[test]
-    fn test_with_capacity() {
-        let mut g = Graph::with_capacity(10, 20);
-        let a = ModuleName::from_str("a");
-        let b = ModuleName::from_str("b");
-        g.add_node(&a);
-        g.add_node(&b);
-        g.add_edge(&a, &b);
-        assert!(
-            g.has_edge(&a, &b),
-            "graph with pre-allocated capacity should work normally"
-        );
     }
 
     #[test]

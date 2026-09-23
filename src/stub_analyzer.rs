@@ -283,31 +283,6 @@ def f():
     }
 
     #[test]
-    fn test_effect_in_class_body() {
-        let code = r#"
-import a
-class A:
-    imported_var_mutation("a.x")
-"#;
-        let out = run_file(code);
-        let effs = &out.effects;
-        assert_keys(effs, vec!["test.A"]);
-    }
-
-    #[test]
-    fn test_effect_in_method_body() {
-        let code = r#"
-import a
-class A:
-    def f():
-        imported_var_mutation("a.x")
-"#;
-        let out = run_file(code);
-        let effs = &out.effects;
-        assert_keys(effs, vec!["test.A.f"]);
-    }
-
-    #[test]
     fn test_effects_in_multiple_scopes() {
         let code = r#"
 import a

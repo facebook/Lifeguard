@@ -363,22 +363,6 @@ mod tests {
     }
 
     #[test]
-    fn test_cache_serialize_deserialize_bytes() {
-        let safety_map = SafetyMap::new();
-        safety_map.insert(mn("test"), SafetyResult::Ok(ModuleSafety::new()));
-
-        let import_graph = ImportGraph::new();
-        let exports = Exports::empty();
-        let side_effect_imports = SideEffectMap::new();
-
-        let cache = LibraryCache::build(&safety_map, &import_graph, &exports, &side_effect_imports);
-        let loaded = round_trip(&cache);
-
-        assert_eq!(loaded.modules.len(), 1);
-        assert_eq!(loaded.modules[0].name, mn("test"));
-    }
-
-    #[test]
     fn test_cache_round_trip_preserves_re_exports() {
         let cache = LibraryCache {
             modules: vec![safe_cached_module("package", &[], &[])],

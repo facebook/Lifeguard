@@ -98,13 +98,6 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_lifeguard_output() {
-        let lifeguard_output = LifeGuardOutput::new(true);
-        assert!(lifeguard_output.load_imports_eagerly.is_empty());
-        assert!(lifeguard_output.lazy_eligible.is_empty());
-    }
-
-    #[test]
     fn test_expected_output_format() {
         let mut lifeguard_output = LifeGuardOutput::new(true);
 

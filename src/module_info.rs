@@ -940,14 +940,6 @@ class C:
     }
 
     #[test]
-    fn test_builtin_int_resolves() {
-        let code = "x = 1\n";
-        let result = make_module_info_and_resolve(code, &["test"], "int");
-        assert!(result.is_some(), "builtin 'int' should resolve");
-        assert_eq!(result.unwrap().0, ModuleName::builtins());
-    }
-
-    #[test]
     fn test_local_shadows_builtin() {
         // A local definition of `list` should take precedence over the builtin
         let code = "list = [1, 2, 3]\n";

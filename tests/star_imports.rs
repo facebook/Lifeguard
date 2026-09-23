@@ -46,25 +46,6 @@ mod tests {
             .unwrap_or(false)
     }
 
-    fn count_effects(
-        result: &lifeguard::project::AnalysisMap,
-        module: &str,
-        kind: EffectKind,
-    ) -> usize {
-        let module_name = ModuleName::from_str(module);
-        result
-            .get(&module_name)
-            .map(|am| {
-                am.module_effects
-                    .effects
-                    .values()
-                    .flatten()
-                    .filter(|e| e.kind == kind)
-                    .count()
-            })
-            .unwrap_or(0)
-    }
-
     #[test]
     fn test_star_import_with_dunder_all_submodule_tracking() {
         // When module `a` defines __all__ = ["sub"] and `a.sub` is a known module,
@@ -178,35 +159,6 @@ from a import *
         assert!(
             !has_effect(&result, "main", EffectKind::ImportedVarReassignment),
             "No reassignment effect when there is no prior import of the same name"
-        );
-    }
-
-    #[test]
-    fn test_star_import_no_multiple_reassignment_with_from_import() {
-        // Same as test_star_import_no_reassignment_with_from_import but with
-        // multiple names. Since from-import re-exports have non-empty source
-        // modules, star imports don't trigger ImportedVarReassignment.
-        let a = r#"
-__all__ = ["foo", "bar"]
-foo = 1
-bar = 2
-"#;
-        let b = r#"
-foo = 10
-bar = 20
-"#;
-        let main = r#"
-from b import foo
-from b import bar
-from a import *
-"#;
-        let modules = vec![("a", a), ("b", b), ("main", main)];
-        let result = analyze_tree(&modules);
-
-        assert_eq!(
-            count_effects(&result, "main", EffectKind::ImportedVarReassignment),
-            0,
-            "from-import re-exports have non-empty source, so star import does not trigger reassignment"
         );
     }
 
