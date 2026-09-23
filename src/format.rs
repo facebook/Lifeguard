@@ -323,128 +323,104 @@ mod tests {
         assert_eq!(format_expr(&expr), expected, "source: {source}");
     }
 
-    #[test]
-    fn test_name() {
-        check("foo", "foo");
-        check("_private", "_private");
+    fn check_cases(cases: &[(&str, &str)]) {
+        cases
+            .iter()
+            .for_each(|(source, expected)| check(source, expected));
     }
 
     #[test]
-    fn test_attribute() {
-        check("foo.bar", "foo.bar");
-        check("a.b.c", "a.b.c");
+    fn test_names_attributes_and_calls() {
+        check_cases(&[
+            ("foo", "foo"),
+            ("_private", "_private"),
+            ("foo.bar", "foo.bar"),
+            ("a.b.c", "a.b.c"),
+            ("foo()", "foo()"),
+            ("foo(a, b)", "foo(a, b)"),
+            ("foo(a, x=1)", "foo(a, x=Int(1))"),
+            ("obj.method(x)", "obj.method(x)"),
+            ("f(**kw)", "f(**kw)"),
+        ]);
     }
 
     #[test]
-    fn test_call_no_args() {
-        check("foo()", "foo()");
+    fn test_operators() {
+        check_cases(&[
+            ("x + y", "x + y"),
+            ("a * b", "a * b"),
+            ("a // b", "a // b"),
+            ("a ** b", "a ** b"),
+            ("a - b", "a - b"),
+            ("a @ b", "a @ b"),
+            ("a / b", "a / b"),
+            ("a % b", "a % b"),
+            ("a << b", "a << b"),
+            ("a >> b", "a >> b"),
+            ("a | b", "a | b"),
+            ("a ^ b", "a ^ b"),
+            ("a & b", "a & b"),
+            ("-x", "-x"),
+            ("not x", "not x"),
+            ("~x", "~x"),
+            ("+x", "+x"),
+            ("a and b", "a and b"),
+            ("a or b", "a or b"),
+            ("x == 1", "x == Int(1)"),
+            ("x is None", "x is None"),
+            ("x not in items", "x not in items"),
+        ]);
     }
 
     #[test]
-    fn test_call_with_args() {
-        check("foo(a, b)", "foo(a, b)");
-        check("foo(a, x=1)", "foo(a, x=Int(1))");
+    fn test_lambdas_and_conditionals() {
+        check_cases(&[
+            ("lambda: 1", "lambda: Int(1)"),
+            ("lambda x, y: x", "lambda x, y: x"),
+            ("a if cond else b", "a if cond else b"),
+        ]);
     }
 
     #[test]
-    fn test_call_method() {
-        check("obj.method(x)", "obj.method(x)");
+    fn test_containers_and_subscripts() {
+        check_cases(&[
+            ("{}", "{}"),
+            ("{'a': 1, 'b': 2}", "{\"a\": Int(1), \"b\": Int(2)}"),
+            ("[1, 2, 3]", "[Int(1), Int(2), Int(3)]"),
+            ("a[1:2]", "a[Int(1):Int(2)]"),
+            ("a[1:]", "a[Int(1):]"),
+            ("a[:2]", "a[:Int(2)]"),
+            ("a[::2]", "a[::Int(2)]"),
+            ("a[0]", "a[Int(0)]"),
+            ("d['key']", "d[\"key\"]"),
+            ("(a, b)", "(a, b)"),
+            ("(a,)", "(a,)"),
+            ("*args", "*args"),
+            ("{1, 2, 3}", "{Int(1), Int(2), Int(3)}"),
+            ("{**d}", "{**d}"),
+        ]);
     }
 
     #[test]
-    fn test_binop() {
-        check("x + y", "x + y");
-        check("a * b", "a * b");
-        check("a // b", "a // b");
-        check("a ** b", "a ** b");
+    fn test_comprehensions_and_generators() {
+        check_cases(&[
+            ("[x for x in items]", "[x for x in items]"),
+            ("[x for x in items if x]", "[x for x in items if x]"),
+            ("{x for x in items}", "{x for x in items}"),
+            ("{k: v for k, v in items}", "{k: v for (k, v) in items}"),
+            ("(x for x in items)", "(x for x in items)"),
+        ]);
     }
 
     #[test]
-    fn test_unary_op() {
-        check("-x", "-x");
-        check("not x", "not x");
-        check("~x", "~x");
-    }
-
-    #[test]
-    fn test_lambda_no_params() {
-        check("lambda: 1", "lambda: Int(1)");
-    }
-
-    #[test]
-    fn test_lambda_with_params() {
-        check("lambda x, y: x", "lambda x, y: x");
-    }
-
-    #[test]
-    fn test_dict_empty() {
-        check("{}", "{}");
-    }
-
-    #[test]
-    fn test_dict_with_items() {
-        check("{'a': 1, 'b': 2}", "{\"a\": Int(1), \"b\": Int(2)}");
-    }
-
-    #[test]
-    fn test_list() {
-        check("[1, 2, 3]", "[Int(1), Int(2), Int(3)]");
-    }
-
-    #[test]
-    fn test_list_comprehension() {
-        check("[x for x in items]", "[x for x in items]");
-        check("[x for x in items if x]", "[x for x in items if x]");
-    }
-
-    #[test]
-    fn test_slice() {
-        check("a[1:2]", "a[Int(1):Int(2)]");
-        check("a[1:]", "a[Int(1):]");
-        check("a[:2]", "a[:Int(2)]");
-        check("a[::2]", "a[::Int(2)]");
-    }
-
-    #[test]
-    fn test_subscript() {
-        check("a[0]", "a[Int(0)]");
-        check("d['key']", "d[\"key\"]");
-    }
-
-    #[test]
-    fn test_bool_op() {
-        check("a and b", "a and b");
-        check("a or b", "a or b");
-    }
-
-    #[test]
-    fn test_compare() {
-        check("x == 1", "x == Int(1)");
-        check("x is None", "x is None");
-        check("x not in items", "x not in items");
-    }
-
-    #[test]
-    fn test_tuple() {
-        check("(a, b)", "(a, b)");
-    }
-
-    #[test]
-    fn test_starred() {
-        check("*args", "*args");
-    }
-
-    #[test]
-    fn test_if_expr() {
-        check("a if cond else b", "a if cond else b");
-    }
-
-    #[test]
-    fn test_literals() {
-        check("None", "None");
-        check("True", "True");
-        check("False", "False");
-        check("...", "...");
+    fn test_literals_and_fstrings() {
+        check_cases(&[
+            ("None", "None"),
+            ("True", "True"),
+            ("False", "False"),
+            ("...", "..."),
+            ("f'{x}'", "f\"...\""),
+        ]);
     }
 
     #[test]
@@ -463,42 +439,8 @@ mod tests {
     }
 
     #[test]
-    fn test_set() {
-        check("{1, 2, 3}", "{Int(1), Int(2), Int(3)}");
-    }
-
-    #[test]
     fn test_named_expr() {
         // walrus operator parsed inside a context where it's valid
         check("(x := 5)", "x := Int(5)");
-    }
-
-    #[test]
-    fn test_format_uncovered_binops_and_unary() {
-        check("a - b", "a - b");
-        check("a @ b", "a @ b");
-        check("a / b", "a / b");
-        check("a % b", "a % b");
-        check("a << b", "a << b");
-        check("a >> b", "a >> b");
-        check("a | b", "a | b");
-        check("a ^ b", "a ^ b");
-        check("a & b", "a & b");
-        check("+x", "+x");
-    }
-
-    #[test]
-    fn test_format_comprehensions_and_generators() {
-        check("{x for x in items}", "{x for x in items}");
-        check("{k: v for k, v in items}", "{k: v for (k, v) in items}");
-        check("(x for x in items)", "(x for x in items)");
-    }
-
-    #[test]
-    fn test_format_misc_uncovered_exprs() {
-        check("(a,)", "(a,)");
-        check("{**d}", "{**d}");
-        check("f(**kw)", "f(**kw)");
-        check("f'{x}'", "f\"...\"");
     }
 }
