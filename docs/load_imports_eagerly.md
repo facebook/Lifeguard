@@ -103,8 +103,6 @@ REGISTRY = {c.__name__: c for c in Plugin.__subclasses__()}
 
 Only stores through an import binding are matched. An alias made by assignment (`b = builtins`) or the implicit `__builtins__` global resolves to something other than an import, so neither is flagged - a known false negative.
 
-A destructuring target (`builtins.__import__, x = hook, 1`) is also missed, because `check_assign_target` does not recurse into `Tuple`/`List` elements. That gap is not specific to this kind - it swallows `ImportedVarMutation` the same way - so closing it belongs with the general store detection.
-
 **Why this may be unsafe**: Resolving a deferred import calls `builtins.__import__`. A module that replaces it therefore routes its own deferred imports back into the replacement, and dereferencing one of those imports from inside the replacement re-enters it while it is still running, which raises `ImportCycleError`. Eagerly loading the module's imports resolves them before the replacement is ever installed. As with `exec()`, this applies to **all** scopes, since the replacement usually lives in a function that runs long after the module body.
 
 **Python example**:

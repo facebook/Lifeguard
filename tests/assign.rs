@@ -240,6 +240,53 @@ original = builtins.__import__
     }
 
     #[test]
+    fn test_tuple_destructuring_store_to_imported_attr() {
+        let code = r#"
+import builtins
+builtins.my_helper, x = 1, 2  # E: imported-module-assignment
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_list_destructuring_store_to_imported_attr() {
+        let code = r#"
+import builtins
+[builtins.my_helper, x] = 1, 2  # E: imported-module-assignment
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_starred_destructuring_store_to_imported_attr() {
+        let code = r#"
+import builtins
+*builtins.my_helper, x = 1, 2, 3  # E: imported-module-assignment
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_nested_destructuring_store_to_imported_attr() {
+        let code = r#"
+import builtins
+a, (builtins.my_helper, b) = 1, (2, 3)  # E: imported-module-assignment
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_destructuring_store_to_builtins_import() {
+        let code = r#"
+import builtins
+
+def install(hook):
+    builtins.__import__, x = hook, 1  # E: builtins-import-override
+"#;
+        check(code);
+    }
+
+    #[test]
     fn test_delete_builtins_import() {
         // removing the hook breaks deferred resolution as thoroughly as replacing it
         let code = r#"

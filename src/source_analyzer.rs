@@ -1222,7 +1222,22 @@ impl<'a> SourceAnalyzer<'a> {
         false
     }
 
+    fn check_assign_targets(&self, targets: &[Expr], output: &mut ModuleEffects) {
+        for target in targets {
+            self.check_assign_target(target, output);
+        }
+    }
+
     fn check_assign_target(&self, target: &Expr, output: &mut ModuleEffects) {
+        // A destructuring target resolves to nothing as a whole, so each element has to
+        // be checked on its own or every store inside one is dropped.
+        match target {
+            Expr::Tuple(e) => return self.check_assign_targets(&e.elts, output),
+            Expr::List(e) => return self.check_assign_targets(&e.elts, output),
+            Expr::Starred(e) => return self.check_assign_target(&e.value, output),
+            _ => {}
+        }
+
         if let Expr::Subscript(e) = target {
             if self.check_sys_modules_access(&e.value, e.range(), output) {
                 return;
