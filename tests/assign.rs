@@ -171,4 +171,83 @@ f(baz)  # E: imported-var-argument  # E: unsafe-function-call
 "#;
         check(code);
     }
+
+    #[test]
+    fn test_assign_to_builtins_import() {
+        let code = r#"
+import builtins
+
+def hook(name, *args, **kwargs):
+    return name
+
+builtins.__import__ = hook  # E: builtins-import-override
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_assign_to_builtins_import_in_function() {
+        // resolving a deferred import runs `install`, so reachability does not apply
+        let code = r#"
+import builtins
+
+def install(hook):
+    builtins.__import__ = hook  # E: builtins-import-override
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_assign_to_builtins_import_via_alias() {
+        let code = r#"
+import builtins as b
+
+def install(hook):
+    b.__import__ = hook  # E: builtins-import-override
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_setattr_builtins_import() {
+        let code = r#"
+import builtins
+
+def install(hook):
+    setattr(builtins, "__import__", hook)  # E: builtins-import-override
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_assign_to_other_builtins_attr() {
+        // only `__import__` redirects the import machinery
+        let code = r#"
+import builtins
+builtins.my_helper = 1  # E: imported-module-assignment
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_read_builtins_import() {
+        // saving the original hook redirects nothing on its own
+        let code = r#"
+import builtins
+original = builtins.__import__
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_delete_builtins_import() {
+        // removing the hook breaks deferred resolution as thoroughly as replacing it
+        let code = r#"
+import builtins
+
+def uninstall():
+    del builtins.__import__  # E: builtins-import-override
+"#;
+        check(code);
+    }
 }

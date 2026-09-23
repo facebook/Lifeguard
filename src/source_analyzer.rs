@@ -999,7 +999,6 @@ impl<'a> SourceAnalyzer<'a> {
         }
 
         if res.is_import() {
-            let name = ModuleName::from_name(&res.name);
             let attribute_module = get_import_chain_string(obj, Some(attr), &res.name);
 
             // Compute the full module path and add to called imports if it differs from base
@@ -1016,7 +1015,7 @@ impl<'a> SourceAnalyzer<'a> {
 
             // Check for store context (mutation) regardless of whether we could resolve the full module
             if *ctx == ExprContext::Store {
-                let eff = Effect::new(EffectKind::ImportedVarMutation, name, obj.range());
+                let eff = Self::imported_store_effect(&res, Some(attr), obj.range());
                 self.add_effect(eff, output);
             }
         };
@@ -1086,6 +1085,24 @@ impl<'a> SourceAnalyzer<'a> {
             return true;
         }
         false
+    }
+
+    /// The effect for storing to an import binding, or to `attr` on one.
+    /// `builtins.__import__` gets its own kind - the loader calls it for every
+    /// deferred import, so replacing or removing it re-enters this module.
+    fn imported_store_effect(
+        res: &ResolvedName,
+        attr: Option<&Identifier>,
+        range: TextRange,
+    ) -> Effect {
+        let is_import_override = attr.is_some_and(|a| a.as_str() == "__import__")
+            && res.import_parent() == Some(ModuleName::builtins());
+        if is_import_override {
+            let name = ModuleName::from_str("builtins.__import__");
+            return Effect::new(EffectKind::BuiltinsImportOverride, name, range);
+        }
+        let name = ModuleName::from_name(&res.name);
+        Effect::new(EffectKind::ImportedVarMutation, name, range)
     }
 
     fn check_subscript(&self, e: &ExprSubscript, output: &mut ModuleEffects) {
@@ -1214,11 +1231,15 @@ impl<'a> SourceAnalyzer<'a> {
         let Some(res) = self.info.resolve(&self.cursor, target) else {
             return;
         };
-        let name = ModuleName::from_name(&res.name);
         if res.is_import() {
-            let eff = Effect::new(EffectKind::ImportedVarMutation, name, target.range());
+            let attr = target.as_attribute_expr().map(|e| &e.attr);
+            let eff = Self::imported_store_effect(&res, attr, target.range());
             self.add_effect(eff, output);
-        } else if res.is_global() {
+            return;
+        }
+
+        let name = ModuleName::from_name(&res.name);
+        if res.is_global() {
             let eff = Effect::new(EffectKind::GlobalVarAssign, name, target.range());
             self.add_effect(eff, output);
         } else if res.scope == self.info.module_name && res.scope != self.cursor.scope() {

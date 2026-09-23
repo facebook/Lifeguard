@@ -84,6 +84,8 @@ pub enum EffectKind {
     SysModulesAccess,
     // Calling `__subclasses__()`.
     SubclassesAccess,
+    // Replacing or deleting `builtins.__import__`.
+    BuiltinsImportOverride,
     // Passing an imported variable as a function argument.
     ImportedVarArgument,
     // Re-assigning an imported variable (for re-export tracking).
@@ -141,6 +143,7 @@ impl EffectKind {
                 | Self::ExecCall
                 | Self::SysModulesAccess
                 | Self::SubclassesAccess
+                | Self::BuiltinsImportOverride
         )
     }
 

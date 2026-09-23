@@ -113,6 +113,7 @@ These are critical design decisions affecting correctness:
 - **Unresolved function calls**: Treated as UNSAFE when reached from eager code (reported as `UnknownFunctionCall`)
 - **`exec()` calls**: Module marked as UNSAFE and added to load_imports_eagerly set (differs from original analyzer)
 - **`sys.modules` access**: Module added to load_imports_eagerly set (subscript access and method calls depend on import ordering that lazy imports disrupts). Some subscript reads are exempted; see [load_imports_eagerly.md](load_imports_eagerly.md).
+- **`builtins.__import__` store**: Module added to load_imports_eagerly set (deferred imports resolve through `builtins.__import__`, so replacing or deleting it re-enters the module)
 
 ### Output Structure
 
@@ -128,6 +129,7 @@ The analyzer produces a `LifeGuardOutput` with two main components:
      - `CustomFinalizer` - classes with custom `__del__` implementations (unpredictable execution timing)
      - `ExecCall` - modules that call `exec()` (negates static analysis)
      - `SysModulesAccess` - modules that access `sys.modules` (depends on other imports already being in `sys.modules`)
+     - `BuiltinsImportOverride` - modules that store to `builtins.__import__` (deferred imports resolve through it, so replacing or deleting it re-enters the module)
    - **Do NOT use `load_imports_eagerly` for general "unsafe module" handling** - that's what the `lazy_eligible` dict is for
    - The `load_imports_eagerly` set tells the loader to completely disable lazy import behavior for that module's imports
 

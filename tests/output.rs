@@ -398,6 +398,43 @@ mod tests {
     }
 
     #[test]
+    fn test_builtins_import_override_loads_imports_eagerly() {
+        // mirrors `etils.epy.lazy_imports_utils` - side-effect free body, re-entrant hook
+        let helper = r#"
+            def get_kwargs():
+                return None
+        "#;
+        let hooks = r#"
+            import builtins
+            import helper
+
+            def _hook(name, *args, **kwargs):
+                return helper.get_kwargs()
+
+            def install():
+                builtins.__import__ = _hook
+        "#;
+        let consumer = r#"
+            import hooks
+        "#;
+        let modules = vec![("helper", helper), ("hooks", hooks), ("consumer", consumer)];
+
+        let result = run_lifeguard_analysis(&modules);
+
+        // `hooks` stays lazy-eligible with no failing deps; only its own imports go eager
+        let expected_output = serde_json::json!({
+            "LOAD_IMPORTS_EAGERLY": ["hooks"],
+            "LAZY_ELIGIBLE": {
+                "consumer": [],
+                "helper": [],
+                "hooks": []
+            }
+        });
+        let actual_output = serde_json::to_value(&result.output).unwrap();
+        assert_eq!(actual_output, expected_output);
+    }
+
+    #[test]
     fn test_safety_map_with_missing_modules() {
         // Same test as above but omitting m2 instead of analyzing it as unsafe
         let code1 = r#"

@@ -6,7 +6,7 @@ The LOAD_IMPORTS_EAGERLY set is distinct from the LAZY_ELIGIBLE dict:
 - **LOAD_IMPORTS_EAGERLY set**: Disables lazy imports entirely within a module. A module can both be safe to load lazily and in the LOAD_IMPORTS_EAGERLY set.
 
 ## The LOAD_IMPORTS_EAGERLY Cases
-A module is added to the LOAD_IMPORTS_EAGERLY set when any of these four cases are detected anywhere in the module, regardless of scope or reachability from top-level code.
+A module is added to the LOAD_IMPORTS_EAGERLY set when any of these five cases are detected anywhere in the module, regardless of scope or reachability from top-level code.
 
 ### 1. Custom Finalizers
 **Trigger**: A class defines a `__del__` method.
@@ -95,4 +95,35 @@ def _all_subclasses(cls):
     return set(cls.__subclasses__())  # parameter receiver, still detected
 
 REGISTRY = {c.__name__: c for c in Plugin.__subclasses__()}
+```
+
+### 5. builtins.__import__ Override
+
+**Trigger**: A store to `builtins.__import__` anywhere in the module, written directly, through `setattr(builtins, "__import__", ...)`, or as `del builtins.__import__`. Removing the hook breaks deferred resolution as thoroughly as replacing it.
+
+Only stores through an import binding are matched. An alias made by assignment (`b = builtins`) or the implicit `__builtins__` global resolves to something other than an import, so neither is flagged - a known false negative.
+
+A destructuring target (`builtins.__import__, x = hook, 1`) is also missed, because `check_assign_target` does not recurse into `Tuple`/`List` elements. That gap is not specific to this kind - it swallows `ImportedVarMutation` the same way - so closing it belongs with the general store detection.
+
+**Why this may be unsafe**: Resolving a deferred import calls `builtins.__import__`. A module that replaces it therefore routes its own deferred imports back into the replacement, and dereferencing one of those imports from inside the replacement re-enters it while it is still running, which raises `ImportCycleError`. Eagerly loading the module's imports resolves them before the replacement is ever installed. As with `exec()`, this applies to **all** scopes, since the replacement usually lives in a function that runs long after the module body.
+
+**Python example**:
+
+```python
+import builtins
+
+from mypkg import helpers  # deferred under lazy imports
+
+_real_import = builtins.__import__
+
+
+def _hook(name, *args, **kwargs):
+    # Reading `helpers` resolves the deferred import, which calls `_hook` again
+    # while this call is still on the stack -> ImportCycleError
+    helpers.record(name)
+    return _real_import(name, *args, **kwargs)
+
+
+def install():
+    builtins.__import__ = _hook
 ```

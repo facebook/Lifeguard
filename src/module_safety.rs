@@ -343,7 +343,8 @@ mod tests {
         safety.add_force_import_override(make_error(ErrorKind::ExecCall));
         safety.add_force_import_override(make_error(ErrorKind::SysModulesAccess));
         safety.add_force_import_override(make_error(ErrorKind::SubclassesAccess));
-        assert_eq!(safety.force_imports_eager_overrides.len(), 4);
+        safety.add_force_import_override(make_error(ErrorKind::BuiltinsImportOverride));
+        assert_eq!(safety.force_imports_eager_overrides.len(), 5);
     }
 
     #[test]

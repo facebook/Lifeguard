@@ -107,6 +107,10 @@ pub enum ErrorKind {
 
     /// A call has more than MAX_ARGS positional arguments, exceeding the tracking bitset.
     TooManyArgs,
+
+    /// `builtins.__import__` is replaced or removed. The loader calls it for every
+    /// deferred import, so this module's own imports must resolve before it is installed.
+    BuiltinsImportOverride,
 }
 
 impl ErrorKind {
@@ -118,6 +122,7 @@ impl ErrorKind {
                 | Self::ExecCall
                 | Self::SysModulesAccess
                 | Self::SubclassesAccess
+                | Self::BuiltinsImportOverride
         )
     }
 
@@ -220,6 +225,7 @@ impl SafetyError {
             EffectKind::ExecCall => Some(ErrorKind::ExecCall),
             EffectKind::SysModulesAccess => Some(ErrorKind::SysModulesAccess),
             EffectKind::SubclassesAccess => Some(ErrorKind::SubclassesAccess),
+            EffectKind::BuiltinsImportOverride => Some(ErrorKind::BuiltinsImportOverride),
             EffectKind::UnknownDecoratorCall => Some(ErrorKind::UnknownDecoratorCall),
             EffectKind::UnknownEffects => Some(ErrorKind::UnknownEffects),
             EffectKind::UnknownObject => Some(ErrorKind::UnknownObject),
