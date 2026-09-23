@@ -432,39 +432,19 @@ mod tests {
     }
 
     #[test]
-    fn test_filter_keeps_py_files() {
+    fn test_filter_keeps_only_python_sources() {
         resolve_case_helper(
             vec![
-                ("module1.py", "src/module1.py"),
-                ("module2.pyx", "src/module2.pyx"),
-                ("module3.pyi", "src/module3.pyi"),
+                ("valid.py", "src/valid.py"),
+                ("extension.pyx", "src/extension.pyx"),
+                ("stub.pyi", "src/stub.pyi"),
+                ("other.foo", "src/other.foo"),
+                ("no_key_extension", "src/no_key_extension.py"),
+                ("no_path_extension.py", "src/no_path_extension"),
             ],
             1,
-            &["module1"],
+            &["valid"],
         );
-    }
-
-    #[test]
-    fn test_filter_removes_other_extensions() {
-        resolve_case_helper(
-            vec![
-                ("module1.py", "src/module1.py"),
-                ("module2.pyx", "src/module2.pyx"),
-                ("module3.foo", "src/module3.foo"),
-            ],
-            1,
-            &["module1"],
-        );
-    }
-
-    #[test]
-    fn test_filter_removes_no_extension() {
-        let mut raw = RawSourceMap::default();
-        raw.insert("module1".to_string(), PathBuf::from("src/module1.py"));
-        raw.insert("module2".to_string(), PathBuf::from("module2"));
-
-        let result = resolve_source_map(raw);
-        assert_eq!(result.len(), 0);
     }
 
     #[test]
