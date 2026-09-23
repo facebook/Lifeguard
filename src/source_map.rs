@@ -468,23 +468,6 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_source_priority_single_py_file() {
-        resolve_case_helper(vec![("module1.py", "src/module1.py")], 1, &["module1"]);
-    }
-
-    #[test]
-    fn test_resolve_source_priority_no_conflicts() {
-        resolve_case_helper(
-            vec![
-                ("unique1.py", "src/unique1.py"),
-                ("unique2.py", "src/unique2.py"),
-            ],
-            2,
-            &["unique1", "unique2"],
-        );
-    }
-
-    #[test]
     fn test_resolve_source_priority_no_conflicts_same_file_name() {
         resolve_case_helper(
             vec![

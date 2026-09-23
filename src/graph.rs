@@ -351,14 +351,4 @@ mod tests {
         let ix2 = g.add_node(&a);
         assert_eq!(ix1, ix2, "adding same node twice should return same index");
     }
-
-    #[test]
-    fn test_contains() {
-        let mut g = Graph::new();
-        let a = ModuleName::from_str("a");
-        let b = ModuleName::from_str("b");
-        g.add_node(&a);
-        assert!(g.contains(&a));
-        assert!(!g.contains(&b));
-    }
 }

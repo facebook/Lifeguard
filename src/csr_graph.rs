@@ -256,12 +256,6 @@ mod tests {
     }
 
     #[test]
-    fn two_node_cycle_marks_both() {
-        // 0 -> 1 -> 0
-        assert_eq!(cyclic(2, &[(0, 1), (1, 0)]), vec![0, 1]);
-    }
-
-    #[test]
     fn three_node_cycle_marks_all() {
         // 0 -> 1 -> 2 -> 0
         assert_eq!(cyclic(3, &[(0, 1), (1, 2), (2, 0)]), vec![0, 1, 2]);

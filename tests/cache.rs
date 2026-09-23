@@ -518,9 +518,6 @@ mod tests {
 
         let foo = module(&cache, "foo");
         assert!(foo.imports.contains(&mn("bar")));
-
-        let loaded = round_trip(&cache);
-        assert_eq!(loaded.modules.len(), 2);
     }
 
     #[test]

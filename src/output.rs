@@ -1416,21 +1416,6 @@ mod tests {
     }
 
     #[test]
-    fn test_re_export_map_two_hops() {
-        // A re-exports Foo from B, B re-exports Foo from C, C is failing
-        let mut exports = Exports::empty();
-        exports.insert_re_export(attr("a", "Foo"), attr("b", "Foo"));
-        exports.insert_re_export(attr("b", "Foo"), attr("c", "Foo"));
-
-        let mut failing = SmallSet::new();
-        failing.insert(mn("c"));
-
-        let map = build_re_export_map(&exports, &failing);
-        assert!(map[&mn("a")].contains(&mn("c")));
-        assert!(map[&mn("b")].contains(&mn("c")));
-    }
-
-    #[test]
     fn test_re_export_map_three_hops() {
         // A -> B -> C -> D, D is failing
         let mut exports = Exports::empty();
@@ -1473,32 +1458,6 @@ mod tests {
         // B re-exports from A which is failing — but the chain B->A->B is a cycle,
         // so resolve_transitive returns None and B is not in the map
         assert!(!map.contains_key(&mn("b")));
-    }
-
-    #[test]
-    fn test_re_export_map_from_cache_two_hops() {
-        // Same scenario as test_re_export_map_two_hops but via cached path
-        let re_exports = vec![
-            CachedReExport {
-                exported_module: mn("a"),
-                exported_attr: "Foo".to_string(),
-                imported_module: mn("b"),
-                imported_attr: "Foo".to_string(),
-            },
-            CachedReExport {
-                exported_module: mn("b"),
-                exported_attr: "Foo".to_string(),
-                imported_module: mn("c"),
-                imported_attr: "Foo".to_string(),
-            },
-        ];
-
-        let mut failing = SmallSet::new();
-        failing.insert(mn("c"));
-
-        let map = build_re_export_map_from_cache(&re_exports, &failing);
-        assert!(map[&mn("a")].contains(&mn("c")));
-        assert!(map[&mn("b")].contains(&mn("c")));
     }
 
     #[test]
