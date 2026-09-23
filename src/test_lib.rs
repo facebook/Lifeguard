@@ -1309,31 +1309,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_dedent_strips_common_indentation() {
-        assert_eq!(
-            dedent("\n    import os\n    x = 1\n"),
-            "\nimport os\nx = 1\n"
-        );
-    }
+    fn test_dedent_cases() {
+        let cases = [
+            ("\n    import os\n    x = 1\n", "\nimport os\nx = 1\n"),
+            (
+                "\n    def f():\n        return 1\n",
+                "\ndef f():\n    return 1\n",
+            ),
+            ("\n    import os\n\n    x = 1\n", "\nimport os\n\nx = 1\n"),
+            ("import os\nx = 1\n", "import os\nx = 1\n"),
+        ];
 
-    #[test]
-    fn test_dedent_keeps_relative_indentation() {
-        assert_eq!(
-            dedent("\n    def f():\n        return 1\n"),
-            "\ndef f():\n    return 1\n"
-        );
-    }
-
-    #[test]
-    fn test_dedent_preserves_line_count() {
-        let code = "\n    import os\n\n    x = 1\n";
-        assert_eq!(dedent(code).lines().count(), code.lines().count());
-    }
-
-    #[test]
-    fn test_dedent_leaves_flush_left_code_alone() {
-        let code = "import os\nx = 1\n";
-        assert_eq!(dedent(code), code);
+        cases.into_iter().for_each(|(source, expected)| {
+            let actual = dedent(source);
+            assert_eq!(actual, expected, "source: {source:?}");
+            assert_eq!(actual.lines().count(), source.lines().count());
+        });
     }
 
     #[test]
