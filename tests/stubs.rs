@@ -432,4 +432,20 @@ NAMES = frozenset(f.name for f in dataclasses.fields(C))
 "#;
         check(code);
     }
+
+    #[test]
+    fn test_dataclasses_is_dataclass_is_pure() {
+        // `dataclasses.is_dataclass` is a `hasattr` on `__dataclass_fields__`
+        let code = r#"
+import dataclasses
+from dataclasses import dataclass
+
+@dataclass
+class C:
+    a: int = 0
+
+IS_DC = dataclasses.is_dataclass(C)
+"#;
+        check(code);
+    }
 }
