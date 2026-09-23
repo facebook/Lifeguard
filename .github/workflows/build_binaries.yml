@@ -33,6 +33,22 @@ jobs:
         with:
           toolchain: nightly-2026-07-05
           components: clippy, rustfmt
+      # maturin vendors pyrefly's path-dep crates into the sdist but not pyrefly's
+      # own workspace root, which Lifeguard's workspace excludes. Crates inheriting
+      # lints from that root then have no workspace to resolve against and the
+      # sdist fails to build.
+      - name: Detach vendored pyrefly crates from their workspace lints
+        run: |
+          python3 - <<'PY'
+          import pathlib, re
+
+          for manifest in sorted(pathlib.Path("pyrefly/crates").glob("*/Cargo.toml")):
+              text = manifest.read_text()
+              detached = re.sub(r"(?ms)^\[lints(?:\.[^\]]+)?\]\n.*?(?=^\[|\Z)", "", text)
+              if detached != text:
+                  manifest.write_text(detached)
+                  print(f"detached {manifest}")
+          PY
       - name: Build sdist
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
