@@ -294,4 +294,34 @@ quux.sub  # from import: should add baz.quux.sub
             "Expected baz.quux.sub in called imports for `from baz import quux; quux.sub`"
         );
     }
+
+    fn assert_called_import(code: &str, import: &str) {
+        let out = run_analysis(code);
+        assert!(
+            out.all_called_import_names
+                .contains(&ModuleName::from_str(import)),
+            "Expected {import} in all_called_import_names"
+        );
+    }
+
+    #[test]
+    fn test_import_used_only_in_function_is_called() {
+        assert_called_import("from b import helper\ndef f():\n    return helper()", "b");
+    }
+
+    #[test]
+    fn test_import_used_only_in_method_is_called() {
+        assert_called_import(
+            "import b\nclass C:\n    def m(self):\n        return b.helper()",
+            "b",
+        );
+    }
+
+    #[test]
+    fn test_import_used_only_in_nested_function_is_called() {
+        assert_called_import(
+            "import b\ndef f():\n    def g():\n        return b.helper()\n    return g",
+            "b",
+        );
+    }
 }

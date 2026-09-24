@@ -1475,6 +1475,9 @@ impl<'a> SourceAnalyzer<'a> {
         );
         let out = self.run_body(x, output);
         output.effects.merge(out.effects);
+        output
+            .all_called_import_names
+            .extend(out.all_called_import_names);
     }
 
     /// Extract the exception type name from a raise expression.
