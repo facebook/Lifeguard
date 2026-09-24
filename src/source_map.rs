@@ -200,18 +200,17 @@ pub(crate) fn resolve_source_map(raw: RawSourceMap) -> SourceMap {
 
 /// Returns priority value for Python extensions (lower number = higher priority).
 /// Returns Err for invalid unicode paths or unrecognized extensions.
+/// Ranks source-DB files only; bundled stubs override the result in `make_source_info_map`.
 fn source_priority(path: &Path) -> anyhow::Result<u8> {
     let s = path
         .to_str()
         .ok_or_else(|| anyhow!("Path contains invalid UTF-8: {:?}", path))?;
-    if s.ends_with("__init__.pyi") {
+    if s.ends_with("__init__.py") {
         Ok(0)
-    } else if s.ends_with(".pyi") {
-        Ok(1)
-    } else if s.ends_with("__init__.py") {
-        Ok(2)
     } else if s.ends_with(".py") {
-        Ok(3)
+        Ok(1)
+    } else if s.ends_with(".pyi") {
+        Ok(2)
     } else {
         Err(anyhow!("Unrecognized file extension for path: {:?}", path))
     }
@@ -472,10 +471,9 @@ mod tests {
 
     #[test]
     fn test_source_priority_values() {
-        assert_eq!(source_priority(Path::new("pkg/__init__.pyi")).ok(), Some(0));
-        assert_eq!(source_priority(Path::new("pkg/__init__.py")).ok(), Some(2));
-        assert_eq!(source_priority(Path::new("module.pyi")).ok(), Some(1));
-        assert_eq!(source_priority(Path::new("module.py")).ok(), Some(3));
+        assert_eq!(source_priority(Path::new("pkg/__init__.py")).ok(), Some(0));
+        assert_eq!(source_priority(Path::new("module.py")).ok(), Some(1));
+        assert_eq!(source_priority(Path::new("module.pyi")).ok(), Some(2));
         assert!(source_priority(Path::new("module.pyx")).is_err());
         assert!(source_priority(Path::new("module.rs")).is_err());
         assert!(source_priority(Path::new("module.txt")).is_err());

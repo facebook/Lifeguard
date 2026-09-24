@@ -200,7 +200,7 @@ impl ImportGraph {
 
     /// Build an import graph
     pub fn make(sources: &impl ModuleProvider, config: &AnalysisConfig) -> Self {
-        ImportGraphBuilder::with_capacity(sources.len(), config).build(sources)
+        ImportGraphBuilder::with_capacity(sources, config).build(sources)
     }
 
     /// Build an import graph and collect exports in a single pass, and report which
@@ -210,7 +210,7 @@ impl ImportGraph {
         sources: &impl ModuleProvider,
         config: &AnalysisConfig,
     ) -> (Self, Exports, AHashSet<ModuleName>) {
-        ImportGraphBuilder::with_capacity(sources.len(), config).build_with_exports(sources)
+        ImportGraphBuilder::with_capacity(sources, config).build_with_exports(sources)
     }
 
     /// Get a parallel iterator over all modules in the graph.
@@ -450,7 +450,8 @@ struct ImportGraphBuilder<'a> {
 }
 
 impl<'a> ImportGraphBuilder<'a> {
-    fn with_capacity(node_count: usize, config: &'a AnalysisConfig) -> Self {
+    fn with_capacity(sources: &impl ModuleProvider, config: &'a AnalysisConfig) -> Self {
+        let node_count = sources.len();
         Self {
             // 4x edge estimate: dotted imports like `a.b.c` expand into multiple edges
             graph: Graph::with_capacity(node_count, node_count * 4),
