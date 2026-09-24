@@ -10,6 +10,11 @@
 //! pointer-based adjacency structure's per-edge bookkeeping dominates: CSR stores
 //! the whole adjacency in two flat arrays and runs an allocation-light iterative
 //! Tarjan SCC.
+//!
+//! Sole production use is the call graph in `project.rs`, where a self-loop is
+//! recursion and therefore a cycle. For the module-scale import graph
+//! (ModuleName keys, petgraph-backed, self-imports not cycles), see
+//! `graph::Graph`.
 
 /// A directed graph over nodes `0..num_nodes`, stored as CSR adjacency.
 pub struct CsrGraph {

@@ -5,6 +5,13 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+//! ModuleName-keyed directed graph over modules, backed by petgraph. Sole
+//! production use is `imports::ImportGraph`: one node per module, so per-edge
+//! bookkeeping is affordable. Cycle detection reports multi-node SCCs only; a
+//! module importing itself is not a cycle here. For the function-scale call
+//! graph (dense `u32` keys, millions of nodes, self-loops count as cycles),
+//! see `csr_graph::CsrGraph`.
+
 use petgraph::Direction;
 use petgraph::algo::tarjan_scc;
 use petgraph::graph::DiGraph;
