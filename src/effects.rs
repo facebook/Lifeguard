@@ -16,7 +16,7 @@ use ruff_text_size::TextRange;
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::cursor::TryHandler;
+use crate::exceptions::TryHandler;
 use crate::format::ErrorString;
 use crate::format::bare_string;
 use crate::hasher::AHashMap;
@@ -555,7 +555,7 @@ impl EffectTable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cursor::TryHandler;
+    use crate::exceptions::TryHandler;
 
     #[test]
     fn test_serialize_effect_kind() {

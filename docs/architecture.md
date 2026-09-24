@@ -50,6 +50,7 @@ when they disagree on more modules than `--max-divergent-modules` allows.
 
 **AST traversal helpers**:
 - `cursor.rs` - Tracks current scope during AST traversal (module → class → function)
+- `exceptions.rs` - `try`/`except` handler matching (`TryHandler`) and the enclosing-block stack (`BlockStack`)
 - `bindings.rs` - Name resolution across scopes (`BindingsTable`)
 - `imports.rs` - Import graph construction and resolution
 

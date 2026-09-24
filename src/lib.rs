@@ -19,6 +19,7 @@ pub mod cursor;
 pub mod debug;
 pub mod effects;
 pub mod errors;
+pub mod exceptions;
 pub mod exports;
 pub mod find_sources;
 pub mod format;
