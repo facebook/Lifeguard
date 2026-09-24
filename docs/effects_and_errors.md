@@ -206,7 +206,7 @@ Effects (EffectTable: scope → Vec<Effect>)
     ▼
 ModuleSafety (errors + force_imports_eager_overrides + implicit_imports)
     │
-    ▼  [output.rs: LifeGuardAnalysis::from_whole_program()]
+    ▼  [output/policy.rs: LifeGuardAnalysis::from_whole_program()]
 LifeGuardOutput (lazy_eligible dict + load_imports_eagerly set)
 ```
 

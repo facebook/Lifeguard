@@ -16,7 +16,7 @@ AST parsing is on-demand — modules are parsed as needed during import graph co
 - `source_map.rs` loads the source DB and provides the `ModuleProvider` trait for on-demand parsing
 - `imports.rs` builds the `ImportGraph` and collects `Exports` in a single pass over all modules
 - `project.rs` runs parallel per-module analysis (dispatching through `analyzer.rs` to `source_analyzer.rs` or `stub_analyzer.rs`), then merges results into `ProjectInfo` and computes safety verdicts
-- `output.rs` walks the import graph to build the final `LifeGuardOutput` (lazy_eligible dict + load_imports_eagerly set)
+- `output/policy.rs` walks the import graph to build the final `LifeGuardOutput` (lazy_eligible dict + load_imports_eagerly set)
 
 ### Incremental (map/reduce) Analysis
 
@@ -68,7 +68,9 @@ when they disagree on more modules than `--max-divergent-modules` allows.
 - `class.rs` - Class metadata extraction
 - `exports.rs` - Module export detection
 - `stubs.rs` - Bundled stub file support
-- `output.rs` - `LifeGuardOutput` and `LifeGuardAnalysis` construction
+- `output.rs` - `LifeGuardOutput` JSON shape and serialization, declares the `output/` submodules
+- `output/policy.rs` - `LifeGuardAnalysis` construction: classification plus the lazy-eligibility policy
+- `output/diagnostics.rs` - Pass/fail summary report and the verbose per-module writer
 
 **Incremental analysis**:
 - `cache.rs` - Declares the cache submodules and re-exports their types and functions
