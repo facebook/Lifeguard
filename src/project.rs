@@ -41,6 +41,7 @@ use crate::effects::EffectKind;
 use crate::effects::EffectTable;
 use crate::errors::ErrorKind;
 use crate::errors::SafetyError;
+use crate::errors::is_parameterized_decorator_effect;
 use crate::exports::Exports;
 use crate::hasher::AHashMap;
 use crate::hasher::AHashSet;
@@ -109,15 +110,6 @@ struct MutationCandidateScope<'a> {
     /// Module's unresolved-import sets
     missing: Option<&'a AHashSet<ModuleName>>,
     ambiguous: Option<&'a AHashSet<ModuleName>>,
-}
-
-/// Whether an effect is a call to a parameterized decorator, `@deco(args)`,
-/// which runs the returned wrapper as well as the factory.
-fn is_parameterized_decorator_effect(effect: &Effect) -> bool {
-    matches!(
-        effect.kind,
-        EffectKind::DecoratorCall | EffectKind::ImportedDecoratorCall
-    ) && matches!(effect.data, EffectData::Call(_))
 }
 
 /// Whether `callee` (or one of its parents) is an unresolved import of the
@@ -1341,12 +1333,7 @@ impl ProjectInfo {
                     return;
                 }
             }
-            if let Err(e) = self.check_load_imports_eagerly(mod_name, result, &state) {
-                state
-                    .safety_map
-                    .insert(*mod_name, SafetyResult::AnalysisError(e));
-                return;
-            }
+            self.check_load_imports_eagerly(mod_name, result, &state);
             if let Err(e) = self.collect_implicit_imports(mod_name, result, &state) {
                 state
                     .safety_map
@@ -1832,18 +1819,20 @@ impl ProjectInfo {
         mod_name: &ModuleName,
         result: &AnalyzedModule,
         state: &GlobalAnalysisState,
-    ) -> Result<()> {
+    ) {
         // Find effects that trigger adding the module to the load_imports_eagerly set.
         for effs in result.module_effects.effects.values() {
-            for e in effs
-                .iter()
-                .filter(|e| e.kind.requires_eager_loading_imports())
-            {
-                let err = SafetyError::from_effect(e).ok_or(anyhow!("Unhandled effect {:?}", e))?;
+            for e in effs.iter() {
+                let Some(kind) = SafetyError::error_kind_for(e.kind) else {
+                    continue;
+                };
+                if !kind.requires_eager_loading_imports() {
+                    continue;
+                }
+                let err = SafetyError::new_from_effect(kind, e);
                 state.add_force_imports_eager_override_to_module(mod_name, err);
             }
         }
-        Ok(())
     }
 
     fn collect_implicit_imports(

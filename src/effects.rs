@@ -135,18 +135,6 @@ impl EffectKind {
         )
     }
 
-    // Regardless of reachability from a top-level statement, this effect anywhere in a module triggers the module's addition to the "load_imports_eagerly" set
-    pub fn requires_eager_loading_imports(&self) -> bool {
-        matches!(
-            self,
-            Self::CustomFinalizer
-                | Self::ExecCall
-                | Self::SysModulesAccess
-                | Self::SubclassesAccess
-                | Self::BuiltinsImportOverride
-        )
-    }
-
     pub fn is_unsafe_stub_effect(&self) -> bool {
         matches!(self, Self::UnknownEffects | Self::Unsafe | Self::Mutation)
     }

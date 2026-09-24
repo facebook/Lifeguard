@@ -114,7 +114,7 @@ pub enum ErrorKind {
 }
 
 impl ErrorKind {
-    // Keep in sync with EffectKind::requires_eager_loading_imports()
+    // An error anywhere in a module triggers its addition to `load_imports_eagerly`.
     pub fn requires_eager_loading_imports(&self) -> bool {
         matches!(
             self,
@@ -215,9 +215,9 @@ impl SafetyError {
         }
     }
 
-    // Some effects can be converted directly into safety errors.
-    pub fn from_effect(eff: &Effect) -> Option<Self> {
-        match eff.kind {
+    // The error kind an effect reports as, without constructing the error.
+    pub(crate) fn error_kind_for(kind: EffectKind) -> Option<ErrorKind> {
+        match kind {
             EffectKind::ProhibitedFunctionCall => Some(ErrorKind::ProhibitedCall),
             EffectKind::UnknownFunctionCall => Some(ErrorKind::UnknownFunctionCall),
             EffectKind::Raise => Some(ErrorKind::UnhandledException),
@@ -233,7 +233,11 @@ impl SafetyError {
             EffectKind::TooManyArgs => Some(ErrorKind::TooManyArgs),
             _ => None,
         }
-        .map(|kind| Self::new_from_effect(kind, eff))
+    }
+
+    // Some effects can be converted directly into safety errors.
+    pub fn from_effect(eff: &Effect) -> Option<Self> {
+        Self::error_kind_for(eff.kind).map(|kind| Self::new_from_effect(kind, eff))
     }
 
     pub fn from_unsafe_call(eff: &Effect) -> Result<Self> {
@@ -256,7 +260,7 @@ impl SafetyError {
 /// Whether `eff` is a decorator applied as a call (`@deco(...)`) rather than a
 /// bare `@deco`. Only the call form runs a returned wrapper at decoration time,
 /// so its nested functions must also be verified safe.
-fn is_parameterized_decorator_effect(eff: &Effect) -> bool {
+pub(crate) fn is_parameterized_decorator_effect(eff: &Effect) -> bool {
     matches!(
         eff.kind,
         EffectKind::DecoratorCall | EffectKind::ImportedDecoratorCall
@@ -321,6 +325,25 @@ mod tests {
             err1, err4,
             "different ErrorKind at same range should differ"
         );
+    }
+
+    #[test]
+    fn test_error_kind_for_marks_eager_kinds() {
+        for kind in [
+            EffectKind::CustomFinalizer,
+            EffectKind::ExecCall,
+            EffectKind::SysModulesAccess,
+            EffectKind::SubclassesAccess,
+            EffectKind::BuiltinsImportOverride,
+        ] {
+            assert!(
+                SafetyError::error_kind_for(kind)
+                    .is_some_and(|k| k.requires_eager_loading_imports()),
+                "{kind:?} should map to an eager-loading error"
+            );
+        }
+        assert!(SafetyError::error_kind_for(EffectKind::FunctionCall).is_none());
+        assert!(SafetyError::error_kind_for(EffectKind::Mutation).is_none());
     }
 
     #[test]
