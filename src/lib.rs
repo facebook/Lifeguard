@@ -26,6 +26,7 @@ pub mod format;
 pub mod graph;
 pub mod hasher;
 pub mod imports;
+pub(crate) mod known_functions;
 pub mod manual_override;
 pub mod module_effects;
 pub mod module_info;

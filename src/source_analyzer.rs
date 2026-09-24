@@ -71,7 +71,7 @@ use crate::hasher::AHashSet;
 use crate::hasher::HashSetExt;
 use crate::imports::ImportGraph;
 use crate::imports::get_import_chain_string;
-use crate::manual_override;
+use crate::known_functions::KnownFunctions;
 use crate::module_effects::ModuleEffects;
 use crate::module_info::ModuleInfo;
 use crate::module_info::ResolvedName;
@@ -301,6 +301,10 @@ pub struct SourceAnalyzer<'a> {
 }
 
 impl<'a> SourceAnalyzer<'a> {
+    fn known_functions(&self) -> KnownFunctions<'a> {
+        KnownFunctions::new(self.info.stubs)
+    }
+
     fn check_method(&self, func_def: &StmtFunctionDef, output: &mut ModuleEffects) {
         if func_def.name.eq("__del__") {
             let name = ModuleName::from_str(&func_def.name);
@@ -596,7 +600,7 @@ impl<'a> SourceAnalyzer<'a> {
         }
 
         let name = fname.as_str();
-        let builtins = self.info.stubs.builtins();
+        let builtins = self.known_functions().builtins();
 
         // If we have a name but can't resolve it, the function is likely a builtin, so don't mark
         // it as an error by default, but special-case a few builtins.
@@ -701,7 +705,7 @@ impl<'a> SourceAnalyzer<'a> {
         let data = call_data.into_effect_data();
 
         // Functions we have special-cased as safe.
-        if manual_override::declared_safe(&fname) {
+        if self.known_functions().declared_safe(&fname) {
             return;
         }
 
@@ -837,7 +841,7 @@ impl<'a> SourceAnalyzer<'a> {
         // methods are not affected since their types aren't in the builtins stub.
         let is_safe_builtin_method = receiver_param.is_some()
             && typ.is_none()
-            && self.info.stubs.is_method_safe_in_builtins(&attr.id);
+            && self.known_functions().is_method_safe_in_builtins(&attr.id);
 
         // A call through the class itself (`C.method(obj, ...)`) passes the
         // receiver explicitly, so argument-to-parameter alignment differs from a
@@ -1368,7 +1372,10 @@ impl<'a> SourceAnalyzer<'a> {
             }
             let resolved = self.info.resolve(&self.cursor, callee);
             let fname = resolved.as_ref().and_then(|res| self.resolved_fname(res));
-            if !fname.as_ref().is_some_and(manual_override::declared_safe) {
+            if !fname
+                .as_ref()
+                .is_some_and(|f| self.known_functions().declared_safe(f))
+            {
                 self.check_call_arg_limit(args, fname.as_ref(), output);
             }
             // Decorator callee expressions are not routed through the generic
@@ -1396,7 +1403,7 @@ impl<'a> SourceAnalyzer<'a> {
                 self.add_effect(eff, output);
                 continue;
             };
-            if manual_override::declared_safe(&fname) {
+            if self.known_functions().declared_safe(&fname) {
                 continue;
             }
 
