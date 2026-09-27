@@ -1,6 +1,6 @@
 import _thread
 import sys
-from _thread import _ExceptHookArgs, get_native_id as get_native_id
+from _thread import _ExceptHookArgs
 from _typeshed import ProfileFunction, TraceFunction
 from collections.abc import Callable, Iterable, Mapping
 from contextvars import ContextVar
@@ -48,9 +48,10 @@ _profile_hook: ProfileFunction | None
 def active_count() -> int: no_effects()
 @deprecated("Deprecated since Python 3.10. Use `active_count()` instead.")
 def activeCount() -> int: no_effects()
-def current_thread() -> Thread: no_effects()
+# The result depends on the calling thread, which a deferred import does not preserve.
+def current_thread() -> Thread: unsafe()
 @deprecated("Deprecated since Python 3.10. Use `current_thread()` instead.")
-def currentThread() -> Thread: no_effects()
+def currentThread() -> Thread: unsafe()
 def get_ident() -> int:
     """
     get_ident() -> integer
@@ -63,7 +64,8 @@ def get_ident() -> int:
     be relied upon, and the number should be seen purely as a magic cookie.
     A thread's identity may be reused for another thread after it exits.
     """
-    no_effects()
+    unsafe()
+def get_native_id() -> int: unsafe()
 def enumerate() -> list[Thread]: no_effects()
 def main_thread() -> Thread: no_effects()
 def settrace(func: TraceFunction) -> None: unsafe()
