@@ -480,4 +480,40 @@ if __name__ == '__main__':
 "#;
         check_effects_no_main(code);
     }
+
+    #[test]
+    fn test_unknown_main_module_guard_not_run_on_import() {
+        let code = r#"
+from foo import f, g
+if __name__ == '__main__':
+    class C:
+        f()
+    @g
+    def main():
+        f()
+    main()
+else:
+    f()  # E: unknown-function-call
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_unknown_main_module_guard_still_loads_imports_eagerly() {
+        let code = r#"
+import foo
+if __name__ == '__main__':
+    exec("foo")  # E: exec-call
+"#;
+        check(code);
+
+        let result = run_lifeguard_analysis(&vec![("test", code)]);
+        assert_passing(&result, vec!["test"]);
+        assert!(
+            result
+                .output
+                .load_imports_eagerly
+                .contains(&ModuleName::from_str("test"))
+        );
+    }
 }

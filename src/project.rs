@@ -1821,7 +1821,12 @@ impl ProjectInfo {
         state: &GlobalAnalysisState,
     ) {
         // Find effects that trigger adding the module to the load_imports_eagerly set.
-        for effs in result.module_effects.effects.values() {
+        let effects = &result.module_effects;
+        for effs in effects
+            .effects
+            .values()
+            .chain(effects.main_guard_effects.values())
+        {
             for e in effs.iter() {
                 let Some(kind) = SafetyError::error_kind_for(e.kind) else {
                     continue;

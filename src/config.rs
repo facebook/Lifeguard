@@ -74,6 +74,12 @@ impl AnalysisConfig {
         }
     }
 
+    /// Whether `test` is a `__main__` guard whose body `lg_pruned_if_branches`
+    /// keeps because the main module is unknown. The body never runs on import.
+    pub fn is_unpruned_main_guard(&self, test: &Expr) -> bool {
+        self.main_module.is_none() && is_name_main_guard(test)
+    }
+
     pub fn lg_pruned_if_branches<'a>(
         &'a self,
         x: &'a StmtIf,

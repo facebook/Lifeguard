@@ -50,6 +50,10 @@ pub struct ModuleEffects {
     // Modules imported without use of the `lazy` keyword. Used to distinguish
     // side-effect imports from explicit lazy imports that have no effect when unused.
     pub eager_imports: AHashSet<ModuleName>,
+
+    // Import-time effects inside an unpruned `__main__` guard. They never run on import,
+    // so they only count toward what the module needs from its imports when run as a script.
+    pub main_guard_effects: EffectTable,
 }
 
 impl ModuleEffects {
@@ -64,6 +68,7 @@ impl ModuleEffects {
             called_functions: AHashSet::new(),
             indirectly_called_methods: AHashMap::new(),
             eager_imports: AHashSet::new(),
+            main_guard_effects: EffectTable::empty(),
         }
     }
 

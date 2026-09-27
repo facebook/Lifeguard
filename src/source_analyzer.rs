@@ -298,6 +298,8 @@ pub struct SourceAnalyzer<'a> {
     cursor: Cursor,
     /// Module names probed as `sys.modules` keys within this module.
     sys_modules_probed_keys: OnceCell<AHashSet<ModuleName>>,
+    /// Inside the body of an unpruned `__main__` guard.
+    in_main_guard: bool,
 }
 
 impl<'a> SourceAnalyzer<'a> {
@@ -376,6 +378,13 @@ impl<'a> SourceAnalyzer<'a> {
                 let mut adjusted = eff.clone();
                 adjusted.range = range;
                 output.add_effect(*scope, adjusted);
+            }
+        }
+        for (scope, effs) in eval_effects.main_guard_effects.iter() {
+            for eff in effs {
+                let mut adjusted = eff.clone();
+                adjusted.range = range;
+                output.main_guard_effects.insert(*scope, adjusted);
             }
         }
     }
@@ -1557,10 +1566,14 @@ impl<'a> SourceAnalyzer<'a> {
             .config
             .lg_pruned_if_branches(x, self.info.module_name)
         {
+            let mut in_main_guard = self.in_main_guard;
             if let Some(test) = test {
                 self.expr(test, output);
+                in_main_guard |= self.info.config.is_unpruned_main_guard(test);
             }
+            let outer = std::mem::replace(&mut self.in_main_guard, in_main_guard);
             self.stmts(body, output);
+            self.in_main_guard = outer;
         }
     }
 
@@ -1868,7 +1881,11 @@ impl<'a> SourceAnalyzer<'a> {
         } else {
             eff
         };
-        output.add_effect(self.cursor.scope(), eff);
+        if self.in_main_guard && self.cursor.in_eager_scope() {
+            output.main_guard_effects.insert(self.cursor.scope(), eff);
+        } else {
+            output.add_effect(self.cursor.scope(), eff);
+        }
     }
 
     /// If `res` ultimately resolves to a parameter, return that parameter's defining scope and
@@ -1960,6 +1977,7 @@ impl<'a> Analyzer<'a> for SourceAnalyzer<'a> {
             import_graph,
             cursor: Cursor::new(),
             sys_modules_probed_keys: OnceCell::new(),
+            in_main_guard: false,
         }
     }
 
