@@ -341,18 +341,22 @@ impl GlobalAnalysisState {
     /// Decompose FQN-keyed function safety verdicts into per-module local-name
     /// maps and embed them in the corresponding ModuleSafety entries.
     fn into_safety_map(self, mode: ExecutionMode, project: &ProjectInfo) -> SafetyMap {
+        let Self {
+            safety_map,
+            function_safety,
+        } = self;
         if mode == ExecutionMode::Incremental {
-            self.function_safety.par_iter().for_each(|entry| {
-                let fqn = entry.key();
+            // Consumed rather than iterated by reference: every verdict is moved
+            // into the module that owns it, so none of them is cloned.
+            function_safety.into_par_iter().for_each(|(fqn, mut info)| {
                 let Some((module, Some(local_name))) =
-                    resolve_enclosing_module(fqn, |p| self.safety_map.contains_key(p))
+                    resolve_enclosing_module(&fqn, |p| safety_map.contains_key(p))
                 else {
                     return;
                 };
-                if let Some(mut safety_entry) = self.safety_map.get_mut(&module) {
+                if let Some(mut safety_entry) = safety_map.get_mut(&module) {
                     if let SafetyResult::Ok(module_safety) = safety_entry.value_mut() {
-                        let mut info = entry.value().clone();
-                        if let Some(mutated) = project.resolve_cached_mutated_params_for(fqn) {
+                        if let Some(mutated) = project.resolve_cached_mutated_params_for(&fqn) {
                             info.mutated_params = mutated;
                         }
                         module_safety
@@ -362,7 +366,7 @@ impl GlobalAnalysisState {
                 }
             });
         }
-        self.safety_map
+        safety_map
     }
 
     fn add_error_to_module(&self, mod_name: &ModuleName, err: SafetyError) {
