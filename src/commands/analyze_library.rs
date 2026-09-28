@@ -88,6 +88,12 @@ const MODULES_PER_THREAD: usize = 64;
 /// going from 8 to 72 threads left wall time unchanged while CPU grew ~8x. Thousands
 /// of these actions share a machine, so that CPU is contention, not speed, is the main issue.
 fn size_rayon_pool(source_count: usize) {
+    // An explicit `RAYON_NUM_THREADS` wins. Building the pool here would override
+    // it, which silently leaves the benchmark measuring whatever width the host
+    // happens to have. Production does not set it and keeps the sizing below.
+    if std::env::var_os("RAYON_NUM_THREADS").is_some() {
+        return;
+    }
     let available = std::thread::available_parallelism().map_or(1, |n| n.get());
     // Reached stubs dominate the workload for a small library, so a library with
     // almost no sources of its own still deserves more than one thread.
