@@ -290,6 +290,30 @@ fn resolve_enclosing_module<'a>(
         .map(|(module, dot_pos)| (module, Some(&scope.as_str()[dot_pos + 1..])))
 }
 
+/// As [`resolve_enclosing_module`], but probing candidate names as string slices.
+///
+/// `ModuleName::from_str` interns, so probing with it pays the global interner for
+/// every ancestor tried, and leaves a permanent entry behind for each one that is
+/// not a module. A caller splitting many names against one module set should build
+/// a `&str` view of that set once and probe it instead.
+fn resolve_enclosing_module_str<'a>(
+    scope: &'a ModuleName,
+    is_module: impl Fn(&str) -> bool,
+) -> Option<(ModuleName, Option<&'a str>)> {
+    let name = scope.as_str();
+    if is_module(name) {
+        return Some((*scope, None));
+    }
+    let mut end = name.len();
+    while let Some(pos) = name[..end].rfind('.') {
+        end = pos;
+        if is_module(&name[..pos]) {
+            return Some((ModuleName::from_str(&name[..pos]), Some(&name[pos + 1..])));
+        }
+    }
+    None
+}
+
 /// Resolve a nested scope to a proper ancestor module. Unlike
 /// `resolve_enclosing_module`, this never treats `scope` itself as a module.
 fn resolve_enclosing_parent_module<'a>(
@@ -348,9 +372,12 @@ impl GlobalAnalysisState {
         if mode == ExecutionMode::Incremental {
             // Consumed rather than iterated by reference: every verdict is moved
             // into the module that owns it, so none of them is cloned.
+            let modules: Vec<ModuleName> = safety_map.iter().map(|entry| *entry.key()).collect();
+            let module_strs: AHashSet<&str> = modules.iter().map(|m| m.as_str()).collect();
+
             function_safety.into_par_iter().for_each(|(fqn, mut info)| {
                 let Some((module, Some(local_name))) =
-                    resolve_enclosing_module(&fqn, |p| safety_map.contains_key(p))
+                    resolve_enclosing_module_str(&fqn, |p| module_strs.contains(p))
                 else {
                     return;
                 };
