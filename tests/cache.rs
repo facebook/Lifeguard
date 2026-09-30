@@ -2172,6 +2172,38 @@ mod tests {
     }
 
     #[test]
+    fn test_reduce_keeps_unqualified_unknown_decorator_despite_global_safe_name() {
+        let mut cache = LibraryCache {
+            modules: vec![
+                cached_module("app")
+                    .errors(vec![cached_error(ErrorKind::UnknownDecoratorCall, "deco")])
+                    .function_safety([unsafe_missing_dep("wrapper", "dep.safe")])
+                    .build(),
+                cached_module("dep")
+                    .function_safety([safe("deco"), safe("safe")])
+                    .build(),
+            ],
+            exports: empty_exports(),
+            ..Default::default()
+        };
+
+        cache.resolve_cross_library_errors(MergedClassFacts::default());
+
+        let app = module(&cache, "app");
+        let CachedSafety::Ok(safety) = &app.safety else {
+            panic!("app should have cached module safety");
+        };
+        assert!(
+            safety
+                .errors
+                .iter()
+                .any(|e| e.kind == ErrorKind::UnknownDecoratorCall && e.metadata == "deco"),
+            "an unbound decorator name must not clear on a same-named safe function \
+             in an unrelated module",
+        );
+    }
+
+    #[test]
     fn test_reduce_keeps_unqualified_unknown_call_from_resolved_module() {
         let mut cache = LibraryCache {
             modules: vec![

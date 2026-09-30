@@ -204,16 +204,32 @@ impl<'a> SafetyResolver<'a> {
             .is_some_and(|(module, local)| self.own_call_safe(&module, local))
     }
 
+    /// Whether `module` declares `local` decorator-verified-safe: the shared
+    /// half of the two entry points below, which differ only in what they do
+    /// with a name that names no module.
+    fn decorator_safe_in(&self, module: &ModuleName, local: &str) -> bool {
+        self.by_module
+            .get(module)
+            .is_some_and(|fs| lookup_decorator_in_safety_map(local, fs))
+    }
+
+    /// `is_decorator_call_verified_safe` restricted to a qualified name, for the
+    /// same reason `is_call_verified_safe_no_unqualified` exists: an unbound
+    /// short name has no proven callee to verify.
+    fn is_decorator_call_verified_safe_no_unqualified(&self, func_name: &str) -> bool {
+        self.split_at_module(func_name)
+            .is_some_and(|(module, local)| self.decorator_safe_in(&module, local))
+    }
+
     /// Whether a parameterized-decorator call is safe: the factory AND every
     /// immediate nested function must be `Safe`, since the factory runs its
     /// returned wrapper at decoration time. Never consults `globally_safe`
     /// (own-verdict only).
     pub(crate) fn is_decorator_call_verified_safe(&self, func_name: &str) -> bool {
+        // A qualified name names a callee, so its own verdict is the answer and
+        // the unqualified fallback below must not rescue a `false`.
         if let Some((module, local)) = self.split_at_module(func_name) {
-            return self
-                .by_module
-                .get(&module)
-                .is_some_and(|fs| lookup_decorator_in_safety_map(local, fs));
+            return self.decorator_safe_in(&module, local);
         }
         let Some(cache) = self.decorator_scan_cache else {
             return self.scan_unqualified_decorator_safe(func_name);
@@ -231,8 +247,7 @@ impl<'a> SafetyResolver<'a> {
     fn scan_unqualified_decorator_safe(&self, func_name: &str) -> bool {
         self.modules
             .iter()
-            .filter_map(|m| self.by_module.get(m))
-            .any(|fs| lookup_decorator_in_safety_map(func_name, fs))
+            .any(|module| self.decorator_safe_in(module, func_name))
     }
 
     /// The combined verdict of the constructor callees the map phase recorded for
@@ -299,8 +314,11 @@ impl<'a> SafetyResolver<'a> {
         let parameterized_decorator = error.parameterized_decorator && error.is_decorator_call();
 
         match (error.kind, parameterized_decorator) {
-            // The returned wrapper runs at decoration time too, whether or not
-            // the decorator name itself was bound.
+            // Parameterized decorator without a proven binding.
+            (ErrorKind::UnknownDecoratorCall, true) => {
+                self.is_decorator_call_verified_safe_no_unqualified(func_name)
+            }
+            // The returned wrapper runs at decoration time too.
             (_, true) => self.is_decorator_call_verified_safe(func_name),
             // Nothing bound the callee, so do not treat the name as qualified.
             (
@@ -478,6 +496,43 @@ mod tests {
             kind: ErrorKind::UnknownDecoratorCall,
             metadata: "unrelated.deco".to_owned(),
             parameterized_decorator: false,
+        };
+        assert!(resolver.is_error_verified_safe(&bound));
+    }
+
+    /// An `Unknown*` target is a textual name, not a proven callee, so it must
+    /// not clear on a same-named safe function elsewhere.
+    #[test]
+    fn an_unqualified_unknown_decorator_call_does_not_clear_on_a_coincidental_name() {
+        let other = ModuleName::from_str("unrelated");
+        let mut fns: AHashMap<String, FunctionSafetyInfo> = AHashMap::default();
+        fns.insert(
+            "deco".to_owned(),
+            FunctionSafetyInfo::new(FunctionSafety::Safe),
+        );
+        let mut by_module: AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>> =
+            AHashMap::default();
+        by_module.insert(other, fns);
+
+        let modules: AHashSet<ModuleName> = AHashSet::from_iter([other]);
+        let resolver = SafetyResolver::new(&modules, &by_module);
+
+        let unbound = CachedError {
+            kind: ErrorKind::UnknownDecoratorCall,
+            metadata: "deco".to_owned(),
+            parameterized_decorator: true,
+        };
+        assert!(
+            !resolver.is_error_verified_safe(&unbound),
+            "`deco` was never bound to a callee; a same-named safe function in \
+             `unrelated` is a coincidence, not evidence"
+        );
+
+        // The qualified form names a callee, so it still clears.
+        let bound = CachedError {
+            kind: ErrorKind::UnknownDecoratorCall,
+            metadata: "unrelated.deco".to_owned(),
+            parameterized_decorator: true,
         };
         assert!(resolver.is_error_verified_safe(&bound));
     }
