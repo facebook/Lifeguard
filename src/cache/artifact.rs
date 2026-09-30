@@ -398,6 +398,14 @@ impl CachedModuleSafety {
 }
 
 impl CachedError {
+    /// Whether the callee is applied as a decorator, either bound or not.
+    pub(crate) fn is_decorator_call(&self) -> bool {
+        matches!(
+            self.kind,
+            ErrorKind::UnsafeDecoratorCall | ErrorKind::UnknownDecoratorCall
+        )
+    }
+
     pub(crate) fn from_safety_error(error: &SafetyError) -> Self {
         CachedError {
             kind: error.kind,
