@@ -44,6 +44,45 @@ fn lookup_in_safety_map(local_name: &str, fs: &AHashMap<String, FunctionSafetyIn
         .is_some_and(|info| info.verdict.is_safe())
 }
 
+/// Whether an unqualified decorator name is verified safe, memoized.
+///
+/// The answer is "safe given *these* modules and *these* verdicts", which is why
+/// the map holds both and hands out the resolver itself: a resolver over other
+/// facts has no way to reach this cache. `scan_unqualified_decorator_safe` reads
+/// both, so pinning only the module set would leave the same sharing bug one
+/// level down.
+pub(crate) struct DecoratorVerdictMap<'a> {
+    modules: &'a AHashSet<ModuleName>,
+    by_module: &'a AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
+    entries: DashMap<String, bool, FixedState>,
+}
+
+impl<'a> DecoratorVerdictMap<'a> {
+    pub(crate) fn new(
+        modules: &'a AHashSet<ModuleName>,
+        by_module: &'a AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
+    ) -> Self {
+        Self {
+            modules,
+            by_module,
+            entries: DashMap::default(),
+        }
+    }
+
+    /// A resolver over the facts these verdicts were computed from, memoising
+    /// its unqualified decorator lookups here.
+    ///
+    /// The map hands out the resolver rather than being attached to one, so a
+    /// resolver over different facts cannot reach this cache. `globally_safe`
+    /// is the caller's, because the decorator scan never consults it.
+    pub(crate) fn resolver(&'a self, globally_safe: &'a AHashSet<String>) -> SafetyResolver<'a> {
+        let mut resolver =
+            SafetyResolver::with_safe_index(self.modules, self.by_module, globally_safe);
+        resolver.decorator_verdicts = Some(self);
+        resolver
+    }
+}
+
 /// The merged per-function verdicts plus the module set they resolve against —
 /// shared context for reduce-time error clearing and promotion.
 ///
@@ -58,7 +97,7 @@ pub(crate) struct SafetyResolver<'a> {
     globally_safe: Option<&'a AHashSet<String>>,
     /// Caches `scan_unqualified_decorator_safe` by name, so its O(modules) scan
     /// runs once per distinct decorator instead of once per call site.
-    decorator_scan_cache: Option<&'a DashMap<String, bool, FixedState>>,
+    decorator_verdicts: Option<&'a DecoratorVerdictMap<'a>>,
     /// Class FQN -> base FQNs, enabling MRO resolution of inherited
     /// `Class.method` calls when there is no exact method verdict.
     class_bases: Option<&'a HashMap<ModuleName, Vec<ModuleName>>>,
@@ -77,7 +116,7 @@ impl<'a> SafetyResolver<'a> {
             modules,
             by_module,
             globally_safe: None,
-            decorator_scan_cache: None,
+            decorator_verdicts: None,
             class_bases: None,
             constructor_callees: None,
         }
@@ -93,18 +132,10 @@ impl<'a> SafetyResolver<'a> {
             modules,
             by_module,
             globally_safe: Some(globally_safe),
-            decorator_scan_cache: None,
+            decorator_verdicts: None,
             class_bases: None,
             constructor_callees: None,
         }
-    }
-
-    pub(crate) fn with_decorator_cache(
-        mut self,
-        cache: &'a DashMap<String, bool, FixedState>,
-    ) -> Self {
-        self.decorator_scan_cache = Some(cache);
-        self
     }
 
     /// Attach class base edges.
@@ -231,19 +262,19 @@ impl<'a> SafetyResolver<'a> {
         if let Some((module, local)) = self.split_at_module(func_name) {
             return self.decorator_safe_in(&module, local);
         }
-        let Some(cache) = self.decorator_scan_cache else {
+        let Some(cache) = self.decorator_verdicts else {
             return self.scan_unqualified_decorator_safe(func_name);
         };
-        if let Some(cached) = cache.get(func_name) {
+        if let Some(cached) = cache.entries.get(func_name) {
             return *cached;
         }
         let result = self.scan_unqualified_decorator_safe(func_name);
-        cache.insert(func_name.to_owned(), result);
+        cache.entries.insert(func_name.to_owned(), result);
         result
     }
 
     /// Whether any module has `func_name` as a decorator-verified-safe function.
-    /// O(modules); callers should memoize by name (see `decorator_scan_cache`).
+    /// O(modules); callers should memoize by name (see `decorator_verdicts`).
     fn scan_unqualified_decorator_safe(&self, func_name: &str) -> bool {
         self.modules
             .iter()

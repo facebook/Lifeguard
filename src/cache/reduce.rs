@@ -18,7 +18,6 @@
 
 use std::collections::HashMap;
 
-use dashmap::DashMap;
 use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
 use tracing::debug;
@@ -40,7 +39,6 @@ use crate::cache::merge::retain_unverified_errors;
 use crate::errors::ErrorKind;
 use crate::hasher::AHashMap;
 use crate::hasher::AHashSet;
-use crate::hasher::FixedState;
 #[cfg(test)]
 use crate::hasher::HashMapExt;
 use crate::hasher::HashSetExt;
@@ -54,6 +52,7 @@ use crate::pyrefly::sys_info::PythonVersion;
 use crate::resolution::ResolutionOutcome;
 use crate::resolution::resolve_program;
 use crate::resolution::unqualified_index_key;
+use crate::safety_resolver::DecoratorVerdictMap;
 use crate::safety_resolver::SafetyResolver;
 
 /// Mutable reduce workspace decoded from one or more serialized library artifacts.
@@ -244,18 +243,14 @@ impl LibraryCache {
         class_bases: &HashMap<ModuleName, Vec<ModuleName>>,
         constructor_callees: &HashMap<ModuleName, ConstructorCallees>,
     ) {
-        let decorator_scan_cache: DashMap<String, bool, FixedState> = DashMap::default();
+        let decorator_verdicts = DecoratorVerdictMap::new(module_names, func_safety_by_module);
         if !outcome.promoted.is_empty() || outcome.resolved_to_safe {
             // With positive evidence (a promotion or a mutation candidate now
             // `Safe`), clear every verified-safe error kind.
-            let resolver = SafetyResolver::with_safe_index(
-                module_names,
-                func_safety_by_module,
-                &outcome.globally_safe,
-            )
-            .with_decorator_cache(&decorator_scan_cache)
-            .with_class_bases(class_bases)
-            .with_constructor_callees(constructor_callees);
+            let resolver = decorator_verdicts
+                .resolver(&outcome.globally_safe)
+                .with_class_bases(class_bases)
+                .with_constructor_callees(constructor_callees);
             self.clear_errors_where(|caller, error| resolver.clears_error(caller, error, |_| true));
         } else {
             // Without promotion evidence, clear only static-safe kinds:
@@ -264,11 +259,10 @@ impl LibraryCache {
             // class-decorator calls, whose safety follows from static verdicts alone.
             // These checks ignore the globally-safe index, so an empty one suffices.
             let empty = AHashSet::new();
-            let resolver =
-                SafetyResolver::with_safe_index(module_names, func_safety_by_module, &empty)
-                    .with_decorator_cache(&decorator_scan_cache)
-                    .with_class_bases(class_bases)
-                    .with_constructor_callees(constructor_callees);
+            let resolver = decorator_verdicts
+                .resolver(&empty)
+                .with_class_bases(class_bases)
+                .with_constructor_callees(constructor_callees);
             self.clear_errors_where(|caller, error| {
                 resolver.clears_error(caller, error, |kind| kind == ErrorKind::UnsafeDecoratorCall)
             });
