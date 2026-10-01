@@ -490,6 +490,28 @@ impl<'a> CombinedDefinitionClassBuilder<'a> {
         // Process class body
         self.process_scope(&cls.body);
 
+        let class = self.classes_map.get_mut(&scope).unwrap();
+        class.fields.retain(|field| {
+            self.definitions_map[&scope]
+                .definitions
+                .get(&field.name)
+                .is_some_and(|definition| {
+                    !matches!(definition.style, DefinitionStyle::MutableCapture(..))
+                })
+        });
+        for (name, definition) in &self.definitions_map[&scope].definitions {
+            if class.get_field(name).is_none()
+                && !matches!(definition.style, DefinitionStyle::MutableCapture(..))
+                && (!matches!(definition.style, DefinitionStyle::Annotated(..))
+                    || definition.needs_anywhere)
+            {
+                class.fields.push(Field {
+                    kind: FieldKind::ClassVar,
+                    name: name.clone(),
+                });
+            }
+        }
+
         self.cursor.exit_scope();
     }
 
@@ -535,7 +557,7 @@ impl<'a> CombinedDefinitionClassBuilder<'a> {
         let mut class = Class::empty(self.module_name);
         class.name = ModuleName::from_name(&cls.name.id);
         self.extract_bases_and_metaclass(&mut class, cls);
-        self.extract_class_fields(&mut class, cls);
+        self.extract_class_fields(&mut class, &cls.body);
         class
     }
 
@@ -563,8 +585,8 @@ impl<'a> CombinedDefinitionClassBuilder<'a> {
         }
     }
 
-    fn extract_class_fields(&self, class: &mut Class, cls: &StmtClassDef) {
-        for stmt in &cls.body {
+    fn extract_class_fields(&self, class: &mut Class, body: &[Stmt]) {
+        for stmt in body {
             match stmt {
                 Stmt::FunctionDef(func) => {
                     let mut kind = FieldKind::InstanceMethod;
@@ -588,7 +610,7 @@ impl<'a> CombinedDefinitionClassBuilder<'a> {
                         }
                     }
                 }
-                Stmt::AnnAssign(x) => {
+                Stmt::AnnAssign(x) if x.value.is_some() || self.is_stub => {
                     if let Expr::Name(n) = &*x.target {
                         class.fields.push(Field {
                             kind: FieldKind::ClassVar,
@@ -596,7 +618,12 @@ impl<'a> CombinedDefinitionClassBuilder<'a> {
                         });
                     }
                 }
-                _ => {}
+                Stmt::ClassDef(_) => {}
+                _ => stmt.recurse(&mut |stmt| {
+                    if !matches!(stmt, Stmt::FunctionDef(_)) {
+                        self.extract_class_fields(class, std::slice::from_ref(stmt));
+                    }
+                }),
             }
         }
     }

@@ -23,6 +23,7 @@ mod tests {
     use lifeguard::test_lib::ParityFixture;
     use lifeguard::test_lib::PathRun;
     use lifeguard::test_lib::Shards;
+    use lifeguard::test_lib::assert_failing;
     use lifeguard::test_lib::assert_passing;
     use lifeguard::test_lib::assert_paths_agree_sharded;
     use lifeguard::test_lib::assert_paths_agree_sharded_with_options;
@@ -897,5 +898,70 @@ mod tests {
             sorted_names(&run.analysis().summary.passing_modules),
             sorted_names(&run.analysis().summary.failing_modules),
         )
+    }
+
+    #[test]
+    fn reexported_callables_agree() {
+        let origin = r#"
+            registry = []
+
+            def pure(f):
+                return f
+
+            def register(f):
+                registry.append(f)
+                return f
+        "#;
+        let facade = r#"
+            from origin import pure, register
+        "#;
+        let safe = r#"
+            from facade import pure
+
+            @pure
+            def f():
+                ...
+        "#;
+        let nested = r#"
+            import facade
+
+            def wrap(f):
+                return facade.register(f)
+
+            wrap(len)
+        "#;
+        assert_paths_agree_sharded(&[
+            ("origin", origin),
+            ("facade", facade),
+            ("safe", safe),
+            ("nested", nested),
+        ]);
+    }
+
+    #[test]
+    fn reexported_method_shadowed_by_field_is_unsafe() {
+        for shadow in [
+            "method = staticmethod(lambda: print('effect'))",
+            "method = None",
+            "if True:\n  method = None",
+            "method, other = None, 0",
+            "from builtins import print as method",
+            "if True:\n  method: object = None",
+        ] {
+            for class_body in [
+                format!("class Sub(Base):\n {shadow}\n"),
+                format!("class Middle(Base):\n {shadow}\nclass Sub(Middle):\n pass\n"),
+            ] {
+                let origin =
+                    format!("class Base:\n @staticmethod\n def method():\n  pass\n{class_body}");
+                let modules = [
+                    ("origin", origin.as_str()),
+                    ("facade", "from origin import Sub\n"),
+                    ("app", "from facade import Sub\nSub.method()\n"),
+                ];
+                assert_failing(&run_lifeguard_analysis(&modules.to_vec()), vec!["app"]);
+                assert_paths_agree_sharded(&modules);
+            }
+        }
     }
 }
