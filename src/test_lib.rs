@@ -1050,9 +1050,92 @@ pub struct PathRun {
     module_errors: ModuleErrors,
 }
 
-/// Run `modules` through the whole-program path.
-pub fn run_whole_program_path(modules: &[(&str, &str)], options: &Options) -> PathRun {
-    let sources = TestSources::new(modules);
+/// What a parity fixture analyzes: the modules, and which of them are stubs.
+///
+/// Most fixtures are just a module list, so `&Vec<(&str, &str)>` converts into
+/// one. Optionally calling `with_stubs` names modules to parse as `.pyi`
+///
+/// Stubs shard like any other module: naming one puts its facts in exactly one
+/// library, which is what makes "the stub is in another shard" testable.
+#[derive(Clone, Copy)]
+pub struct ParityFixture<'a> {
+    modules: &'a [(&'a str, &'a str)],
+    stubs: &'a [&'a str],
+}
+
+impl<'a> ParityFixture<'a> {
+    pub fn new(modules: &'a [(&'a str, &'a str)]) -> Self {
+        Self {
+            modules,
+            stubs: &[],
+        }
+    }
+
+    /// Parse these fixture modules as `.pyi` rather than `.py`.
+    ///
+    /// Panics on a name matching no fixture module: the fixture would otherwise
+    /// run with the stub silently absent, and the test would pass without
+    /// exercising what it names.
+    pub fn with_stubs(mut self, stubs: &'a [&'a str]) -> Self {
+        for stub in stubs {
+            assert!(
+                self.modules.iter().any(|(name, _)| name == stub),
+                "stub `{stub}` names no module in the fixture"
+            );
+        }
+        self.stubs = stubs;
+        self
+    }
+
+    /// Sources for the whole fixture, as the whole-program path sees it.
+    pub fn sources(&self) -> TestSources {
+        TestSources::new_with_stubs(self.modules, self.stubs)
+    }
+
+    /// Sources for one shard. Stub names are intersected with the shard's own
+    /// modules, so a shard never claims a stub it does not hold.
+    fn shard_sources(&self, group: &[(&str, &str)]) -> TestSources {
+        let stubs: Vec<&str> = self
+            .stubs
+            .iter()
+            .filter(|stub| group.iter().any(|(name, _)| name == *stub))
+            .copied()
+            .collect();
+        TestSources::new_with_stubs(group, &stubs)
+    }
+
+    fn shards(&self, shards: Shards) -> Vec<TestSources> {
+        partition_modules(self.modules, shards)
+            .iter()
+            .map(|group| self.shard_sources(group))
+            .collect()
+    }
+}
+
+impl<'a> From<&'a Vec<(&'a str, &'a str)>> for ParityFixture<'a> {
+    fn from(modules: &'a Vec<(&'a str, &'a str)>) -> Self {
+        Self::new(modules)
+    }
+}
+
+impl<'a> From<&'a [(&'a str, &'a str)]> for ParityFixture<'a> {
+    fn from(modules: &'a [(&'a str, &'a str)]) -> Self {
+        Self::new(modules)
+    }
+}
+
+impl<'a, const N: usize> From<&'a [(&'a str, &'a str); N]> for ParityFixture<'a> {
+    fn from(modules: &'a [(&'a str, &'a str); N]) -> Self {
+        Self::new(modules)
+    }
+}
+
+/// Run `fixture` through the whole-program path.
+pub fn run_whole_program_path<'a>(
+    fixture: impl Into<ParityFixture<'a>>,
+    options: &Options,
+) -> PathRun {
+    let sources = fixture.into().sources();
     let (output, import_graph, exports) = run_analysis_with_options(&sources, options);
     surface_parse_errors(&output);
 
@@ -1071,16 +1154,18 @@ pub fn run_whole_program_path(modules: &[(&str, &str)], options: &Options) -> Pa
     }
 }
 
-/// Run `modules` through the incremental path: map each shard to a cache, then
+/// Run `fixture` through the incremental path: map each shard to a cache, then
 /// merge and reduce them exactly as `analyze-binary` does.
-pub fn run_incremental_analysis(
-    modules: &[(&str, &str)],
+pub fn run_incremental_analysis<'a>(
+    fixture: impl Into<ParityFixture<'a>>,
     shards: Shards,
     options: &Options,
 ) -> PathRun {
-    let caches: Vec<LibraryCache> = partition_modules(modules, shards)
-        .into_iter()
-        .map(|group| build_library_cache(&TestSources::new(&group)))
+    let caches: Vec<LibraryCache> = fixture
+        .into()
+        .shards(shards)
+        .iter()
+        .map(build_library_cache)
         .collect();
     let resolved = ReduceWorkspace::merge(caches, options.python_version)
         .expect("a parity fixture should produce at least one cache")
@@ -1263,17 +1348,21 @@ fn first_parity_difference(
 /// Known-gap tests assert on this rather than on a panic, so that a *different*
 /// divergence -- another shard count, module, field, or direction -- fails
 /// instead of silently satisfying the same expectation.
-pub fn path_differences(modules: &[(&str, &str)], shard_counts: &[usize]) -> Vec<(usize, String)> {
+pub fn path_differences<'a>(
+    fixture: impl Into<ParityFixture<'a>>,
+    shard_counts: &[usize],
+) -> Vec<(usize, String)> {
     // Verbose output is what carries implicit imports and import cycles; it does
     // not write a file, since the harness builds the analysis directly.
     let options = verbose_test_options();
-    let whole_program = ParityFacts::of(&run_whole_program_path(modules, &options));
+    let fixture = fixture.into();
+    let whole_program = ParityFacts::of(&run_whole_program_path(fixture, &options));
 
     shard_counts
         .iter()
         .filter_map(|&count| {
             let incremental = ParityFacts::of(&run_incremental_analysis(
-                modules,
+                fixture,
                 Shards::new(count),
                 &options,
             ));
@@ -1283,18 +1372,18 @@ pub fn path_differences(modules: &[(&str, &str)], shard_counts: &[usize]) -> Vec
         .collect()
 }
 
-/// Assert that the whole-program and incremental paths agree on `modules`,
+/// Assert that the whole-program and incremental paths agree on `fixture`,
 /// checking every shard count in `shard_counts`.
-pub fn assert_paths_agree(modules: &[(&str, &str)], shard_counts: &[usize]) {
-    if let Some((count, difference)) = path_differences(modules, shard_counts).into_iter().next() {
+pub fn assert_paths_agree<'a>(fixture: impl Into<ParityFixture<'a>>, shard_counts: &[usize]) {
+    if let Some((count, difference)) = path_differences(fixture, shard_counts).into_iter().next() {
         panic!("paths disagree with {count} shard(s) -- {difference}");
     }
 }
 
 /// [`assert_paths_agree`] over one, two and three shards: enough to cover the
 /// single-library case and to split related modules apart in two different ways.
-pub fn assert_paths_agree_sharded(modules: &[(&str, &str)]) {
-    assert_paths_agree(modules, &[1, 2, 3]);
+pub fn assert_paths_agree_sharded<'a>(fixture: impl Into<ParityFixture<'a>>) {
+    assert_paths_agree(fixture, &[1, 2, 3]);
 }
 
 /// Create a new temp directory and write each `(rel_path, contents)` pair
@@ -1329,6 +1418,15 @@ pub fn reduce_workspace_from_merged(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stub name that matches no module is a typo, and silently ignoring it
+    /// runs the fixture with no stub at all -- the test then passes for the
+    /// wrong reason, which is worse than not having it.
+    #[test]
+    #[should_panic(expected = "names no module in the fixture")]
+    fn a_stub_naming_no_fixture_module_is_rejected() {
+        ParityFixture::new(&[("app", "import json\n")]).with_stubs(&["jsno"]);
+    }
 
     /// The parity comparison has to see `parameterized_decorator`. It selects a
     /// stricter reduce-time check -- the decorator factory *and* each of its

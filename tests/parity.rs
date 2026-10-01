@@ -17,6 +17,7 @@
 
 #[cfg(test)]
 mod tests {
+    use lifeguard::test_lib::ParityFixture;
     use lifeguard::test_lib::assert_passing;
     use lifeguard::test_lib::assert_paths_agree_sharded;
     use lifeguard::test_lib::path_differences;
@@ -556,5 +557,72 @@ mod tests {
             &run_lifeguard_analysis(&modules),
             vec!["holder_base", "reader"],
         );
+    }
+
+    /// KNOWN GAP (T288192028) -- a stub-declared return class is not preserved
+    /// across a shard boundary.
+    #[test]
+    fn stub_declared_factory_return_is_a_known_gap() {
+        let impl_mod = r#"
+            class C(set):
+                mapping = {}
+
+                def update_mapping(self):
+                    self.mapping = dict([(f.name, f) for f in iter(self)])
+
+                @property
+                def p(self):
+                    self.update_mapping()
+                    return 1
+        "#;
+        let factory = r#"
+            from impl_mod import C
+
+            def make() -> C: ...
+        "#;
+        let app = r#"
+            from factory import make
+
+            obj = make()
+            value = obj.p
+        "#;
+        let modules = vec![("impl_mod", impl_mod), ("factory", factory), ("app", app)];
+        let differences = path_differences(
+            ParityFixture::new(&modules).with_stubs(&["factory"]),
+            &[1, 2, 3],
+        );
+
+        let diverging: Vec<usize> = differences.iter().map(|(count, _)| *count).collect();
+        assert_eq!(
+            diverging,
+            vec![2, 3],
+            "one shard keeps the stub and its caller in one library, so the gap needs a split",
+        );
+        for (count, difference) in &differences {
+            assert!(
+                difference.starts_with("aggregated errors:"),
+                "{count} shards: expected an error-set difference, got: {difference}",
+            );
+            // The property error is the one that goes missing. Located by
+            // content and relative position rather than by matching the
+            // rendered label, so that reformatting the message cannot turn
+            // this into an assertion that quietly checks nothing.
+            //
+            // Both halves are load-bearing: `first == last` proves the error
+            // appears once, and `first < incremental` proves that occurrence is
+            // the whole-program one. Uniqueness alone would also hold if the
+            // divergence flipped and only the incremental side reported it.
+            let first = difference.find(r#"UnsafeMethodCall impl_mod.C.p"#);
+            let last = difference.rfind(r#"UnsafeMethodCall impl_mod.C.p"#);
+            let incremental = difference.find("incremental:");
+            assert!(
+                matches!(
+                    (first, last, incremental),
+                    (Some(f), Some(l), Some(i)) if f == l && f < i
+                ),
+                "{count} shards: expected the property error on the whole-program side only, \
+                 got: {difference}",
+            );
+        }
     }
 }
