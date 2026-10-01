@@ -33,6 +33,7 @@ pub mod module_info;
 pub mod module_parser;
 pub mod module_safety;
 pub mod mro;
+pub mod names;
 pub mod output;
 pub mod project;
 pub mod pyrefly;

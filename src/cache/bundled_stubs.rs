@@ -18,6 +18,7 @@ use crate::cache::artifact::CachedModule;
 use crate::cache::artifact::GraphEdgeSets;
 use crate::cache::artifact::LibraryCache;
 use crate::cache::artifact::graph_edge_sets;
+use crate::cache::main_guard::MainGuardFacts;
 use crate::config::AnalysisConfig;
 use crate::hasher::AHashSet;
 use crate::hasher::HashSetExt;
@@ -30,7 +31,7 @@ impl LibraryCache {
     /// matches the e2e graph: per-library caches drop stub-only modules, losing
     /// the typeshed import cycle. Skips names a real library already provides.
     /// Returns the injected names so the caller can keep them out of the safety map.
-    pub fn inject_bundled_stub_graph(
+    pub(super) fn inject_bundled_stub_graph(
         &mut self,
         python_version: PythonVersion,
     ) -> AHashSet<ModuleName> {
@@ -49,11 +50,13 @@ impl LibraryCache {
                 imports,
                 missing_imports,
                 ambiguous_imports,
+                main_guard_imports,
             } = graph_edge_sets(&graph, &name);
             self.modules.push(CachedModule {
                 imports,
                 missing_imports,
                 ambiguous_imports,
+                main_guard: MainGuardFacts::new(main_guard_imports),
                 ..CachedModule::empty(name)
             });
             added.insert(name);

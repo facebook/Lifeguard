@@ -737,6 +737,12 @@ impl<'a> SourceAnalyzer<'a> {
 
     /// The class a call to `func` returns: `func` itself when it names a class,
     /// otherwise its stub-annotated return type.
+    ///
+    /// A name this library cannot see at all is taken to be a class. A wrong
+    /// guess will be corrected at cross-library resolution time.
+    ///
+    /// A *confirmed* non-class still returns `None`: this library can see the
+    /// symbol and knows it is not a class, so there is nothing to merge.
     fn call_result_class(&self, func: &Expr) -> Option<ModuleName> {
         // A method on another call's result is not a name the resolver can see,
         // so resolve it against the class that call returns.
@@ -747,7 +753,10 @@ impl<'a> SourceAnalyzer<'a> {
         if self.info.exports.is_class(&name) {
             return Some(name);
         }
-        self.info.exports.resolve_return_class(&name)
+        if let Some(class) = self.info.exports.resolve_return_class(&name) {
+            return Some(class);
+        }
+        (!self.info.exports.is_known_symbol(&name)).then_some(name)
     }
 
     /// The fully qualified name a call target resolves to.
@@ -1008,6 +1017,18 @@ impl<'a> SourceAnalyzer<'a> {
                     let eff = Effect::new(EffectKind::ImportedTypeAttr, fname, obj.range());
                     self.add_effect(eff, output);
                 }
+            }
+        } else if let Some(typ) = self
+            .info
+            .bindings
+            .get_unconfirmed_type(&res.scope, &res.name)
+        {
+            // The receiver was built by calling an imported name whose module is
+            // absent, so we cannot yet tell whether the attribute is a property.
+            if !typ.as_str().starts_with("builtins.") {
+                let fname = typ.append(&attr.id);
+                let eff = Effect::new(EffectKind::UnconfirmedTypeAttr, fname, obj.range());
+                self.add_effect(eff, output);
             }
         }
 
@@ -1557,10 +1578,16 @@ impl<'a> SourceAnalyzer<'a> {
             .config
             .lg_pruned_if_branches(x, self.info.module_name)
         {
+            // The test itself always runs, so it is evaluated unmarked; only the
+            // body is guard-produced. A `__main__` guard the config did not prune
+            // means this action does not know the binary, so mark what the body
+            // produces and leave the decision to the reduce.
             if let Some(test) = test {
                 self.expr(test, output);
             }
+            let outer = output.enter_main_guard(test.is_some_and(AnalysisConfig::is_main_guard));
             self.stmts(body, output);
+            output.leave_main_guard(outer);
         }
     }
 

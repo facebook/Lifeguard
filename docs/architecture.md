@@ -35,6 +35,24 @@ without dependencies). Because the two paths can drift, `compare-paths`
 (`commands/compare_paths.rs`) runs both against one source DB in a single process and fails
 when they disagree on more modules than `--max-divergent-modules` allows.
 
+#### `__main__` guards, and where the two paths do not yet meet
+
+An `if __name__ == "__main__"` body runs in exactly one module of a binary. The map cannot
+know which, since the same library serves many binaries, so it analyzes the body and records
+its source range; `ReduceWorkspace::resolve` drops what those ranges produced for every module
+that is not `--main-module`. The whole-program path reaches the same place differently, by
+pruning the branch out of the AST in `AnalysisConfig::lg_pruned_if_branches`.
+
+Those two readings agree only on facts that carry a `TextRange`: errors, eager-loading
+overrides, and mutation/property candidates. AST pruning also removes things the reduce has no
+range to filter on — import edges (`imports.rs`), implicit and side-effect imports, and the
+bindings in `pyrefly/definitions.rs`. A guarded `import` of a failing module in a non-entry
+module therefore survives on the incremental path and not on the whole-program one. The
+direction is fail-safe (the incremental path keeps more, so its verdicts are the conservative
+ones), but it is a real divergence, and on large targets it is the dominant one: with
+`--main-module` set, `launcher_with_publish` goes from 569 divergent modules to 4937. Closing
+it means carrying guard-derived edges in the cache for the reduce to drop.
+
 ### Key Modules
 
 **Analysis core**:

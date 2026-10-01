@@ -20,9 +20,9 @@ use std::collections::HashMap;
 
 use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
+use ruff_text_size::TextRange;
 use tracing::debug;
 
-use crate::cache::artifact::CachedError;
 #[cfg(test)]
 use crate::cache::artifact::CachedExports;
 use crate::cache::artifact::CachedModule;
@@ -32,11 +32,14 @@ use crate::cache::artifact::CachedReExport;
 use crate::cache::artifact::CachedSafety;
 use crate::cache::artifact::ConstructorCallees;
 use crate::cache::artifact::LibraryCache;
+use crate::cache::main_guard::drop_main_guarded;
 use crate::cache::merge::dedupe_implicit_imports;
 use crate::cache::merge::fold_constructor_callees;
 use crate::cache::merge::fold_fqn_lists;
+use crate::cache::merge::merge_class_properties;
 use crate::cache::merge::retain_unverified_errors;
 use crate::errors::ErrorKind;
+use crate::errors::SafetyError;
 use crate::hasher::AHashMap;
 use crate::hasher::AHashSet;
 #[cfg(test)]
@@ -52,10 +55,16 @@ use crate::pyrefly::sys_info::PythonVersion;
 use crate::resolution::ResolutionOutcome;
 use crate::resolution::resolve_program;
 use crate::resolution::unqualified_index_key;
+use crate::runner::check_main_module;
 use crate::safety_resolver::DecoratorVerdictMap;
 use crate::safety_resolver::SafetyResolver;
+use crate::traits::ModuleNameExt;
 
-/// Mutable reduce workspace decoded from one or more serialized library artifacts.
+/// One or more libraries merged into a single module universe, with the bundled
+/// stub graph injected -- the input to cross-library resolution.
+///
+/// Holding this type means the facts are merged but *not* resolved.
+/// [`Self::resolve`] consumes it, which is what keeps the two states apart.
 pub struct ReduceWorkspace {
     cache: LibraryCache,
     graph_only_stubs: AHashSet<ModuleName>,
@@ -85,12 +94,19 @@ pub struct ResolvedCache {
 }
 
 impl ReduceWorkspace {
-    /// Wrap an already merged cache and the graph-only stubs injected into it,
-    /// bypassing the stub injection that `single` and `merge` perform. Only
-    /// tests want that, so the public door is
+    /// Wrap an already merged cache, the graph-only stubs injected into it, and
+    /// whatever `merge_dep_caches` folded together on the way. Passing
+    /// `MergedClassFacts::default()` is only correct when nothing was merged --
+    /// otherwise the folded class facts are silently dropped.
+    ///
+    /// Only tests want this, so the public door is
     /// [`crate::test_lib::reduce_workspace_from_merged`]; this stays crate-private
     /// so no production caller can skip the stub-set invariant.
-    pub(crate) fn from_merged(cache: LibraryCache, graph_only_stubs: AHashSet<ModuleName>) -> Self {
+    pub(crate) fn from_merged(
+        cache: LibraryCache,
+        graph_only_stubs: AHashSet<ModuleName>,
+        merged: MergedClassFacts,
+    ) -> Self {
         let artifact_module_count = cache
             .modules
             .len()
@@ -100,7 +116,7 @@ impl ReduceWorkspace {
             cache,
             graph_only_stubs,
             artifact_module_count,
-            merged: MergedClassFacts::default(),
+            merged,
         }
     }
 
@@ -142,6 +158,12 @@ impl ReduceWorkspace {
         Ok(Self::single_with(cache, python_version, merged))
     }
 
+    /// The bundled stubs injected as graph-only nodes when this workspace was
+    /// built. They are part of the merged graph but carry no verdict.
+    pub fn graph_only_stubs(&self) -> &AHashSet<ModuleName> {
+        &self.graph_only_stubs
+    }
+
     /// Return the total number of modules, including injected bundled stubs.
     pub fn module_count(&self) -> usize {
         self.cache.modules.len()
@@ -152,8 +174,35 @@ impl ReduceWorkspace {
         self.artifact_module_count
     }
 
+    /// [`crate::runner::check_main_module`] against the merged module set.
+    pub fn check_main_module(&self, main_module: Option<ModuleName>) -> anyhow::Result<()> {
+        check_main_module(main_module, |name| {
+            self.cache.modules.iter().any(|module| module.name == name)
+        })
+    }
+
+    /// Drop what a `__main__` guard produced, for every module that is not the
+    /// one the binary runs as `__main__`.
+    ///
+    /// Which module that is is known only here, which is why the map keeps the
+    /// facts and the reduce discards them. What a guard produced, and what
+    /// dropping it means for each kind of fact, is [`super::main_guard`]'s.
+    fn apply_main_module(&mut self, main_module: Option<ModuleName>) {
+        let Some(main_module) = main_module else {
+            return;
+        };
+        self.cache
+            .modules
+            .par_iter_mut()
+            .filter(|module| module.name != main_module)
+            .for_each(|module| {
+                drop_main_guarded(module);
+            });
+    }
+
     /// Resolve cross-library errors and consume the mutable reduce workspace.
-    pub fn resolve(mut self) -> ResolvedCache {
+    pub fn resolve(mut self, main_module: Option<ModuleName>) -> ResolvedCache {
+        self.apply_main_module(main_module);
         self.cache.resolve_cross_library_errors(self.merged);
         ResolvedCache {
             cache: self.cache,
@@ -167,8 +216,13 @@ impl ResolvedCache {
         &self.cache
     }
 
-    pub(crate) fn modules(&self) -> &[CachedModule] {
+    pub fn modules(&self) -> &[CachedModule] {
         &self.cache.modules
+    }
+
+    /// Convenience lookup for tests that inspect resolved cache contents.
+    pub fn find_module(&self, name: ModuleName) -> Option<&CachedModule> {
+        self.cache.modules.iter().find(|module| module.name == name)
     }
 
     pub(crate) fn graph_only_stubs(&self) -> &AHashSet<ModuleName> {
@@ -204,6 +258,91 @@ fn resolve_and_add_import_edge(
     Some(resolved)
 }
 
+/// The merged facts a resolver is built from, threaded together so the two
+/// `finalize_resolution` builds differ only in the module set they answer for.
+struct ResolutionContext<'a> {
+    /// Every module in the merge.
+    module_names: &'a AHashSet<ModuleName>,
+    /// Module -> the targets its missing and ambiguous imports newly resolved to.
+    resolved_by_module: &'a AHashMap<ModuleName, AHashSet<ModuleName>>,
+    func_safety_by_module: &'a AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
+    class_bases: &'a HashMap<ModuleName, Vec<ModuleName>>,
+    constructor_callees: &'a HashMap<ModuleName, ConstructorCallees>,
+}
+
+impl<'a> ResolutionContext<'a> {
+    /// A resolver over `modules`, carrying the class facts every build shares.
+    fn resolver(
+        &self,
+        modules: &'a AHashSet<ModuleName>,
+        globally_safe: &'a AHashSet<String>,
+    ) -> SafetyResolver<'a> {
+        SafetyResolver::with_safe_index(modules, self.func_safety_by_module, globally_safe)
+            .with_class_bases(self.class_bases)
+            .with_constructor_callees(self.constructor_callees)
+            .with_mro_modules(self.module_names)
+    }
+}
+
+/// The class a call to `receiver` returns, following re-export aliases until a
+/// recorded return type is found.
+///
+/// Bounded rather than run to a fixpoint: a malformed cache could describe a
+/// re-export cycle, and this runs per candidate over every module in the build.
+/// A chain longer than the bound goes unresolved, which is what happened to
+/// every chain before aliases were followed at all.
+fn resolve_return_class(
+    receiver: ModuleName,
+    return_classes: &AHashMap<ModuleName, ModuleName>,
+    reexport_targets: &AHashMap<ModuleName, ModuleName>,
+) -> Option<ModuleName> {
+    const MAX_REEXPORT_HOPS: usize = 8;
+    let mut name = receiver;
+    for _ in 0..MAX_REEXPORT_HOPS {
+        if let Some(class) = return_classes.get(&name) {
+            return Some(*class);
+        }
+        match reexport_targets.get(&name) {
+            Some(next) if *next != name => name = *next,
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn is_resolved_error_verified_safe(
+    caller: ModuleName,
+    error: &SafetyError,
+    whole_program: &SafetyResolver,
+    scoped: Option<&SafetyResolver>,
+    promoted: &AHashSet<(ModuleName, String)>,
+) -> bool {
+    // A constructor call clears on the class's map-phase-recorded callees, which
+    // are whole-program facts. Scoping that check to a module's newly resolved
+    // imports would withhold it from every module that resolved nothing new.
+    if let Some(cleared) = whole_program.recorded_constructor_clears(caller, error) {
+        return cleared;
+    }
+    let qualified = unqualified_index_key(error.metadata.as_str()).is_none();
+    if error.kind == ErrorKind::UnsafeDecoratorCall || !qualified {
+        return whole_program.is_error_verified_safe(error);
+    }
+    // Own-module callees verify against merged verdicts, unless promoted:
+    // promotion evidence is cross-module, so it stays scoped like any other.
+    if matches!(
+        error.kind,
+        ErrorKind::UnsafeFunctionCall | ErrorKind::UnsafeMethodCall
+    ) && whole_program
+        .split_at_module(error.metadata.as_str().trim_end_matches("()"))
+        .is_some_and(|(module, local)| {
+            module == caller && !promoted.contains(&(module, local.to_owned()))
+        })
+    {
+        return whole_program.is_error_verified_safe(error);
+    }
+    scoped.is_some_and(|scoped| scoped.is_error_verified_safe(error))
+}
+
 impl LibraryCache {
     /// Resolve ambiguous imports: `from X import Y` where X was in the library
     /// but X.Y was not. If X.Y resolves to a module in the merged set, it's a
@@ -232,42 +371,128 @@ impl LibraryCache {
             .collect()
     }
 
-    /// Clear cached errors verified safe by the completed resolution outcome.
-    /// General errors require positive resolution evidence; decorator errors
-    /// can be verified from static verdicts alone.
-    fn finalize_resolution(
+    /// Clear cached errors that are verified safe by the resolved program facts.
+    ///
+    /// Qualified callees use the owning module's newly resolved imports,
+    /// except bound calls to the caller's own module, which use the merged
+    /// verdicts unless the callee was promoted. Unqualified callees use the
+    /// whole-program safe-name index, and an `UnsafeDecoratorCall` uses the
+    /// whole merged program's static verdicts.
+    /// A qualified `UnknownDecoratorCall` is not in that last group: it names a
+    /// callee, so it resolves like any other qualified error.
+    fn finalize_resolution(&mut self, ctx: &ResolutionContext<'_>, outcome: &ResolutionOutcome) {
+        // The map is built from the same facts `ctx.resolver` would use, and
+        // hands out the whole-program resolver itself; the per-module scoped
+        // resolvers below are over a different module set, so they cannot reach
+        // its cache.
+        let decorator_verdicts =
+            DecoratorVerdictMap::new(ctx.module_names, ctx.func_safety_by_module);
+        let whole_program = decorator_verdicts
+            .resolver(&outcome.globally_safe)
+            .with_class_bases(ctx.class_bases)
+            .with_constructor_callees(ctx.constructor_callees);
+        let promoted: AHashSet<(ModuleName, String)> = outcome.promoted.iter().cloned().collect();
+
+        self.modules.par_iter_mut().for_each(|module| {
+            let caller = module.name;
+            let CachedSafety::Ok(ref mut safety) = module.safety else {
+                return;
+            };
+            let scoped = ctx
+                .resolved_by_module
+                .get(&caller)
+                .map(|resolved| ctx.resolver(resolved, &outcome.globally_safe));
+
+            retain_unverified_errors(safety, |error| {
+                is_resolved_error_verified_safe(
+                    caller,
+                    error,
+                    &whole_program,
+                    scoped.as_ref(),
+                    &promoted,
+                )
+            });
+        });
+        debug!("{} functions promoted", outcome.promoted.len());
+    }
+
+    /// Turn recorded attribute accesses into errors where the merged facts now
+    /// show the receiver's attribute is a property whose getter is not safe.
+    ///
+    /// This runs after `finalize_resolution` so the getter verdicts it reads are
+    /// final and the errors it adds are not then considered for clearing.
+    fn resolve_property_candidates(
         &mut self,
         module_names: &AHashSet<ModuleName>,
         func_safety_by_module: &AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
         outcome: &ResolutionOutcome,
-        class_bases: &HashMap<ModuleName, Vec<ModuleName>>,
-        constructor_callees: &HashMap<ModuleName, ConstructorCallees>,
+        class_properties: &HashMap<ModuleName, AHashSet<String>>,
     ) {
-        let decorator_verdicts = DecoratorVerdictMap::new(module_names, func_safety_by_module);
-        if !outcome.promoted.is_empty() || outcome.resolved_to_safe {
-            // With positive evidence (a promotion or a mutation candidate now
-            // `Safe`), clear every verified-safe error kind.
-            let resolver = decorator_verdicts
-                .resolver(&outcome.globally_safe)
-                .with_class_bases(class_bases)
-                .with_constructor_callees(constructor_callees);
-            self.clear_errors_where(|caller, error| resolver.clears_error(caller, error, |_| true));
-        } else {
-            // Without promotion evidence, clear only static-safe kinds:
-            // `UnsafeDecoratorCall` via the general verdict, plus (always, inside
-            // `clears_error`) constructor-shaped `UnsafeFunctionCall` and
-            // class-decorator calls, whose safety follows from static verdicts alone.
-            // These checks ignore the globally-safe index, so an empty one suffices.
-            let empty = AHashSet::new();
-            let resolver = decorator_verdicts
-                .resolver(&empty)
-                .with_class_bases(class_bases)
-                .with_constructor_callees(constructor_callees);
-            self.clear_errors_where(|caller, error| {
-                resolver.clears_error(caller, error, |kind| kind == ErrorKind::UnsafeDecoratorCall)
-            });
+        if class_properties.is_empty() {
+            return;
         }
-        debug!("{} functions promoted", outcome.promoted.len());
+        let return_classes: AHashMap<ModuleName, ModuleName> = self
+            .exports
+            .return_types
+            .iter()
+            .map(|rt| (rt.function, rt.class))
+            .collect();
+        // A candidate's receiver names whatever the caller imported, which may be
+        // a re-export: `facade.make` where the return type was recorded against
+        // `factory.make`. Looking up the alias alone misses, the candidate is
+        // dropped, and dropping one is a false-safe -- no error is emitted for a
+        // getter that is unsafe.
+        let reexport_targets: AHashMap<ModuleName, ModuleName> = self
+            .exports
+            .re_exports
+            .iter()
+            .map(|re| {
+                (
+                    re.exported_module.append_str(&re.exported_attr),
+                    re.imported_module.append_str(&re.imported_attr),
+                )
+            })
+            .collect();
+        let resolver = SafetyResolver::with_safe_index(
+            module_names,
+            func_safety_by_module,
+            &outcome.globally_safe,
+        );
+
+        self.modules.par_iter_mut().for_each(|module| {
+            let candidates = std::mem::take(&mut module.property_candidates);
+            let CachedSafety::Ok(ref mut safety) = module.safety else {
+                return;
+            };
+            for candidate in candidates {
+                let Some((receiver, attr)) = candidate.attribute.split_attr() else {
+                    continue;
+                };
+                let class_fqn =
+                    match resolve_return_class(receiver, &return_classes, &reexport_targets) {
+                        Some(class) => class,
+                        None => receiver,
+                    };
+                if !class_properties
+                    .get(&class_fqn)
+                    .is_some_and(|properties| properties.contains(attr.as_str()))
+                {
+                    continue;
+                }
+                let attribute = class_fqn.append_str(attr.as_str());
+                let getter_unsafe = resolver
+                    .split_at_module(attribute.as_str())
+                    .and_then(|(module, local)| resolver.own_verdict(&module, local))
+                    .is_some_and(|verdict| !verdict.is_safe());
+                if getter_unsafe {
+                    safety.errors.push(SafetyError::new(
+                        ErrorKind::UnsafeMethodCall,
+                        attribute.as_str().to_owned(),
+                        candidate.range,
+                    ));
+                }
+            }
+        });
     }
 
     /// Collect error names that can use the global unqualified fallback; qualified
@@ -281,7 +506,7 @@ impl LibraryCache {
             })
             .fold(AHashSet::new, |mut names, safety| {
                 for error in &safety.errors {
-                    let Some(name) = unqualified_index_key(&error.metadata) else {
+                    let Some(name) = unqualified_index_key(error.metadata.as_str()) else {
                         continue;
                     };
                     if !names.contains(name) {
@@ -293,27 +518,9 @@ impl LibraryCache {
             .reduce(AHashSet::new, union_larger)
     }
 
-    /// Drop every error `should_clear` admits, in parallel. Returns whether any
-    /// error was removed.
-    fn clear_errors_where(
-        &mut self,
-        should_clear: impl Fn(ModuleName, &CachedError) -> bool + Sync,
-    ) -> bool {
-        self.modules
-            .par_iter_mut()
-            .map(|module| {
-                let caller = module.name;
-                let CachedSafety::Ok(ref mut safety) = module.safety else {
-                    return false;
-                };
-                retain_unverified_errors(safety, |error| should_clear(caller, error))
-            })
-            .reduce(|| false, |any_cleared, cleared| any_cleared || cleared)
-    }
-
     /// Resolve missing imports against the merged cache and selectively clear
     /// false errors using per-function safety verdicts.
-    pub fn resolve_cross_library_errors(&mut self, merged: MergedClassFacts) {
+    fn resolve_cross_library_errors(&mut self, merged: MergedClassFacts) {
         let module_names: AHashSet<ModuleName> = self.modules.iter().map(|m| m.name).collect();
         let ambiguous_resolved = self.resolve_ambiguous_imports(&module_names);
 
@@ -324,6 +531,7 @@ impl LibraryCache {
             &mut constructor_callees,
             std::mem::take(&mut self.constructor_callees),
         );
+        let class_properties = merge_class_properties(std::mem::take(&mut self.class_properties));
 
         self.propagate_re_export_safety();
 
@@ -333,61 +541,70 @@ impl LibraryCache {
                 .map(|m| (m.name, std::mem::take(&mut m.function_safety)))
                 .collect();
 
-        self.modules.par_iter_mut().for_each(|module| {
-            if let CachedSafety::Ok(ref mut safety) = module.safety {
-                dedupe_implicit_imports(&mut safety.implicit_imports);
-            }
+        let resolved_by_module: AHashMap<ModuleName, AHashSet<ModuleName>> = self
+            .modules
+            .par_iter_mut()
+            .filter_map(|module| {
+                if let CachedSafety::Ok(ref mut safety) = module.safety {
+                    dedupe_implicit_imports(&mut safety.implicit_imports);
+                }
 
-            let from_ambiguous = ambiguous_resolved.get(&module.name);
+                let from_ambiguous = ambiguous_resolved.get(&module.name);
 
-            if module.missing_imports.is_empty() && from_ambiguous.is_none() {
-                return;
-            }
+                if module.missing_imports.is_empty() && from_ambiguous.is_none() {
+                    return None;
+                }
 
-            let mut still_missing: AHashSet<ModuleName> =
-                AHashSet::with_capacity(module.missing_imports.len());
-            let mut resolved_modules: AHashSet<ModuleName> =
-                AHashSet::with_capacity(module.missing_imports.len());
+                let mut still_missing: AHashSet<ModuleName> =
+                    AHashSet::with_capacity(module.missing_imports.len());
+                let mut resolved_modules: AHashSet<ModuleName> =
+                    AHashSet::with_capacity(module.missing_imports.len());
 
-            if let Some(from_ambiguous) = from_ambiguous {
-                resolved_modules.extend(from_ambiguous.iter().copied());
-            }
+                if let Some(from_ambiguous) = from_ambiguous {
+                    resolved_modules.extend(from_ambiguous.iter().copied());
+                }
 
-            for missing in module.missing_imports.drain() {
-                match resolve_and_add_import_edge(
-                    &mut module.imports,
-                    module.name,
-                    &missing,
-                    &module_names,
-                ) {
-                    Some(resolved) => {
-                        resolved_modules.insert(resolved);
-                    }
-                    None => {
-                        still_missing.insert(missing);
+                for missing in module.missing_imports.drain() {
+                    match resolve_and_add_import_edge(
+                        &mut module.imports,
+                        module.name,
+                        &missing,
+                        &module_names,
+                    ) {
+                        Some(resolved) => {
+                            resolved_modules.insert(resolved);
+                        }
+                        None => {
+                            still_missing.insert(missing);
+                        }
                     }
                 }
-            }
 
-            module.missing_imports = still_missing;
+                module.missing_imports = still_missing;
 
-            let caller = module.name;
-            if let CachedSafety::Ok(ref mut safety) = module.safety {
-                let resolver = SafetyResolver::new(&resolved_modules, &func_safety_by_module)
-                    .with_class_bases(&class_bases)
-                    .with_constructor_callees(&constructor_callees);
-                // Same decision as the final clear: this pass has no promotion
-                // evidence to gate on, but a recorded constructor callee still
-                // has to outrank the class's aggregate verdict here, or the
-                // error is gone before `finalize_resolution` ever sees it.
-                retain_unverified_errors(safety, |error| {
-                    resolver.clears_error(caller, error, |_| true)
-                });
-            }
-        });
+                let caller = module.name;
+                if let CachedSafety::Ok(ref mut safety) = module.safety {
+                    let resolver = SafetyResolver::new(&resolved_modules, &func_safety_by_module)
+                        .with_class_bases(&class_bases)
+                        .with_constructor_callees(&constructor_callees)
+                        .with_mro_modules(&module_names);
+                    // A recorded constructor callee outranks the class's
+                    // aggregate verdict here too, or the error is gone before
+                    // `finalize_resolution` ever sees it.
+                    retain_unverified_errors(safety, |error| {
+                        match resolver.recorded_constructor_clears(caller, error) {
+                            Some(cleared) => cleared,
+                            None => resolver.is_error_verified_safe(error),
+                        }
+                    });
+                }
+
+                Some((module.name, resolved_modules))
+            })
+            .collect();
 
         let needed_unqualified = self.unqualified_error_names();
-        let mut module_errors: HashMap<ModuleName, Vec<String>> = HashMap::new();
+        let mut module_errors: HashMap<ModuleName, Vec<(String, TextRange)>> = HashMap::new();
         let outcome = resolve_program(
             &module_names,
             &mut func_safety_by_module,
@@ -395,8 +612,11 @@ impl LibraryCache {
                 .iter()
                 .map(|module| (module.name, module.mutation_candidates.as_slice())),
             needed_unqualified,
-            |module_name, metadata| {
-                module_errors.entry(module_name).or_default().push(metadata);
+            |module_name, metadata, range| {
+                module_errors
+                    .entry(module_name)
+                    .or_default()
+                    .push((metadata, range));
             },
         );
         for module in &mut self.modules {
@@ -404,22 +624,28 @@ impl LibraryCache {
                 continue;
             };
             if let CachedSafety::Ok(ref mut safety) = module.safety {
-                safety
-                    .errors
-                    .extend(errors.iter().map(|metadata| CachedError {
-                        kind: ErrorKind::ImportedVarArgument,
-                        metadata: metadata.clone(),
-                        parameterized_decorator: false,
-                    }));
+                safety.errors.extend(errors.iter().map(|(metadata, range)| {
+                    SafetyError::new(ErrorKind::ImportedVarArgument, metadata.clone(), *range)
+                }));
             }
         }
 
         self.finalize_resolution(
+            &ResolutionContext {
+                module_names: &module_names,
+                resolved_by_module: &resolved_by_module,
+                func_safety_by_module: &func_safety_by_module,
+                class_bases: &class_bases,
+                constructor_callees: &constructor_callees,
+            },
+            &outcome,
+        );
+
+        self.resolve_property_candidates(
             &module_names,
             &func_safety_by_module,
             &outcome,
-            &class_bases,
-            &constructor_callees,
+            &class_properties,
         );
 
         // Return the verdicts taken at the top; resolution needed them in one flat
@@ -434,8 +660,6 @@ impl LibraryCache {
 
 #[cfg(test)]
 mod tests {
-    use rayon::ThreadPoolBuilder;
-
     use super::*;
     use crate::effects::ImportedArgs;
     use crate::module_safety::MutationCandidate;
@@ -453,12 +677,13 @@ mod tests {
             modules: Vec::new(),
             exports: CachedExports {
                 re_exports: Vec::new(),
+                return_types: Vec::new(),
             },
             ..Default::default()
         };
         let graph_only_stubs = AHashSet::from_iter([ModuleName::from_str("missing_stub")]);
 
-        ReduceWorkspace::from_merged(cache, graph_only_stubs);
+        ReduceWorkspace::from_merged(cache, graph_only_stubs, MergedClassFacts::default());
     }
 
     #[test]
@@ -472,11 +697,14 @@ mod tests {
                 },
                 arg_offset: 0,
                 imported_args: ImportedArgs::default(),
+                range: TextRange::default(),
+                from_main_guard: false,
             });
             LibraryCache {
                 modules: vec![cached_module],
                 exports: CachedExports {
                     re_exports: Vec::new(),
+                    return_types: Vec::new(),
                 },
                 ..Default::default()
             }
@@ -640,104 +868,243 @@ mod tests {
     }
 
     #[test]
-    fn clear_verified_errors_processes_every_module() {
-        // Callees are module-qualified so the conservative `Unknown*` path can
-        // bind them per module; an unqualified short name is never cleared.
+    fn every_module_with_new_evidence_is_processed() {
         let module_a = ModuleName::from_str("test.module_a");
         let module_b = ModuleName::from_str("test.module_b");
+        let dep_a = ModuleName::from_str("dep_a");
+        let dep_b = ModuleName::from_str("dep_b");
+
+        let caller = |name: ModuleName, dep: ModuleName| CachedModule {
+            safety: CachedSafety::Ok(CachedModuleSafety {
+                errors: vec![SafetyError::new(
+                    ErrorKind::UnknownFunctionCall,
+                    format!("{}.helper()", dep.as_str()),
+                    TextRange::default(),
+                )],
+                ..Default::default()
+            }),
+            missing_imports: [dep].into_iter().collect(),
+            ..CachedModule::empty(name)
+        };
+        let dependency = |name: ModuleName| CachedModule {
+            function_safety: [(
+                "helper".to_owned(),
+                FunctionSafetyInfo::new(FunctionSafety::Safe),
+            )]
+            .into_iter()
+            .collect(),
+            ..CachedModule::empty(name)
+        };
 
         let mut cache = LibraryCache {
             modules: vec![
-                CachedModule {
-                    name: module_a,
-                    safety: CachedSafety::Ok(CachedModuleSafety {
-                        errors: vec![CachedError {
-                            kind: ErrorKind::UnknownFunctionCall,
-                            metadata: "test.module_a.helper()".to_owned(),
-                            parameterized_decorator: false,
-                        }],
-                        force_imports_eager_overrides: Vec::new(),
-                        implicit_imports: Vec::new(),
-                    }),
-                    imports: AHashSet::new(),
-                    missing_imports: AHashSet::new(),
-                    ambiguous_imports: AHashSet::new(),
-                    side_effect_imports: AHashSet::new(),
-                    function_safety: AHashMap::new(),
-                    mutation_candidates: Vec::new(),
-                },
-                CachedModule {
-                    name: module_b,
-                    safety: CachedSafety::Ok(CachedModuleSafety {
-                        errors: vec![CachedError {
-                            kind: ErrorKind::UnknownFunctionCall,
-                            metadata: "test.module_b.helper()".to_owned(),
-                            parameterized_decorator: false,
-                        }],
-                        force_imports_eager_overrides: Vec::new(),
-                        implicit_imports: Vec::new(),
-                    }),
-                    imports: AHashSet::new(),
-                    missing_imports: AHashSet::new(),
-                    ambiguous_imports: AHashSet::new(),
-                    side_effect_imports: AHashSet::new(),
-                    function_safety: AHashMap::new(),
-                    mutation_candidates: Vec::new(),
-                },
+                caller(module_a, dep_a),
+                caller(module_b, dep_b),
+                dependency(dep_a),
+                dependency(dep_b),
             ],
             exports: CachedExports {
                 re_exports: Vec::new(),
+                return_types: Vec::new(),
             },
             ..Default::default()
         };
 
-        let module_names: AHashSet<ModuleName> = [module_a, module_b].into_iter().collect();
-        let func_safety_by_module: AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>> = [
-            (
-                module_a,
-                [(
-                    "helper".to_owned(),
-                    FunctionSafetyInfo::new(FunctionSafety::Safe),
-                )]
-                .into_iter()
-                .collect(),
-            ),
-            (
-                module_b,
-                [(
-                    "helper".to_owned(),
-                    FunctionSafetyInfo::new(FunctionSafety::Safe),
-                )]
-                .into_iter()
-                .collect(),
-            ),
-        ]
-        .into_iter()
-        .collect();
-        let globally_safe_funcs: AHashSet<String> = ["helper".to_owned()].into_iter().collect();
+        cache.resolve_cross_library_errors(MergedClassFacts::default());
 
-        let resolver = SafetyResolver::with_safe_index(
-            &module_names,
-            &func_safety_by_module,
-            &globally_safe_funcs,
-        );
-        let cleared = ThreadPoolBuilder::new()
-            .num_threads(1)
-            .build()
-            .expect("should build test thread pool")
-            .install(|| {
-                cache.clear_errors_where(|caller, error| {
-                    resolver.clears_error(caller, error, |_| true)
-                })
-            });
-
-        assert!(
-            cleared,
-            "expected at least one verified error to be removed"
-        );
         assert!(
             cache.modules.iter().all(CachedModule::is_safe),
-            "all modules should have their verified errors cleared",
+            "every module's verified error should be cleared, got {:?}",
+            cache
+                .modules
+                .iter()
+                .map(|m| (m.name.as_str(), m.is_safe()))
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    #[test]
+    fn own_module_callee_clears_without_new_imports() {
+        // A call to the caller's own module verifies against the merged
+        // verdicts, which carry this reduce's resolutions of the caller's own
+        // functions: no newly resolved import is needed to clear it. An
+        // external callee with no new evidence stays scoped and is kept.
+        let module_m = ModuleName::from_str("test.module_m");
+        let external = ModuleName::from_str("test.external");
+
+        let caller = CachedModule {
+            safety: CachedSafety::Ok(CachedModuleSafety {
+                errors: vec![
+                    SafetyError::new(
+                        ErrorKind::UnsafeFunctionCall,
+                        format!("{}.helper()", module_m.as_str()),
+                        TextRange::default(),
+                    ),
+                    SafetyError::new(
+                        ErrorKind::UnsafeFunctionCall,
+                        format!("{}.helper()", external.as_str()),
+                        TextRange::default(),
+                    ),
+                ],
+                ..Default::default()
+            }),
+            function_safety: [(
+                "helper".to_owned(),
+                FunctionSafetyInfo::new(FunctionSafety::Safe),
+            )]
+            .into_iter()
+            .collect(),
+            ..CachedModule::empty(module_m)
+        };
+        let dependency = CachedModule {
+            function_safety: [(
+                "helper".to_owned(),
+                FunctionSafetyInfo::new(FunctionSafety::Safe),
+            )]
+            .into_iter()
+            .collect(),
+            ..CachedModule::empty(external)
+        };
+
+        let mut cache = LibraryCache {
+            modules: vec![caller, dependency],
+            exports: CachedExports {
+                re_exports: Vec::new(),
+                return_types: Vec::new(),
+            },
+            ..Default::default()
+        };
+
+        cache.resolve_cross_library_errors(MergedClassFacts::default());
+
+        let errors = cache
+            .modules
+            .iter()
+            .find(|m| m.name == module_m)
+            .and_then(|m| match &m.safety {
+                CachedSafety::Ok(safety) => Some(
+                    safety
+                        .errors
+                        .iter()
+                        .map(|e| e.metadata.as_str().to_owned())
+                        .collect::<Vec<_>>(),
+                ),
+                _ => None,
+            })
+            .expect("caller module should survive resolution");
+        assert_eq!(
+            errors,
+            vec![format!("{}.helper()", external.as_str())],
+            "own-module error should clear, external error should stay"
+        );
+    }
+
+    #[test]
+    fn unbound_own_module_callee_stays_scoped() {
+        // An unbound callee never verifies against merged verdicts, even in
+        // the caller's own module: only newly resolved imports re-bind it.
+        let module_m = ModuleName::from_str("test.module_m");
+
+        let caller = CachedModule {
+            safety: CachedSafety::Ok(CachedModuleSafety {
+                errors: vec![SafetyError::new(
+                    ErrorKind::UnknownFunctionCall,
+                    format!("{}.helper()", module_m.as_str()),
+                    TextRange::default(),
+                )],
+                ..Default::default()
+            }),
+            function_safety: [(
+                "helper".to_owned(),
+                FunctionSafetyInfo::new(FunctionSafety::Safe),
+            )]
+            .into_iter()
+            .collect(),
+            ..CachedModule::empty(module_m)
+        };
+
+        let mut cache = LibraryCache {
+            modules: vec![caller],
+            exports: CachedExports {
+                re_exports: Vec::new(),
+                return_types: Vec::new(),
+            },
+            ..Default::default()
+        };
+
+        cache.resolve_cross_library_errors(MergedClassFacts::default());
+
+        assert!(
+            !cache.modules.iter().all(CachedModule::is_safe),
+            "unbound own-module error should stay without new imports"
+        );
+    }
+
+    #[test]
+    fn promoted_own_module_callee_stays_scoped() {
+        // A callee the reduce promoted verified against cross-module
+        // evidence, so its callers stay scoped to newly resolved imports.
+        let module_m = ModuleName::from_str("test.module_m");
+        let dep = ModuleName::from_str("dep");
+
+        let caller = CachedModule {
+            safety: CachedSafety::Ok(CachedModuleSafety {
+                errors: vec![SafetyError::new(
+                    ErrorKind::UnsafeFunctionCall,
+                    format!("{}.helper()", module_m.as_str()),
+                    TextRange::default(),
+                )],
+                ..Default::default()
+            }),
+            function_safety: [(
+                "helper".to_owned(),
+                FunctionSafetyInfo::unsafe_missing_dep(ModuleName::from_str("dep.fn")),
+            )]
+            .into_iter()
+            .collect(),
+            ..CachedModule::empty(module_m)
+        };
+        let dependency = CachedModule {
+            function_safety: [(
+                "fn".to_owned(),
+                FunctionSafetyInfo::new(FunctionSafety::Safe),
+            )]
+            .into_iter()
+            .collect(),
+            ..CachedModule::empty(dep)
+        };
+
+        let mut cache = LibraryCache {
+            modules: vec![caller, dependency],
+            exports: CachedExports {
+                re_exports: Vec::new(),
+                return_types: Vec::new(),
+            },
+            ..Default::default()
+        };
+
+        cache.resolve_cross_library_errors(MergedClassFacts::default());
+
+        let caller = cache
+            .modules
+            .iter()
+            .find(|m| m.name == module_m)
+            .expect("caller module should survive resolution");
+        assert_eq!(
+            caller
+                .function_safety
+                .get("helper")
+                .map(|info| info.verdict),
+            Some(FunctionSafety::Safe),
+            "helper should have been promoted"
+        );
+        let CachedSafety::Ok(safety) = &caller.safety else {
+            panic!("caller module should be analyzable");
+        };
+        assert_eq!(
+            safety.errors.len(),
+            1,
+            "promoted-callee error should stay without new imports"
         );
     }
 }

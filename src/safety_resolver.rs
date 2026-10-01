@@ -25,15 +25,16 @@ use dashmap::DashMap;
 use pyrefly_python::module_name::ModuleName;
 
 use crate::cache::CONSTRUCTOR_METHODS;
-use crate::cache::CachedError;
 use crate::cache::ConstructorCallees;
 use crate::errors::ErrorKind;
+use crate::errors::SafetyError;
 use crate::hasher::AHashMap;
 use crate::hasher::AHashSet;
 use crate::hasher::FixedState;
 use crate::module_safety::FunctionSafety;
 use crate::module_safety::FunctionSafetyInfo;
 use crate::mro::c3_linearize;
+use crate::names::enclosing_module;
 use crate::traits::ModuleNameExt;
 
 /// Whether `local_name` is cached `Safe` in `fs`.
@@ -104,6 +105,8 @@ pub(crate) struct SafetyResolver<'a> {
     /// Map-phase-resolved constructor callees, keyed by class FQN. When present
     /// for a class, these replace re-deriving its constructor method set.
     constructor_callees: Option<&'a HashMap<ModuleName, ConstructorCallees>>,
+    /// Every module in the merge, used only to resolve MRO ancestors.
+    mro_modules: Option<&'a AHashSet<ModuleName>>,
 }
 
 impl<'a> SafetyResolver<'a> {
@@ -119,6 +122,7 @@ impl<'a> SafetyResolver<'a> {
             decorator_verdicts: None,
             class_bases: None,
             constructor_callees: None,
+            mro_modules: None,
         }
     }
 
@@ -135,6 +139,7 @@ impl<'a> SafetyResolver<'a> {
             decorator_verdicts: None,
             class_bases: None,
             constructor_callees: None,
+            mro_modules: None,
         }
     }
 
@@ -156,6 +161,11 @@ impl<'a> SafetyResolver<'a> {
         self
     }
 
+    pub(crate) fn with_mro_modules(mut self, modules: &'a AHashSet<ModuleName>) -> Self {
+        self.mro_modules = Some(modules);
+        self
+    }
+
     /// Resolve `local` = `Class.method` (or `Outer.Inner.method`) up the MRO of
     /// `module`.`Class`: return the verdict of the first ancestor, in C3 method
     /// resolution order, that defines an exact `Base.method` entry, or `None` if
@@ -165,9 +175,10 @@ impl<'a> SafetyResolver<'a> {
         let class_bases = self.class_bases?;
         let (class_local, method) = local.rsplit_once('.')?;
         let class_fqn = module.append_str(class_local);
+        let ancestor_modules = self.mro_modules.unwrap_or(self.modules);
         for ancestor in c3_linearize(class_bases, &class_fqn).iter().skip(1) {
             let candidate = ancestor.append_str(method);
-            if let Some((bmod, blocal)) = self.split_at_module(candidate.as_str()) {
+            if let Some((bmod, blocal)) = split_at_module_in(ancestor_modules, candidate.as_str()) {
                 if let Some(info) = self.by_module.get(&bmod).and_then(|fs| fs.get(blocal)) {
                     return Some(info.verdict);
                 }
@@ -179,10 +190,7 @@ impl<'a> SafetyResolver<'a> {
     /// The longest prefix of `func_name` naming a module in `self.modules`,
     /// paired with the remaining local name; `None` if unqualified.
     pub(crate) fn split_at_module<'n>(&self, func_name: &'n str) -> Option<(ModuleName, &'n str)> {
-        let fqn = ModuleName::from_str(func_name);
-        fqn.iter_parents()
-            .find(|(parent, _)| self.modules.contains(parent))
-            .map(|(parent, dot_pos)| (parent, &func_name[dot_pos + 1..]))
+        split_at_module_in(self.modules, func_name)
     }
 
     /// Whether an unqualified name is verified safe: the index when present,
@@ -204,35 +212,34 @@ impl<'a> SafetyResolver<'a> {
         Some(self.by_module.get(module)?.get(local)?.verdict)
     }
 
-    /// Whether `module` has an own entry for `local` verified `Safe`.
-    fn own_call_safe(&self, module: &ModuleName, local: &str) -> bool {
-        self.own_verdict(module, local).is_some_and(|v| v.is_safe())
+    /// Whether `module`.`local` is verified safe: its own entry when it has one,
+    /// otherwise the nearest inherited definition found up the MRO.
+    fn qualified_safe(&self, module: &ModuleName, local: &str) -> bool {
+        match self.own_verdict(module, local) {
+            Some(verdict) => verdict.is_safe(),
+            None => self
+                .mro_method_verdict(module, local)
+                .is_some_and(|verdict| verdict.is_safe()),
+        }
     }
 
     /// Whether a plain function call is found and verified `Safe`.
     pub(crate) fn is_call_verified_safe(&self, func_name: &str) -> bool {
         match self.split_at_module(func_name) {
-            Some((module, local)) => match self.own_verdict(&module, local) {
-                Some(verdict) => verdict.is_safe(),
-                None => self
-                    .mro_method_verdict(&module, local)
-                    .is_some_and(|v| v.is_safe()),
-            },
+            Some((module, local)) => self.qualified_safe(&module, local),
             None => self.unqualified_safe(func_name),
         }
     }
 
-    /// Like `is_call_verified_safe`, but only an own entry under a
-    /// module-qualified name clears. Both restrictions follow from an `Unknown*`
-    /// call target meaning `func_name` is a best-effort textual name rather than a
-    /// proven callee:
-    /// - an unqualified name must not clear on a same-named safe function in
-    ///   some resolved module (or in the global index);
-    /// - the MRO fallback does not apply, since walking a class hierarchy for a
-    ///   name that was never bound to that class is speculative.
+    /// Like `is_call_verified_safe`, but an unqualified name never clears. An
+    /// `Unknown*` call target means `func_name` is a best-effort textual name
+    /// rather than a proven callee, so it must not clear on a same-named safe
+    /// function in some resolved module (or in the global index). A qualified
+    /// name is specific enough to trust, and clears exactly as it would for a
+    /// resolved call, inherited methods included.
     fn is_call_verified_safe_no_unqualified(&self, func_name: &str) -> bool {
         self.split_at_module(func_name)
-            .is_some_and(|(module, local)| self.own_call_safe(&module, local))
+            .is_some_and(|(module, local)| self.qualified_safe(&module, local))
     }
 
     /// Whether `module` declares `local` decorator-verified-safe: the shared
@@ -337,9 +344,9 @@ impl<'a> SafetyResolver<'a> {
     /// Dispatch a cached error to the right verified-safe check, on the two
     /// properties that pick it: whether the call form also runs a returned
     /// wrapper, and whether the callee was bound to anything.
-    pub(crate) fn is_error_verified_safe(&self, error: &CachedError) -> bool {
+    pub(crate) fn is_error_verified_safe(&self, error: &SafetyError) -> bool {
         // The callee `metadata` may render with trailing `()` suffixes.
-        let func_name = error.metadata.trim_end_matches("()");
+        let func_name = error.metadata.as_str().trim_end_matches("()");
         // Both fields, to guard against a stale artifact pairing them wrongly:
         // the kind and the flag travel separately through the cache.
         let parameterized_decorator = error.parameterized_decorator && error.is_decorator_call();
@@ -362,45 +369,27 @@ impl<'a> SafetyResolver<'a> {
         }
     }
 
-    /// Whether `error` in `caller` may be dropped.
-    ///
-    /// A call to a class the map phase recorded constructor callees for is
-    /// decided by those callees alone. Such a call also does not consult `kinds`;
-    /// its answer follows from static verdicts, with no promotion evidence needed.
-    ///
-    /// Every other error clears only when `kinds` admits it and the general
-    /// verdict verifies it.
-    pub(crate) fn clears_error(
-        &self,
-        caller: ModuleName,
-        error: &CachedError,
-        kinds: impl Fn(ErrorKind) -> bool,
-    ) -> bool {
-        if let Some(cleared) = self.recorded_constructor_clears(caller, error) {
-            return cleared;
-        }
-        kinds(error.kind) && self.is_error_verified_safe(error)
-    }
-
     /// `Some(cleared)` when `error` is a call to a class with recorded
     /// constructor callees, `None` when no record applies and the general path
     /// decides.
     ///
+    /// The recorded callees decide in both directions, overriding the class's
+    /// aggregate verdict.
+    ///
     /// `Unknown*` kinds are included because they are what the map emits
-    /// for a class it could not bind -- the cross-library instantiation the
-    /// recorded callees exist to answer. The lookup is an exact match on a
+    /// for a class it could not bind. Resolved via an exact match on a
     /// recorded class FQN, so an unbound short name still cannot clear here.
     pub(crate) fn recorded_constructor_clears(
         &self,
         caller: ModuleName,
-        error: &CachedError,
+        error: &SafetyError,
     ) -> Option<bool> {
         match error.kind {
             ErrorKind::UnsafeFunctionCall
             | ErrorKind::UnknownFunctionCall
             | ErrorKind::UnsafeDecoratorCall
             | ErrorKind::UnknownDecoratorCall => {
-                let func_name = error.metadata.trim_end_matches("()");
+                let func_name = error.metadata.as_str().trim_end_matches("()");
                 let fqn = ModuleName::from_str(func_name);
                 let verdict = self.recorded_constructor_verdict(&fqn)?;
                 Some(self.constructor_verdict_clears(verdict, &caller, &fqn))
@@ -408,6 +397,13 @@ impl<'a> SafetyResolver<'a> {
             _ => None,
         }
     }
+}
+
+fn split_at_module_in<'n>(
+    modules: &AHashSet<ModuleName>,
+    func_name: &'n str,
+) -> Option<(ModuleName, &'n str)> {
+    enclosing_module(func_name, |m| modules.contains(m))
 }
 
 /// Whether a plain function call can be verified as safe using cached
@@ -480,11 +476,12 @@ mod tests {
         let modules: AHashSet<ModuleName> = AHashSet::from_iter([other]);
         let resolver = SafetyResolver::new(&modules, &by_module);
 
-        let corrupt = CachedError {
-            kind: ErrorKind::UnknownFunctionCall,
-            metadata: "f".to_owned(),
-            parameterized_decorator: true,
-        };
+        let mut corrupt = SafetyError::new(
+            ErrorKind::UnknownFunctionCall,
+            "f".to_owned(),
+            ruff_text_size::TextRange::default(),
+        );
+        corrupt.parameterized_decorator = true;
         assert!(
             !resolver.is_error_verified_safe(&corrupt),
             "an unbound call must stay on the no-unqualified path; taking the \
@@ -511,11 +508,11 @@ mod tests {
         let modules: AHashSet<ModuleName> = AHashSet::from_iter([other]);
         let resolver = SafetyResolver::new(&modules, &by_module);
 
-        let unbound = CachedError {
-            kind: ErrorKind::UnknownDecoratorCall,
-            metadata: "deco".to_owned(),
-            parameterized_decorator: false,
-        };
+        let unbound = SafetyError::new(
+            ErrorKind::UnknownDecoratorCall,
+            "deco".to_owned(),
+            ruff_text_size::TextRange::default(),
+        );
         assert!(
             !resolver.is_error_verified_safe(&unbound),
             "`deco` was never bound to a callee; a same-named safe function in \
@@ -523,11 +520,11 @@ mod tests {
         );
 
         // The qualified form names a callee, so it still clears.
-        let bound = CachedError {
-            kind: ErrorKind::UnknownDecoratorCall,
-            metadata: "unrelated.deco".to_owned(),
-            parameterized_decorator: false,
-        };
+        let bound = SafetyError::new(
+            ErrorKind::UnknownDecoratorCall,
+            "unrelated.deco".to_owned(),
+            ruff_text_size::TextRange::default(),
+        );
         assert!(resolver.is_error_verified_safe(&bound));
     }
 
@@ -548,11 +545,12 @@ mod tests {
         let modules: AHashSet<ModuleName> = AHashSet::from_iter([other]);
         let resolver = SafetyResolver::new(&modules, &by_module);
 
-        let unbound = CachedError {
-            kind: ErrorKind::UnknownDecoratorCall,
-            metadata: "deco".to_owned(),
-            parameterized_decorator: true,
-        };
+        let mut unbound = SafetyError::new(
+            ErrorKind::UnknownDecoratorCall,
+            "deco".to_owned(),
+            ruff_text_size::TextRange::default(),
+        );
+        unbound.parameterized_decorator = true;
         assert!(
             !resolver.is_error_verified_safe(&unbound),
             "`deco` was never bound to a callee; a same-named safe function in \
@@ -560,11 +558,12 @@ mod tests {
         );
 
         // The qualified form names a callee, so it still clears.
-        let bound = CachedError {
-            kind: ErrorKind::UnknownDecoratorCall,
-            metadata: "unrelated.deco".to_owned(),
-            parameterized_decorator: true,
-        };
+        let mut bound = SafetyError::new(
+            ErrorKind::UnknownDecoratorCall,
+            "unrelated.deco".to_owned(),
+            ruff_text_size::TextRange::default(),
+        );
+        bound.parameterized_decorator = true;
         assert!(resolver.is_error_verified_safe(&bound));
     }
 }

@@ -188,6 +188,80 @@ Many effect kinds exist only for call graph traversal or state tracking:
 - `ClassVarAssign`, `SetAttr`, `SetSubscript` — tracked as effects but not directly converted to errors
 - `NoEffects`, `Mutation`, `Dunder` — stub-only markers, never directly become errors
 
+## Call-like effects and cross-module visibility
+
+Several effect kinds describe "something runs here", and each has its own
+emission site, its own error kind, and its own discharge rule in the reduce. A
+change that touches "calls" generally has to be checked against every row below,
+because they do not share a code path.
+
+There are two routes to an `Unknown*` error, which is worth knowing before
+changing either: `check_unknown_call` produces one when a call effect cannot be
+resolved, and `SafetyError::from_effect` converts the `UnknownFunctionCall`,
+`UnknownDecoratorCall` and `UnknownObject` *effect* kinds directly. The same
+error kind can therefore arrive by two paths.
+
+The last column is the one that matters for the incremental analysis: it records
+whether the *classification* depends on facts from another module. Where it does,
+a map action that cannot see that module produces a different effect, or none at
+all — and the reduce cannot recover it, because the reduce can keep or clear
+errors but not discover effects that were never extracted.
+
+| Effect kind | Emitted for | Runnable | Unsafe error | Unknown error | Classification needs another module |
+| --- | --- | --- | --- | --- | --- |
+| `FunctionCall` | call to a locally defined function | yes | `UnsafeFunctionCall` | `UnknownFunctionCall` | no |
+| `ImportedFunctionCall` | call to an imported name | yes | `UnsafeFunctionCall` | `UnknownFunctionCall` | to resolve the target; unresolved targets are deferred as missing imports |
+| `MethodCall` | bound method call, and property access on a class in *this* module | yes | `UnsafeMethodCall` | `UnknownMethodCall` | no for the local-class case |
+| `UnboundMethodCall` | `C.method(obj)` | yes | `UnsafeMethodCall` | `UnknownMethodCall` | to resolve `C` |
+| `ParamMethodCall` | method called on a parameter | no | — | `UnknownMethodCall` | no |
+| `DecoratorCall` / `ImportedDecoratorCall` | `@deco` | yes | `UnsafeDecoratorCall` | `UnknownDecoratorCall` | to resolve an imported decorator |
+| the same, with `EffectData::Call` | `@deco(args)` | yes | `UnsafeDecoratorCall`, and the factory's immediate nested functions must also be safe | `UnknownDecoratorCall` | as above, plus the factory's nested functions |
+| `ImportedTypeAttr` | attribute access on an instance of a class defined in *another* module | no | `UnsafeMethodCall` | — | **yes, entirely** |
+| `UnconfirmedTypeAttr` | the same, where this action cannot confirm the receiver's type is a class at all | no | `UnsafeMethodCall`, synthesized in the reduce | — | **yes, entirely** |
+| `UnknownObject` | attribute access on an unresolved object | no | — | `UnknownObject`, converted directly by `from_effect` | no |
+
+### Why attribute access is the sharp edge
+
+`source_analyzer.rs` decides between four outcomes for `obj.attr`:
+
+```rust
+if let Some(typ) = self.info.bindings.get_type(&res.scope, &res.name) {
+    if let Some(cls) = self.info.classes.lookup(typ) {
+        // class in this module: emit MethodCall if `attr` is a property
+    } else if self.info.exports.is_class(typ) {
+        // class elsewhere: emit ImportedTypeAttr, resolved later in project.rs
+    }
+} else if let Some(typ) = self.info.bindings.get_unconfirmed_type(...) {
+    // the receiver came from calling an imported name whose module is absent:
+    // emit UnconfirmedTypeAttr, recorded as a property candidate for the reduce
+}
+```
+
+The first two branches need facts from outside the file: `get_type` has to infer
+the receiver's type, which means resolving the constructor that produced it, and
+`is_class` reads another module's exports.
+
+This was the one case where a map action extracted *less* rather than resolving
+less, and it produced a real false-safe:
+`libpasteurize.fixes.fix_features` reads `features.PATTERN`, which is a
+`@property` with a side effect. Analyzed with `libpasteurize.fixes.feature_base`
+present, it produces `ImportedTypeAttr` and the module fails. Analyzed in a shard
+without it, the access used to produce no effect at all, and the module passed.
+
+The fourth branch closes that. `match_imported_constructor` distinguishes
+"resolved, and not a class" from "cannot resolve, so unknowable", and only the
+second binds `Value::UnconfirmedInstance`. The access is then recorded as an
+`PropertyCandidate` — the symbolic type, the attribute and the source range —
+which `LibraryCache::resolve_property_candidates` settles once the merged
+`class_properties` show whether the attribute is a property and the merged
+verdicts show whether its getter is safe.
+
+Note also that `UnsafeMethodCall` covers both real method calls and this
+attribute access. The reduce discharges such an error by asking whether the named
+callee's verdict is safe, which for a property is a question about the getter's
+body rather than about whether the attribute is a property at all. The two
+coincide today, because a getter with a side effect is itself unsafe.
+
 ## Pipeline Summary
 
 ```

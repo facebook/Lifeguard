@@ -7,6 +7,7 @@
 
 use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
+use ruff_text_size::TextRange;
 
 use crate::cache::CONSTRUCTOR_METHODS;
 use crate::hasher::AHashMap;
@@ -18,12 +19,12 @@ use crate::module_safety::FunctionSafety;
 use crate::module_safety::FunctionSafetyInfo;
 use crate::module_safety::MutationCandidate;
 use crate::module_safety::MutationCandidateSite;
+use crate::names::enclosing_module;
 use crate::traits::ModuleNameExt;
 
 pub(crate) struct ResolutionOutcome {
     pub promoted: Vec<(ModuleName, String)>,
     pub globally_safe: AHashSet<String>,
-    pub resolved_to_safe: bool,
 }
 
 /// The name an error contributes to the promotion index, or `None` if it
@@ -46,17 +47,17 @@ pub(crate) fn resolve_program<'a>(
     function_safety: &mut AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
     candidates: impl Iterator<Item = (ModuleName, &'a [MutationCandidate])>,
     mut needed_unqualified: AHashSet<String>,
-    mut module_scope_error: impl FnMut(ModuleName, String),
+    mut module_scope_error: impl FnMut(ModuleName, String, TextRange),
 ) -> ResolutionOutcome {
-    let resolved_to_safe = apply_mutation_candidates(
+    apply_mutation_candidates(
         candidates,
         module_names,
         function_safety,
-        |module, metadata| {
+        |module, metadata, range| {
             if let Some(name) = unqualified_index_key(&metadata) {
                 needed_unqualified.insert(name.to_owned());
             }
-            module_scope_error(module, metadata);
+            module_scope_error(module, metadata, range);
         },
     );
     let (promoted, globally_safe) =
@@ -64,7 +65,6 @@ pub(crate) fn resolve_program<'a>(
     ResolutionOutcome {
         promoted,
         globally_safe,
-        resolved_to_safe,
     }
 }
 
@@ -104,11 +104,11 @@ fn apply_confirmed_candidate(
     module: ModuleName,
     candidate: &MutationCandidate,
     function_safety: &mut AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
-    module_scope_error: &mut impl FnMut(ModuleName, String),
+    module_scope_error: &mut impl FnMut(ModuleName, String, TextRange),
 ) {
     match &candidate.site {
         MutationCandidateSite::ModuleScope { call } => {
-            module_scope_error(module, call.as_str().to_owned());
+            module_scope_error(module, call.as_str().to_owned(), candidate.range);
         }
         MutationCandidateSite::Function { name } => {
             if let Some(info) = get_function_safety_mut(function_safety, &module, name.as_str()) {
@@ -128,23 +128,20 @@ fn discharge_candidate(
     module: ModuleName,
     candidate: &MutationCandidate,
     function_safety: &mut AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
-) -> bool {
+) {
     let MutationCandidateSite::Function { name } = &candidate.site else {
-        return false;
+        return;
     };
     let Some(info) = get_function_safety_mut(function_safety, &module, name.as_str()) else {
-        return false;
+        return;
     };
 
     info.missing_dep_callees.remove(&candidate.callee);
     if !info.verdict.has(FunctionSafety::UnsafeMissingDep) || !info.missing_dep_callees.is_empty() {
-        return false;
+        return;
     }
 
     info.verdict.remove(FunctionSafety::UnsafeMissingDep);
-    // Other concerns such as `UnsafeIfImported` still make cross-module calls
-    // unsafe and cannot verify callers.
-    info.verdict.is_safe()
 }
 
 /// Resolve cached cross-library mutation candidates against merged function verdicts.
@@ -158,8 +155,8 @@ fn apply_mutation_candidates<'a>(
     modules: impl Iterator<Item = (ModuleName, &'a [MutationCandidate])>,
     module_names: &AHashSet<ModuleName>,
     function_safety: &mut AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
-    mut module_scope_error: impl FnMut(ModuleName, String),
-) -> bool {
+    mut module_scope_error: impl FnMut(ModuleName, String, TextRange),
+) {
     let pairs: Vec<(ModuleName, &MutationCandidate)> = modules
         .flat_map(|(module, candidates)| {
             candidates.iter().map(move |candidate| (module, candidate))
@@ -197,11 +194,9 @@ fn apply_mutation_candidates<'a>(
         })
         .collect();
 
-    let mut resolved_to_safe = false;
     for (&(module, candidate), _) in pairs.iter().zip(&discharges).filter(|(_, d)| **d) {
-        resolved_to_safe |= discharge_candidate(module, candidate, function_safety);
+        discharge_candidate(module, candidate, function_safety);
     }
-    resolved_to_safe
 }
 
 /// Whether a candidate feeds imported state into a parameter its callee mutates.
@@ -262,13 +257,10 @@ struct PromotionCandidate {
 
 /// Split a callee at its longest known module prefix.
 fn resolve_callee(func_name: &str, module_names: &AHashSet<ModuleName>) -> ResolvedCallee {
-    match ModuleName::from_str(func_name)
-        .iter_parents()
-        .find(|(parent, _)| module_names.contains(parent))
-    {
-        Some((module, dot_pos)) => ResolvedCallee::Qualified {
+    match enclosing_module(func_name, |m| module_names.contains(m)) {
+        Some((module, local)) => ResolvedCallee::Qualified {
             module,
-            local: func_name[dot_pos + 1..].to_owned(),
+            local: local.to_owned(),
         },
         None => ResolvedCallee::Unqualified {
             name: func_name.to_owned(),
@@ -546,6 +538,8 @@ mod tests {
                 unsafe_arg_indices: 1,
                 ..Default::default()
             },
+            range: TextRange::default(),
+            from_main_guard: false,
         };
         let mut errors = Vec::new();
 
@@ -554,7 +548,7 @@ mod tests {
             &mut function_safety,
             std::iter::once((caller, std::slice::from_ref(&candidate))),
             AHashSet::new(),
-            |module, metadata| errors.push((module, metadata)),
+            |module, metadata, _range| errors.push((module, metadata)),
         );
 
         assert_eq!(errors, vec![(caller, "helper".to_owned())]);
@@ -592,6 +586,8 @@ mod tests {
                 unsafe_arg_indices: 1,
                 ..Default::default()
             },
+            range: TextRange::default(),
+            from_main_guard: false,
         };
         // Passes its imported object at index 1, which misses the parameter
         // `dependency.mutate` mutates, so this candidate is not confirmed. The
@@ -607,6 +603,8 @@ mod tests {
                 unsafe_arg_indices: 0b10,
                 ..Default::default()
             },
+            range: TextRange::default(),
+            from_main_guard: false,
         };
 
         // `elsewhere.sink` mutates its argument, which is what confirms the first
@@ -651,7 +649,7 @@ mod tests {
                 &mut function_safety,
                 modules.into_iter(),
                 AHashSet::new(),
-                |_, _| {},
+                |_, _, _| {},
             );
             function_safety[&caller]["helper"].clone()
         };

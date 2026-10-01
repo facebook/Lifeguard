@@ -115,6 +115,24 @@ impl ClassTable {
             .map(|(name, class)| (*name, class.bases.clone()))
             .collect()
     }
+
+    /// Class FQN -> the names of its property fields.
+    /// The reduce needs this to tell whether an attribute access on a
+    /// newly resolved class runs a getter.
+    pub fn property_edges(&self) -> Vec<(ModuleName, Vec<String>)> {
+        self.table
+            .iter()
+            .filter_map(|(name, class)| {
+                let properties: Vec<String> = class
+                    .fields
+                    .iter()
+                    .filter(|field| matches!(field.kind, FieldKind::Property))
+                    .map(|field| field.name.to_string())
+                    .collect();
+                (!properties.is_empty()).then_some((*name, properties))
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]

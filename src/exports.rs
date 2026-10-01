@@ -257,6 +257,22 @@ impl Exports {
             .is_some_and(|resolved| is_class_export(&resolved.as_module_name()))
     }
 
+    /// Whether these sources export the symbol at all. A false `is_class` means
+    /// "not a class" only when this holds; otherwise the defining module is
+    /// simply not in this action's sources and the symbol's kind is unknown.
+    ///
+    /// Follows re-export chains for the same reason `is_class` does: the two are
+    /// read as a pair, so a shorter reach here reports a re-exported non-class as
+    /// an unknown kind.
+    pub fn is_known_symbol(&self, name: &ModuleName) -> bool {
+        if self.exports.contains_key(name) {
+            return true;
+        }
+        let attr = Attribute::from_module_name(name);
+        self.resolve_transitive(&attr)
+            .is_some_and(|resolved| self.exports.contains_key(&resolved.as_module_name()))
+    }
+
     /// Check if a symbol is a global variable.
     pub fn is_global(&self, name: &ModuleName) -> bool {
         self.exports
@@ -1115,6 +1131,22 @@ x = 1
         let exports = make_star_exports(&[("a", a), ("b", b)]);
         assert!(!exports.is_re_export(&attr("a", "C")));
         assert!(exports.is_class(&ModuleName::from_str("a.C")));
+    }
+
+    /// `is_class` resolves through a re-export, so `is_known_symbol` has to reach
+    /// as far. A re-exported function that reads as "not exported here" is
+    /// indistinguishable from one whose module this action cannot see, and the
+    /// callers pairing the two predicates act on that difference.
+    #[test]
+    fn a_re_exported_non_class_is_a_known_symbol() {
+        let exports = make_star_exports(&[("a", "from b import *\n"), ("b", "def f(): ...\n")]);
+        let f = ModuleName::from_str("a.f");
+
+        assert!(!exports.is_class(&f), "a function is not a class");
+        assert!(
+            exports.is_known_symbol(&f),
+            "`a.f` re-exports `b.f`, so its kind is known: a confirmed non-class"
+        );
     }
 
     #[test]

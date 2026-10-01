@@ -15,18 +15,21 @@ use anyhow::Result;
 use anyhow::ensure;
 use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
+use ruff_text_size::TextRange;
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::cache::CachedError;
 use crate::cache::CachedExports;
 use crate::cache::CachedModule;
 use crate::cache::CachedModuleSafety;
 use crate::cache::CachedReExport;
+use crate::cache::CachedReturnType;
 use crate::cache::CachedSafety;
 use crate::cache::ConstructorCallees;
 use crate::cache::LibraryCache;
+use crate::cache::MainGuardFacts;
 use crate::effects::ImportedArgs;
+use crate::errors::SafetyError;
 use crate::hasher::AHashMap;
 use crate::hasher::AHashSet;
 use crate::hasher::HashSetExt;
@@ -36,6 +39,7 @@ use crate::module_safety::MutatedParam;
 use crate::module_safety::MutationCandidate;
 use crate::module_safety::MutationCandidateSite;
 use crate::module_safety::ParamPosition;
+use crate::module_safety::PropertyCandidate;
 
 type NameId = u32;
 
@@ -47,11 +51,13 @@ const WRITE_BUFFER_CAPACITY: usize = 1 << 20;
 struct WireHeader {
     names: Vec<ModuleName>,
     exports: Vec<WireReExport>,
+    return_types: Vec<(NameId, NameId)>,
     class_bases: Vec<(NameId, Vec<NameId>)>,
     /// Class id, its metaclass id when a metaclass bit is set, and the callee
     /// mask. The callee FQNs themselves are reconstructible from these, so they
     /// stay out of the name table entirely.
     constructor_callees: Vec<(NameId, Option<NameId>, u8, Vec<NameId>)>,
+    class_properties: Vec<(NameId, Vec<String>)>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -62,15 +68,17 @@ struct WireModule {
     missing_imports: Vec<NameId>,
     ambiguous_imports: Vec<NameId>,
     side_effect_imports: Vec<NameId>,
+    main_guard_imports: Vec<NameId>,
     function_safety: Vec<(String, WireFunctionSafetyInfo)>,
     mutation_candidates: Vec<WireMutationCandidate>,
+    property_candidates: Vec<WirePropertyCandidate>,
 }
 
 #[derive(Serialize, Deserialize)]
 enum WireSafety {
     Ok {
-        errors: Vec<CachedError>,
-        force_imports_eager_overrides: Vec<CachedError>,
+        errors: Vec<SafetyError>,
+        force_imports_eager_overrides: Vec<SafetyError>,
         implicit_imports: Vec<NameId>,
     },
     AnalysisError {
@@ -92,11 +100,18 @@ struct WireMutatedParam {
 }
 
 #[derive(Serialize, Deserialize)]
+struct WirePropertyCandidate {
+    attribute: NameId,
+    from_main_guard: bool,
+}
+
+#[derive(Serialize, Deserialize)]
 struct WireMutationCandidate {
     callee: NameId,
     site: WireMutationCandidateSite,
     arg_offset: usize,
     imported_args: WireImportedArgs,
+    from_main_guard: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -136,6 +151,10 @@ impl NameTable {
             unique.insert(re_export.exported_module);
             unique.insert(re_export.imported_module);
         }
+        for return_type in &cache.exports.return_types {
+            unique.insert(return_type.function);
+            unique.insert(return_type.class);
+        }
         for (class, bases) in &cache.class_bases {
             unique.insert(*class);
             unique.extend(bases.iter().copied());
@@ -144,6 +163,9 @@ impl NameTable {
             unique.insert(*class);
             unique.extend(recorded.metaclass);
             unique.extend(recorded.extra.iter().copied());
+        }
+        for (class, _) in &cache.class_properties {
+            unique.insert(*class);
         }
 
         ensure!(
@@ -173,6 +195,9 @@ fn collect_module_names(module: &CachedModule, names: &mut AHashSet<ModuleName>)
     names.extend(module.missing_imports.iter().copied());
     names.extend(module.ambiguous_imports.iter().copied());
     names.extend(module.side_effect_imports.iter().copied());
+    // A subset of `imports` in practice, but collected explicitly so the table
+    // does not depend on that holding.
+    names.extend(module.main_guard.imports().iter().copied());
     if let CachedSafety::Ok(safety) = &module.safety {
         names.extend(safety.implicit_imports.iter().copied());
     }
@@ -192,6 +217,12 @@ fn collect_module_names(module: &CachedModule, names: &mut AHashSet<ModuleName>)
         }
         names.extend(candidate.imported_args.unsafe_keyword_names.iter().copied());
     }
+    names.extend(
+        module
+            .property_candidates
+            .iter()
+            .map(|candidate| candidate.attribute),
+    );
 }
 
 pub(crate) fn write(cache: &LibraryCache, path: &Path) -> Result<()> {
@@ -207,6 +238,13 @@ pub(crate) fn write(cache: &LibraryCache, path: &Path) -> Result<()> {
         .iter()
         .map(|re_export| WireReExport::encode(re_export, &table.ids))
         .collect();
+    let return_types: Vec<(NameId, NameId)> = cache
+        .exports
+        .return_types
+        .iter()
+        .map(|rt| (table.id(rt.function), table.id(rt.class)))
+        .collect();
+
     let class_bases = cache
         .class_bases
         .iter()
@@ -229,11 +267,19 @@ pub(crate) fn write(cache: &LibraryCache, path: &Path) -> Result<()> {
             )
         })
         .collect();
+    let class_properties: Vec<(NameId, Vec<String>)> = cache
+        .class_properties
+        .iter()
+        .map(|(class, properties)| (table.id(*class), properties.clone()))
+        .collect();
+
     let header = WireHeader {
         names: table.names,
         exports,
+        return_types,
         class_bases,
         constructor_callees,
+        class_properties,
     };
     let header_bytes = postcard::to_allocvec(&header)?;
 
@@ -297,6 +343,16 @@ pub(crate) fn read(path: &Path) -> Result<LibraryCache> {
             .into_iter()
             .map(|re_export| re_export.decode(&header.names))
             .collect::<Result<_>>()?,
+        return_types: header
+            .return_types
+            .into_iter()
+            .map(|(function, class)| {
+                Ok(CachedReturnType {
+                    function: decode_name(&header.names, function)?,
+                    class: decode_name(&header.names, class)?,
+                })
+            })
+            .collect::<Result<_>>()?,
     };
     let class_bases = header
         .class_bases
@@ -324,10 +380,16 @@ pub(crate) fn read(path: &Path) -> Result<LibraryCache> {
             ))
         })
         .collect::<Result<_>>()?;
+    let class_properties = header
+        .class_properties
+        .into_iter()
+        .map(|(class, properties)| Ok((decode_name(&header.names, class)?, properties)))
+        .collect::<Result<_>>()?;
     Ok(LibraryCache {
         modules,
         exports,
         class_bases,
+        class_properties,
         constructor_callees,
         ..Default::default()
     })
@@ -386,6 +448,12 @@ impl WireModule {
                 .iter()
                 .map(|name| table.id(*name))
                 .collect(),
+            main_guard_imports: module
+                .main_guard
+                .imports()
+                .iter()
+                .map(|name| table.id(*name))
+                .collect(),
             function_safety: module
                 .function_safety
                 .iter()
@@ -395,6 +463,13 @@ impl WireModule {
                 .mutation_candidates
                 .iter()
                 .map(|candidate| WireMutationCandidate::encode(candidate, table))
+                .collect(),
+            // Sorted: unlike mutation candidates, property candidates are resolved
+            // independently, so no order carries meaning.
+            property_candidates: module
+                .property_candidates
+                .iter()
+                .map(|candidate| WirePropertyCandidate::encode(candidate, table))
                 .collect(),
         }
     }
@@ -407,6 +482,7 @@ impl WireModule {
             missing_imports: decode_name_set(names, self.missing_imports)?,
             ambiguous_imports: decode_name_set(names, self.ambiguous_imports)?,
             side_effect_imports: decode_name_set(names, self.side_effect_imports)?,
+            main_guard: MainGuardFacts::new(decode_name_set(names, self.main_guard_imports)?),
             function_safety: self
                 .function_safety
                 .into_iter()
@@ -417,6 +493,30 @@ impl WireModule {
                 .into_iter()
                 .map(|candidate| candidate.decode(names))
                 .collect::<Result<_>>()?,
+            property_candidates: self
+                .property_candidates
+                .into_iter()
+                .map(|candidate| candidate.decode(names))
+                .collect::<Result<_>>()?,
+        })
+    }
+}
+
+impl WirePropertyCandidate {
+    fn encode(candidate: &PropertyCandidate, table: &NameTable) -> Self {
+        Self {
+            attribute: table.id(candidate.attribute),
+            from_main_guard: candidate.from_main_guard,
+        }
+    }
+
+    fn decode(self, names: &[ModuleName]) -> Result<PropertyCandidate> {
+        Ok(PropertyCandidate {
+            attribute: decode_name(names, self.attribute)?,
+            // Not carried: a cached offset would tie the bytes to where in the
+            // file the access sits.
+            range: TextRange::default(),
+            from_main_guard: self.from_main_guard,
         })
     }
 }
@@ -507,6 +607,7 @@ impl WireMutationCandidate {
             callee: table.id(candidate.callee),
             site,
             arg_offset: candidate.arg_offset,
+            from_main_guard: candidate.from_main_guard,
             imported_args: WireImportedArgs {
                 unsafe_arg_indices: candidate.imported_args.unsafe_arg_indices,
                 unsafe_keyword_names: candidate
@@ -534,6 +635,10 @@ impl WireMutationCandidate {
             callee: decode_name(names, self.callee)?,
             site,
             arg_offset: self.arg_offset,
+            // Not carried: a cached offset would tie the bytes to where in the
+            // file the call sits.
+            range: TextRange::default(),
+            from_main_guard: self.from_main_guard,
             imported_args: ImportedArgs {
                 unsafe_arg_indices: self.imported_args.unsafe_arg_indices,
                 unsafe_keyword_names: decode_names(names, self.imported_args.unsafe_keyword_names)?,

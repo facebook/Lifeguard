@@ -27,6 +27,10 @@ pub struct ModuleEffects {
     // Errors encountered when analyzing a module or stub file
     pub file_errors: Vec<FileError>,
 
+    // Whether the traversal is currently inside an `if __name__ == "__main__"`
+    // body. Every effect added while it is set is marked as guard-produced.
+    in_main_guard: bool,
+
     // map of where imported modules are called (ie function or class name) to the imported module names
     pub called_imports: ModuleImportsMap,
 
@@ -55,6 +59,7 @@ pub struct ModuleEffects {
 impl ModuleEffects {
     pub fn new() -> Self {
         Self {
+            in_main_guard: false,
             effects: EffectTable::empty(),
             file_errors: Vec::new(),
             called_imports: AHashMap::new(),
@@ -67,8 +72,24 @@ impl ModuleEffects {
         }
     }
 
-    pub fn add_effect(&mut self, scope: ModuleName, eff: Effect) {
+    pub fn add_effect(&mut self, scope: ModuleName, mut eff: Effect) {
+        eff.from_main_guard = self.in_main_guard;
         self.effects.insert(scope, eff);
+    }
+
+    /// Mark what follows as guard-produced, returning the state to restore.
+    ///
+    /// `|=` rather than `=` so an ordinary `if` nested inside a guard body does
+    /// not un-mark it; the caller restores rather than clearing for the same
+    /// reason.
+    pub fn enter_main_guard(&mut self, guarded: bool) -> bool {
+        let outer = self.in_main_guard;
+        self.in_main_guard |= guarded;
+        outer
+    }
+
+    pub fn leave_main_guard(&mut self, outer: bool) {
+        self.in_main_guard = outer;
     }
 
     pub fn add_file_error(&mut self, error: String, range: TextRange) {

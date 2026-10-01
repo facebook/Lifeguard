@@ -16,6 +16,7 @@ use tracing::info;
 use crate::commands::write_json_pretty;
 use crate::runner::DEFAULT_PYTHON_VERSION;
 use crate::runner::Options;
+use crate::runner::check_main_module;
 use crate::runner::parse_python_version;
 use crate::runner::process_source_map;
 use crate::source_map;
@@ -91,6 +92,8 @@ pub fn run(args: AnalyzeArgs) -> Result<()> {
         main_module: args.main_module.map(|s| ModuleName::from_str(&s)),
         python_version,
     };
+
+    check_main_module(options.main_module, |name| src_map.contains_key(&name))?;
 
     let lifeguard_output = process_source_map(src_map, &root_dir, &options)?;
 

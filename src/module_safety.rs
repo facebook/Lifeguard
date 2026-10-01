@@ -6,6 +6,7 @@
  */
 
 use pyrefly_python::module_name::ModuleName;
+use ruff_text_size::TextRange;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -185,6 +186,35 @@ pub enum MutationCandidateSite {
     Function { name: ModuleName },
 }
 
+/// An attribute access on a value whose type names a class this library could not
+/// see, recorded so the reduce can settle it once the class is present.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct PropertyCandidate {
+    /// `Class.attr`, qualified by the class's declared module.
+    pub attribute: ModuleName,
+    /// The access site, for a confirmed candidate to report where it came from.
+    /// In process only: a cache carries no positions.
+    pub range: TextRange,
+    /// Recorded inside an `if __name__ == "__main__":` body.
+    pub from_main_guard: bool,
+}
+
+impl Ord for PropertyCandidate {
+    /// Over the fields a cache carries, and only those: ordering by position
+    /// would be an order the wire cannot reproduce.
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.attribute
+            .cmp(&other.attribute)
+            .then_with(|| self.from_main_guard.cmp(&other.from_main_guard))
+    }
+}
+
+impl PartialOrd for PropertyCandidate {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 /// A module-scope or in-function call that passes an imported object to a callee
 /// that is unresolved in this library (a cross-library candidate).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -197,6 +227,10 @@ pub struct MutationCandidate {
     pub arg_offset: usize,
     /// The imported arguments passed at the call.
     pub imported_args: ImportedArgs,
+    /// The call site.
+    pub range: TextRange,
+    /// Recorded inside an `if __name__ == "__main__":` body.
+    pub from_main_guard: bool,
 }
 
 #[derive(Debug)]
@@ -211,6 +245,8 @@ pub struct ModuleSafety {
     pub function_safety: AHashMap<String, FunctionSafetyInfo>,
     /// Calls passing imported objects to cross-library-unresolved callees.
     pub mutation_candidates: Vec<MutationCandidate>,
+    /// Attribute accesses whose receiver type this library could not resolve.
+    pub property_candidates: Vec<PropertyCandidate>,
 }
 
 impl ModuleSafety {
@@ -221,6 +257,7 @@ impl ModuleSafety {
             implicit_imports: Vec::new(),
             function_safety: AHashMap::new(),
             mutation_candidates: Vec::new(),
+            property_candidates: Vec::new(),
         }
     }
 
