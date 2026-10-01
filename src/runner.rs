@@ -84,8 +84,8 @@ impl Default for Options {
 }
 
 /// Fully analyzed whole-program facts ready for direct output construction.
-/// Class bases are retained so parity tooling can run the same reduce-time MRO
-/// verification as the incremental path when comparing residual errors.
+/// The class facts are retained so parity tooling can run the same reduce-time
+/// resolution as the incremental path when comparing residual errors.
 pub struct WholeProgramFacts {
     pub sources: Sources,
     pub safety_map: project::SafetyMap,
@@ -94,6 +94,7 @@ pub struct WholeProgramFacts {
     pub side_effect_imports: project::SideEffectMap,
     pub class_bases: Vec<(ModuleName, Vec<ModuleName>)>,
     pub constructor_callees: Vec<(ModuleName, ConstructorCallees)>,
+    pub class_properties: Vec<(ModuleName, Vec<String>)>,
 }
 
 /// Provisional per-library facts serialized by the incremental map phase.
@@ -105,6 +106,9 @@ pub struct LibraryAnalysisFacts {
     pub side_effect_imports: project::SideEffectMap,
     pub class_bases: Vec<(ModuleName, Vec<ModuleName>)>,
     pub constructor_callees: Vec<(ModuleName, ConstructorCallees)>,
+    /// Class FQN -> property field names, for resolving candidates recorded by
+    /// libraries that could not see the class.
+    pub class_properties: Vec<(ModuleName, Vec<String>)>,
 }
 
 /// Shared source indexing and AST analysis behind the two public phase APIs.
@@ -151,6 +155,7 @@ fn run_local_pipeline(
         side_effect_imports: output.side_effect_imports,
         class_bases: output.class_bases,
         constructor_callees: output.constructor_callees,
+        class_properties: output.class_properties,
     })
 }
 
@@ -179,6 +184,7 @@ pub fn analyze_library(
         side_effect_imports,
         class_bases,
         constructor_callees,
+        class_properties,
     } = run_local_pipeline(src_map, root_dir, ExecutionMode::Incremental, options)?;
     Ok(LibraryAnalysisFacts {
         safety_map,
@@ -187,6 +193,7 @@ pub fn analyze_library(
         side_effect_imports,
         class_bases,
         constructor_callees,
+        class_properties,
     })
 }
 
@@ -205,6 +212,7 @@ pub fn process_source_map(
         side_effect_imports,
         class_bases: _,
         constructor_callees: _,
+        class_properties: _,
     } = result;
 
     if let Some(out) = &options.verbose_output_path {

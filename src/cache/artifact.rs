@@ -28,6 +28,7 @@ use crate::hasher::HashSetExt;
 use crate::imports::ImportGraph;
 use crate::module_safety::FunctionSafetyInfo;
 use crate::module_safety::MutationCandidate;
+use crate::module_safety::PropertyCandidate;
 use crate::module_safety::SafetyResult;
 use crate::project::SafetyMap;
 use crate::project::SideEffectMap;
@@ -70,6 +71,10 @@ pub struct LibraryCache {
     /// `Class.method` calls.
     #[serde(default)]
     pub class_bases: Vec<(ModuleName, Vec<ModuleName>)>,
+    /// Class FQN -> property field names, for resolving property candidates
+    /// against classes the recording library could not see.
+    #[serde(default)]
+    pub class_properties: Vec<(ModuleName, Vec<String>)>,
     /// Class FQN -> the functions a constructor call to it dispatches to, as
     /// resolved by the map phase.
     #[serde(default)]
@@ -231,15 +236,16 @@ pub struct CachedModule {
     /// Calls passing imported objects to cross-library-unresolved callees,
     /// resolved against the merged cache in the reduce step.
     pub mutation_candidates: Vec<MutationCandidate>,
+    /// Attribute accesses on a receiver whose class this library could not see,
+    /// resolved against the merged class facts in the reduce step.
+    pub property_candidates: Vec<PropertyCandidate>,
 }
-
 /// Safety analysis result for a cached module.
 #[derive(Serialize, Deserialize)]
 pub enum CachedSafety {
     Ok(CachedModuleSafety),
     AnalysisError { message: String },
 }
-
 /// Detailed safety information for a module.
 #[derive(Default, Serialize, Deserialize)]
 pub struct CachedModuleSafety {
@@ -247,7 +253,6 @@ pub struct CachedModuleSafety {
     pub force_imports_eager_overrides: Vec<SafetyError>,
     pub implicit_imports: Vec<ModuleName>,
 }
-
 /// Cached re-export information for a library. Only re-exports are consumed by
 /// the reduce (`analyze-binary`); the map phase's other export tables
 /// (definitions/`__all__`/return types) are not, so they are not cached.
@@ -255,7 +260,6 @@ pub struct CachedModuleSafety {
 pub struct CachedExports {
     pub re_exports: Vec<CachedReExport>,
 }
-
 /// A cached re-export entry (module.attr -> source_module.source_attr).
 #[derive(Serialize, Deserialize)]
 pub struct CachedReExport {
@@ -300,12 +304,15 @@ impl LibraryCache {
                     .map(|s| s.iter().copied().collect())
                     .unwrap_or_default();
 
-                let (function_safety, mutation_candidates) = match safety_result {
-                    SafetyResult::Ok(ms) => {
-                        (ms.function_safety.clone(), ms.mutation_candidates.clone())
-                    }
-                    _ => (AHashMap::new(), Vec::new()),
-                };
+                let (function_safety, mutation_candidates, property_candidates) =
+                    match safety_result {
+                        SafetyResult::Ok(ms) => (
+                            ms.function_safety.clone(),
+                            ms.mutation_candidates.clone(),
+                            ms.property_candidates.clone(),
+                        ),
+                        _ => (AHashMap::new(), Vec::new(), Vec::new()),
+                    };
 
                 let safety = CachedSafety::from_safety_result(safety_result);
 
@@ -318,6 +325,7 @@ impl LibraryCache {
                     side_effect_imports: se_imports,
                     function_safety,
                     mutation_candidates,
+                    property_candidates,
                 }
             })
             .collect();
@@ -334,10 +342,20 @@ impl LibraryCache {
         }
     }
 
-    /// Attach class base edges (class FQN -> base FQNs) for MRO resolution during
-    /// the reduce step. Populated by the map phase (`analyze-library`).
-    pub fn set_class_bases(&mut self, class_bases: Vec<(ModuleName, Vec<ModuleName>)>) {
+    /// Attach the class facts the reduce step resolves against: base edges
+    /// (class FQN -> base FQNs) for MRO resolution of inherited `Class.method`
+    /// calls, and property fields (class FQN -> property names) for resolving
+    /// property candidates. Populated by the map phase (`analyze-library`).
+    ///
+    /// Set together so that a caller building a cache cannot supply one kind of
+    /// class fact and silently omit the other.
+    pub fn set_class_facts(
+        &mut self,
+        class_bases: Vec<(ModuleName, Vec<ModuleName>)>,
+        class_properties: Vec<(ModuleName, Vec<String>)>,
+    ) {
         self.class_bases = class_bases;
+        self.class_properties = class_properties;
     }
 
     /// Attach the map phase's resolved constructor callees (class FQN -> the
@@ -371,6 +389,7 @@ impl CachedModule {
             side_effect_imports: AHashSet::new(),
             function_safety: AHashMap::new(),
             mutation_candidates: Vec::new(),
+            property_candidates: Vec::new(),
         }
     }
 
@@ -378,7 +397,6 @@ impl CachedModule {
         matches!(&self.safety, CachedSafety::Ok(s) if s.is_safe())
     }
 }
-
 impl CachedModuleSafety {
     pub fn is_safe(&self) -> bool {
         self.errors.is_empty()
@@ -388,14 +406,13 @@ impl CachedModuleSafety {
         !self.force_imports_eager_overrides.is_empty()
     }
 }
-
 impl CachedExports {
     /// Build the cached re-exports for a library, keeping only those exported by
     /// one of the library's own modules. `get_re_exports()` also yields the bundled
     /// stubs' re-exports, identical across every cache; dropping them is safe because
     /// each re-export is owned by exactly one module's cache and the reduce rebuilds
     /// stub chains from the bundled stub graph.
-    fn from_exports(exports: &Exports, own_modules: &AHashSet<ModuleName>) -> Self {
+    pub(crate) fn from_exports(exports: &Exports, own_modules: &AHashSet<ModuleName>) -> Self {
         let re_exports: Vec<CachedReExport> = exports
             .get_re_exports()
             .filter(|(module, _, _)| own_modules.contains(module))

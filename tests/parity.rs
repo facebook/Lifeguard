@@ -17,8 +17,10 @@
 
 #[cfg(test)]
 mod tests {
+    use lifeguard::test_lib::assert_passing;
     use lifeguard::test_lib::assert_paths_agree_sharded;
     use lifeguard::test_lib::path_differences;
+    use lifeguard::test_lib::run_lifeguard_analysis;
 
     /// Assert a known gap precisely, so that any new unknown failures still show up.
     fn assert_known_gap(
@@ -496,5 +498,63 @@ mod tests {
             sink(other)
         "#;
         assert_paths_agree_sharded(&[("other", other), ("sinklib", sinklib), ("app", app)]);
+    }
+
+    /// Attribute access on a class from another module.
+    ///
+    /// Accessing `PATTERN` is unsafe, since it triggers an unsafe getter,
+    /// but we cannot know that when reading `fix_features.py` at map time.
+    #[test]
+    fn property_access_agrees_across_a_shard_boundary() {
+        let feature_base = r#"
+            class Features(set):
+                mapping = {}
+
+                def update_mapping(self):
+                    self.mapping = dict([(f.name, f) for f in iter(self)])
+
+                @property
+                def PATTERN(self):
+                    self.update_mapping()
+                    return " | ".join([str(f) for f in iter(self)])
+        "#;
+        let fix_features = r#"
+            from feature_base import Features
+
+            class FixFeatures:
+                features = Features()
+                PATTERN = features.PATTERN
+        "#;
+        assert_paths_agree_sharded(&[
+            ("feature_base", feature_base),
+            ("fix_features", fix_features),
+        ]);
+    }
+
+    /// The other half of the property case: a getter that touches nothing shared
+    /// is safe, and reading it must stay safe on both paths. Without this, a
+    /// discharge that emitted an error for every recorded access -- rather than
+    /// only for a property whose getter has an unsafe verdict -- would still pass
+    /// the test above.
+    #[test]
+    fn safe_property_access_agrees_across_a_shard_boundary() {
+        let holder_base = r#"
+            class Holder:
+                @property
+                def value(self):
+                    return 1
+        "#;
+        let reader = r#"
+            from holder_base import Holder
+
+            holder = Holder()
+            VALUE = holder.value
+        "#;
+        let modules = vec![("holder_base", holder_base), ("reader", reader)];
+        assert_paths_agree_sharded(&modules);
+        assert_passing(
+            &run_lifeguard_analysis(&modules),
+            vec!["holder_base", "reader"],
+        );
     }
 }

@@ -37,6 +37,7 @@ use crate::module_safety::MutatedParam;
 use crate::module_safety::MutationCandidate;
 use crate::module_safety::MutationCandidateSite;
 use crate::module_safety::ParamPosition;
+use crate::module_safety::PropertyCandidate;
 
 type NameId = u32;
 
@@ -53,6 +54,7 @@ struct WireHeader {
     /// mask. The callee FQNs themselves are reconstructible from these, so they
     /// stay out of the name table entirely.
     constructor_callees: Vec<(NameId, Option<NameId>, u8, Vec<NameId>)>,
+    class_properties: Vec<(NameId, Vec<String>)>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -65,6 +67,7 @@ struct WireModule {
     side_effect_imports: Vec<NameId>,
     function_safety: Vec<(String, WireFunctionSafetyInfo)>,
     mutation_candidates: Vec<WireMutationCandidate>,
+    property_candidates: Vec<WirePropertyCandidate>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -90,6 +93,11 @@ struct WireFunctionSafetyInfo {
 struct WireMutatedParam {
     name: NameId,
     position: ParamPosition,
+}
+
+#[derive(Serialize, Deserialize)]
+struct WirePropertyCandidate {
+    attribute: NameId,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -146,6 +154,9 @@ impl NameTable {
             unique.extend(recorded.metaclass);
             unique.extend(recorded.extra.iter().copied());
         }
+        for (class, _) in &cache.class_properties {
+            unique.insert(*class);
+        }
 
         ensure!(
             unique.len() <= NameId::MAX as usize,
@@ -193,6 +204,12 @@ fn collect_module_names(module: &CachedModule, names: &mut AHashSet<ModuleName>)
         }
         names.extend(candidate.imported_args.unsafe_keyword_names.iter().copied());
     }
+    names.extend(
+        module
+            .property_candidates
+            .iter()
+            .map(|candidate| candidate.attribute),
+    );
 }
 
 pub(crate) fn write(cache: &LibraryCache, path: &Path) -> Result<()> {
@@ -230,11 +247,18 @@ pub(crate) fn write(cache: &LibraryCache, path: &Path) -> Result<()> {
             )
         })
         .collect();
+    let class_properties: Vec<(NameId, Vec<String>)> = cache
+        .class_properties
+        .iter()
+        .map(|(class, properties)| (table.id(*class), properties.clone()))
+        .collect();
+
     let header = WireHeader {
         names: table.names,
         exports,
         class_bases,
         constructor_callees,
+        class_properties,
     };
     let header_bytes = postcard::to_allocvec(&header)?;
 
@@ -325,10 +349,16 @@ pub(crate) fn read(path: &Path) -> Result<LibraryCache> {
             ))
         })
         .collect::<Result<_>>()?;
+    let class_properties = header
+        .class_properties
+        .into_iter()
+        .map(|(class, properties)| Ok((decode_name(&header.names, class)?, properties)))
+        .collect::<Result<_>>()?;
     Ok(LibraryCache {
         modules,
         exports,
         class_bases,
+        class_properties,
         constructor_callees,
         ..Default::default()
     })
@@ -397,6 +427,13 @@ impl WireModule {
                 .iter()
                 .map(|candidate| WireMutationCandidate::encode(candidate, table))
                 .collect(),
+            // Sorted: unlike mutation candidates, property candidates are resolved
+            // independently, so no order carries meaning.
+            property_candidates: module
+                .property_candidates
+                .iter()
+                .map(|candidate| WirePropertyCandidate::encode(candidate, table))
+                .collect(),
         }
     }
 
@@ -418,6 +455,28 @@ impl WireModule {
                 .into_iter()
                 .map(|candidate| candidate.decode(names))
                 .collect::<Result<_>>()?,
+            property_candidates: self
+                .property_candidates
+                .into_iter()
+                .map(|candidate| candidate.decode(names))
+                .collect::<Result<_>>()?,
+        })
+    }
+}
+
+impl WirePropertyCandidate {
+    fn encode(candidate: &PropertyCandidate, table: &NameTable) -> Self {
+        Self {
+            attribute: table.id(candidate.attribute),
+        }
+    }
+
+    fn decode(self, names: &[ModuleName]) -> Result<PropertyCandidate> {
+        Ok(PropertyCandidate {
+            attribute: decode_name(names, self.attribute)?,
+            // Not carried: a cached offset would tie the bytes to where in the
+            // file the access sits.
+            range: TextRange::default(),
         })
     }
 }

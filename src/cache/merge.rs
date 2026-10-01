@@ -156,6 +156,7 @@ impl LibraryCache {
             re_export_batches.push(dep.exports.re_exports);
             fold_fqn_lists(&mut merged.class_bases, dep.class_bases);
             fold_constructor_callees(&mut merged.constructor_callees, dep.constructor_callees);
+            self.class_properties.extend(dep.class_properties);
         }
 
         // A module's re-exports recur across many caches, far outnumbering the
@@ -255,7 +256,6 @@ pub(super) fn merge_function_safety_entry_ref(
         }
     }
 }
-
 #[doc(hidden)]
 /// Keep cached implicit import guards exact. Unlike missing import graph edges,
 /// these output values name the submodule access that must be loaded eagerly.
@@ -263,7 +263,6 @@ pub fn dedupe_implicit_imports(implicit_imports: &mut Vec<ModuleName>) {
     let mut seen = AHashSet::with_capacity(implicit_imports.len());
     implicit_imports.retain(|imp| seen.insert(*imp));
 }
-
 impl CachedModule {
     /// Merge another CachedModule (same name) into this one.
     pub(crate) fn merge(&mut self, other: CachedModule) {
@@ -298,9 +297,13 @@ impl CachedModule {
                 .zip(keep)
                 .filter_map(|(candidate, keep)| keep.then_some(candidate)),
         );
+        // Unlike mutation candidates, property candidates are resolved independently of
+        // each other, so they can simply be sorted and deduped.
+        self.property_candidates.extend(other.property_candidates);
+        self.property_candidates.sort_unstable();
+        self.property_candidates.dedup();
     }
 }
-
 impl CachedSafety {
     /// Merge another safety result, keeping the more conservative outcome.
     /// AnalysisError always wins. Between two Ok results, keep the union of errors.
@@ -361,7 +364,6 @@ impl CachedSafety {
         }
     }
 }
-
 pub(crate) fn merge_errors(target: &mut Vec<SafetyError>, other: Vec<SafetyError>) {
     target.extend(other);
     target.sort();
@@ -380,7 +382,6 @@ pub(super) fn retain_unverified_errors(
         .retain(|e| !e.kind.could_be_caused_by_missing_import() || !is_verified_safe(e));
     safety.errors.len() < before
 }
-
 /// Fold one library's `(class FQN, bases)` pairs into a lookup map, merging any
 /// FQN contributed by more than one library (e.g. a stub and the real module,
 /// or overlapping targets). Bases are unioned preserving first-seen order so the
@@ -424,6 +425,19 @@ pub(super) fn fold_constructor_callees(
         }
     }
 }
+/// Fold accumulated `(class FQN, property names)` pairs into a lookup set,
+/// unioning FQNs contributed by more than one library for the same reason
+/// [`merge_class_bases`] does.
+pub(super) fn merge_class_properties(
+    entries: Vec<(ModuleName, Vec<String>)>,
+) -> HashMap<ModuleName, AHashSet<String>> {
+    let mut merged: HashMap<ModuleName, AHashSet<String>> = HashMap::with_capacity(entries.len());
+    for (class_fqn, properties) in entries {
+        merged.entry(class_fqn).or_default().extend(properties);
+    }
+    merged
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

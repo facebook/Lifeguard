@@ -156,7 +156,7 @@ pub fn run(args: AnalyzeLibraryArgs) -> Result<()> {
                 &result.side_effect_imports,
             )
         });
-        cache.set_class_bases(result.class_bases);
+        cache.set_class_facts(result.class_bases, result.class_properties);
         cache.set_constructor_callees(result.constructor_callees);
         cache
     };

@@ -907,7 +907,7 @@ pub fn build_library_cache(sources: &TestSources) -> LibraryCache {
         &exports,
         &output.side_effect_imports,
     );
-    cache.set_class_bases(output.class_bases);
+    cache.set_class_facts(output.class_bases, output.class_properties);
     cache.set_constructor_callees(output.constructor_callees);
     cache
 }

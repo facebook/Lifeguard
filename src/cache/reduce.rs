@@ -35,6 +35,7 @@ use crate::cache::artifact::LibraryCache;
 use crate::cache::merge::dedupe_implicit_imports;
 use crate::cache::merge::fold_constructor_callees;
 use crate::cache::merge::fold_fqn_lists;
+use crate::cache::merge::merge_class_properties;
 use crate::cache::merge::retain_unverified_errors;
 use crate::errors::ErrorKind;
 use crate::errors::SafetyError;
@@ -55,6 +56,7 @@ use crate::resolution::resolve_program;
 use crate::resolution::unqualified_index_key;
 use crate::safety_resolver::DecoratorVerdictMap;
 use crate::safety_resolver::SafetyResolver;
+use crate::traits::ModuleNameExt;
 
 /// One or more libraries merged into a single module universe, with the bundled
 /// stub graph injected -- the input to cross-library resolution.
@@ -358,6 +360,57 @@ impl LibraryCache {
         debug!("{} functions promoted", outcome.promoted.len());
     }
 
+    /// Turn recorded attribute accesses into errors where the merged facts now
+    /// show the receiver's attribute is a property whose getter is not safe.
+    ///
+    /// This runs after `finalize_resolution` so the getter verdicts it reads are
+    /// final and the errors it adds are not then considered for clearing.
+    fn resolve_property_candidates(
+        &mut self,
+        module_names: &AHashSet<ModuleName>,
+        func_safety_by_module: &AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
+        outcome: &ResolutionOutcome,
+        class_properties: &HashMap<ModuleName, AHashSet<String>>,
+    ) {
+        if class_properties.is_empty() {
+            return;
+        }
+        let resolver = SafetyResolver::with_safe_index(
+            module_names,
+            func_safety_by_module,
+            &outcome.globally_safe,
+        );
+
+        self.modules.par_iter_mut().for_each(|module| {
+            let candidates = std::mem::take(&mut module.property_candidates);
+            let CachedSafety::Ok(ref mut safety) = module.safety else {
+                return;
+            };
+            for candidate in candidates {
+                let Some((class_fqn, attr)) = candidate.attribute.split_attr() else {
+                    continue;
+                };
+                if !class_properties
+                    .get(&class_fqn)
+                    .is_some_and(|properties| properties.contains(attr.as_str()))
+                {
+                    continue;
+                }
+                let getter_unsafe = resolver
+                    .split_at_module(candidate.attribute.as_str())
+                    .and_then(|(module, local)| resolver.own_verdict(&module, local))
+                    .is_some_and(|verdict| !verdict.is_safe());
+                if getter_unsafe {
+                    safety.errors.push(SafetyError::new(
+                        ErrorKind::UnsafeMethodCall,
+                        candidate.attribute.as_str().to_owned(),
+                        candidate.range,
+                    ));
+                }
+            }
+        });
+    }
+
     /// Collect error names that can use the global unqualified fallback; qualified
     /// names resolve through module-specific safety maps instead.
     fn unqualified_error_names(&self) -> AHashSet<String> {
@@ -394,6 +447,7 @@ impl LibraryCache {
             &mut constructor_callees,
             std::mem::take(&mut self.constructor_callees),
         );
+        let class_properties = merge_class_properties(std::mem::take(&mut self.class_properties));
 
         self.propagate_re_export_safety();
 
@@ -500,6 +554,13 @@ impl LibraryCache {
                 constructor_callees: &constructor_callees,
             },
             &outcome,
+        );
+
+        self.resolve_property_candidates(
+            &module_names,
+            &func_safety_by_module,
+            &outcome,
+            &class_properties,
         );
 
         // Return the verdicts taken at the top; resolution needed them in one flat

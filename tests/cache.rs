@@ -39,6 +39,7 @@ mod tests {
     use lifeguard::module_safety::MutationCandidate;
     use lifeguard::module_safety::MutationCandidateSite;
     use lifeguard::module_safety::ParamPosition;
+    use lifeguard::module_safety::PropertyCandidate;
     use lifeguard::module_safety::SafetyResult;
     use lifeguard::output::LifeGuardAnalysis;
     use lifeguard::project;
@@ -176,6 +177,11 @@ mod tests {
             self
         }
 
+        fn property_candidates(mut self, candidates: Vec<PropertyCandidate>) -> Self {
+            self.0.property_candidates = candidates;
+            self
+        }
+
         fn build(self) -> CachedModule {
             self.0
         }
@@ -191,6 +197,7 @@ mod tests {
             side_effect_imports: Default::default(),
             function_safety: AHashMap::new(),
             mutation_candidates: Vec::new(),
+            property_candidates: Vec::new(),
         })
     }
 
@@ -213,7 +220,7 @@ mod tests {
         );
         // Mirror what `analyze-library` attaches, so these tests exercise the
         // recorded class facts rather than an empty cache.
-        cache.set_class_bases(output.class_bases);
+        cache.set_class_facts(output.class_bases, output.class_properties);
         cache.set_constructor_callees(output.constructor_callees);
         cache
     }
@@ -295,12 +302,12 @@ mod tests {
     #[cfg(target_pointer_width = "64")]
     fn test_cached_struct_sizes() {
         // Wire fields only: the reduce-side accumulators live on `ReduceWorkspace`.
-        assert_eq!(std::mem::size_of::<LibraryCache>(), 96);
+        assert_eq!(std::mem::size_of::<LibraryCache>(), 120);
         assert_eq!(
             std::mem::size_of::<lifeguard::cache::ConstructorCallees>(),
             40,
         );
-        assert_eq!(std::mem::size_of::<CachedModule>(), 264);
+        assert_eq!(std::mem::size_of::<CachedModule>(), 288);
         assert_eq!(std::mem::size_of::<CachedSafety>(), 72);
         assert_eq!(std::mem::size_of::<CachedModuleSafety>(), 72);
         assert_eq!(std::mem::size_of::<lifeguard::errors::SafetyError>(), 24);
@@ -388,6 +395,7 @@ mod tests {
                 mn("package.Derived"),
                 inherited(mn("package.Base.__init__")),
             )],
+            class_properties: vec![(mn("package.Derived"), vec!["prop".to_owned()])],
             ..Default::default()
         };
 
@@ -409,6 +417,10 @@ mod tests {
         assert_eq!(
             loaded.class_bases,
             vec![(mn("package.Derived"), vec![mn("package.Base")])],
+        );
+        assert_eq!(
+            loaded.class_properties,
+            vec![(mn("package.Derived"), vec!["prop".to_owned()])],
         );
     }
 
@@ -438,11 +450,17 @@ mod tests {
             range: TextRange::default(),
         };
 
+        let property_candidate = PropertyCandidate {
+            attribute: mn("dep.Klass.prop"),
+            range: TextRange::new(4.into(), 9.into()),
+        };
+
         let cache = LibraryCache {
             modules: vec![
                 cached_module("m")
                     .function_safety_map(function_safety)
                     .mutation_candidates(vec![candidate.clone()])
+                    .property_candidates(vec![property_candidate.clone()])
                     .build(),
             ],
             exports: CachedExports {
@@ -457,6 +475,15 @@ mod tests {
             module.function_safety.get("helper"),
             Some(&info),
             "function safety (verdict, missing_dep_callees, mutated_params) should round-trip",
+        );
+        assert_eq!(
+            module.property_candidates,
+            vec![PropertyCandidate {
+                range: TextRange::default(),
+                ..property_candidate
+            }],
+            "property candidates round-trip, but not their range: a cached offset \
+             would tie the bytes to where in the file the access sits",
         );
         assert_eq!(
             module.mutation_candidates,
