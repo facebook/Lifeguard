@@ -1805,7 +1805,10 @@ impl ProjectInfo {
                         // happen and cannot invent a cycle through a factory whose
                         // child never runs.
                         let nested = is_parameterized_decorator_effect(e)
-                            .then(|| self.nested_functions.get(&self.defining_name(&e.name)))
+                            .then(|| {
+                                let factory = self.resolve_callable(&e.name).unwrap_or(e.name);
+                                self.nested_functions.get(&factory)
+                            })
                             .flatten()
                             .into_iter()
                             .flatten()
@@ -2618,6 +2621,38 @@ mod tests {
         "#;
 
         assert_leveled_before(module, "m.Base.static_method", "m.caller");
+    }
+
+    /// A parameterized decorator reached through the MRO: `check_decorator_nested_functions`
+    /// reads the nested functions of `Base.deco`, so they have to be leveled
+    /// before the caller even though the effect names `Sub.deco`.
+    #[test]
+    fn inherited_decorator_nested_functions_are_leveled_before_their_reader() {
+        let module = r#"
+            def deepest():
+                pass
+
+            def deep():
+                deepest()
+
+            class Base:
+                @staticmethod
+                def deco(arg):
+                    def wrapper(fn):
+                        deep()
+                        return fn
+                    return wrapper
+
+            class Sub(Base):
+                pass
+
+            def caller():
+                @Sub.deco(1)
+                def inner():
+                    pass
+        "#;
+
+        assert_leveled_before(module, "m.Base.deco.wrapper", "m.caller");
     }
 
     /// `check_constructor_call` resolves each constructor method through the MRO,
