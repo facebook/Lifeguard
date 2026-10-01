@@ -203,6 +203,7 @@ fn collect_module_names(module: &CachedModule, names: &mut AHashSet<ModuleName>)
     }
     for info in module.function_safety.values() {
         names.extend(info.missing_dep_callees.iter().copied());
+        names.extend(info.missing_dep_decorators.iter().copied());
         names.extend(info.mutated_params.iter().map(|param| param.name));
     }
     for candidate in &module.mutation_candidates {
@@ -230,8 +231,37 @@ pub(crate) fn write(cache: &LibraryCache, path: &Path) -> Result<()> {
     let module_blobs: Vec<Vec<u8>> = cache
         .modules
         .par_iter()
-        .map(|module| postcard::to_allocvec(&WireModule::encode(module, &table)))
-        .collect::<std::result::Result<_, _>>()?;
+        .map(|module| {
+            let mut blob = postcard::to_allocvec(&WireModule::encode(module, &table))?;
+            let decorators: Vec<(String, Vec<NameId>)> = module
+                .function_safety
+                .iter()
+                .filter(|(_, info)| !info.missing_dep_decorators.is_empty())
+                .map(|(name, info)| {
+                    (
+                        name.clone(),
+                        info.missing_dep_decorators
+                            .iter()
+                            .map(|callee| table.id(*callee))
+                            .collect(),
+                    )
+                })
+                .collect();
+            let identities: Vec<&String> = module
+                .function_safety
+                .iter()
+                .filter_map(|(name, info)| info.returns_identity_decorator.then_some(name))
+                .collect();
+            // Append new facts so old module records retain their original layout.
+            if !decorators.is_empty() || !identities.is_empty() {
+                blob.extend(postcard::to_allocvec(&decorators)?);
+            }
+            if !identities.is_empty() {
+                blob.extend(postcard::to_allocvec(&identities)?);
+            }
+            Ok(blob)
+        })
+        .collect::<Result<_>>()?;
     let exports = cache
         .exports
         .re_exports
@@ -333,8 +363,30 @@ pub(crate) fn read(path: &Path) -> Result<LibraryCache> {
     let modules = blobs
         .par_iter()
         .map(|blob| {
-            let wire: WireModule = postcard::from_bytes(blob)?;
-            wire.decode(&header.names)
+            let (wire, extra): (WireModule, _) = postcard::take_from_bytes(blob)?;
+            let mut module = wire.decode(&header.names)?;
+            if !extra.is_empty() {
+                let (decorators, extra): (Vec<(String, Vec<NameId>)>, _) =
+                    postcard::take_from_bytes(extra)?;
+                for (name, callees) in decorators {
+                    let info = module
+                        .function_safety
+                        .get_mut(&name)
+                        .context("decorator metadata names an unknown function")?;
+                    info.missing_dep_decorators = decode_name_set(&header.names, callees)?;
+                }
+                if !extra.is_empty() {
+                    let identities: Vec<String> = postcard::from_bytes(extra)?;
+                    for name in identities {
+                        module
+                            .function_safety
+                            .get_mut(&name)
+                            .context("identity decorator metadata names an unknown function")?
+                            .returns_identity_decorator = true;
+                    }
+                }
+            }
+            Ok(module)
         })
         .collect::<Result<Vec<_>>>()?;
     let exports = CachedExports {
@@ -579,6 +631,8 @@ impl WireFunctionSafetyInfo {
         Ok(FunctionSafetyInfo {
             verdict: self.verdict,
             missing_dep_callees: decode_name_set(names, self.missing_dep_callees)?,
+            missing_dep_decorators: AHashSet::new(),
+            returns_identity_decorator: false,
             mutated_params: self
                 .mutated_params
                 .into_iter()

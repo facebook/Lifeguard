@@ -452,6 +452,33 @@ mod tests {
     }
 
     #[test]
+    fn reexported_method_shadowed_by_field_is_unsafe() {
+        for shadow in [
+            "method = staticmethod(lambda: print('effect'))",
+            "method = None",
+            "if True:\n  method = None",
+            "method, other = None, 0",
+            "from builtins import print as method",
+            "if True:\n  method: object = None",
+        ] {
+            for class_body in [
+                format!("class Sub(Base):\n {shadow}\n"),
+                format!("class Middle(Base):\n {shadow}\nclass Sub(Middle):\n pass\n"),
+            ] {
+                let origin =
+                    format!("class Base:\n @staticmethod\n def method():\n  pass\n{class_body}");
+                let modules = [
+                    ("origin", origin.as_str()),
+                    ("facade", "from origin import Sub\n"),
+                    ("app", "from facade import Sub\nSub.method()\n"),
+                ];
+                assert_failing(&run_lifeguard_analysis(&modules.to_vec()), vec!["app"]);
+                assert_paths_agree_sharded(&modules);
+            }
+        }
+    }
+
+    #[test]
     fn re_export_cycle_agrees() {
         // A cycle in the re-export graph: both paths resolve chains, and both
         // have to terminate rather than loop.
@@ -939,33 +966,6 @@ mod tests {
     }
 
     #[test]
-    fn reexported_method_shadowed_by_field_is_unsafe() {
-        for shadow in [
-            "method = staticmethod(lambda: print('effect'))",
-            "method = None",
-            "if True:\n  method = None",
-            "method, other = None, 0",
-            "from builtins import print as method",
-            "if True:\n  method: object = None",
-        ] {
-            for class_body in [
-                format!("class Sub(Base):\n {shadow}\n"),
-                format!("class Middle(Base):\n {shadow}\nclass Sub(Middle):\n pass\n"),
-            ] {
-                let origin =
-                    format!("class Base:\n @staticmethod\n def method():\n  pass\n{class_body}");
-                let modules = [
-                    ("origin", origin.as_str()),
-                    ("facade", "from origin import Sub\n"),
-                    ("app", "from facade import Sub\nSub.method()\n"),
-                ];
-                assert_failing(&run_lifeguard_analysis(&modules.to_vec()), vec!["app"]);
-                assert_paths_agree_sharded(&modules);
-            }
-        }
-    }
-
-    #[test]
     fn imported_classmethod_receiver_mutation_is_unsafe() {
         let origin = "registry = {}\nclass C:\n @classmethod\n def configure(cls, value):\n  cls.settings = value\ndef configure():\n C.configure(1)\n";
         for call in [
@@ -1000,5 +1000,123 @@ mod tests {
             &run_lifeguard_analysis(&vec![("origin", origin), ("app", app)]),
             vec!["origin", "app"],
         );
+    }
+
+    #[test]
+    fn nested_decorator_factories_are_checked_across_libraries() {
+        let origin = r#"
+            from leaf import identity
+            registry = []
+            def register(value):
+                def decorator(f):
+                    registry.append(f)
+                    return f
+                return decorator
+            def pure(value):
+                def decorator(f):
+                    return identity(f)
+                return decorator
+        "#;
+        for source in ["origin", "facade"] {
+            for argument in ["1", "registry"] {
+                for factory in ["register", "pure"] {
+                    let app = format!(
+                        "from {source} import {factory}\nfrom origin import registry\ndef run():\n @{factory}({argument})\n def f(): pass\n return f\nrun()\n"
+                    );
+                    let modules = vec![
+                        ("origin", origin),
+                        ("facade", "from origin import register, pure\n"),
+                        ("app", &app),
+                        ("leaf", "def identity(value):\n return value\n"),
+                    ];
+                    let result = run_lifeguard_analysis(&modules);
+                    if factory == "register" {
+                        assert_failing(&result, vec!["app"]);
+                    } else {
+                        assert_passing(&result, vec!["origin", "facade", "app", "leaf"]);
+                    }
+                    assert_paths_agree_sharded(&modules);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ordinary_factory_calls_do_not_run_returned_decorators() {
+        let modules = vec![
+            (
+                "origin",
+                "registry = []\ndef register(value):\n def decorator(f):\n  registry.append(f)\n  return f\n return decorator\n",
+            ),
+            ("facade", "from origin import register\n"),
+            (
+                "app",
+                "from facade import register\ndef run():\n return register(1)\nrun()\n",
+            ),
+        ];
+        assert_passing(
+            &run_lifeguard_analysis(&modules),
+            vec!["origin", "facade", "app"],
+        );
+        assert_paths_agree_sharded(&modules);
+    }
+
+    #[test]
+    fn reexported_decorator_factory_agrees() {
+        let origin = r#"
+            registry = []
+
+            def register(*types):
+                def decorator(f):
+                    registry.append((types, f))
+                    return f
+                return decorator
+        "#;
+        let facade = r#"
+            from origin import register
+        "#;
+        let app = r#"
+            from facade import register
+
+            @register(int)
+            def f():
+                ...
+        "#;
+        let differences = path_differences(
+            &[("origin", origin), ("facade", facade), ("app", app)],
+            &[1, 2, 3],
+        );
+
+        // Split across libraries, the incremental path reports any unsafe decorator
+        // it cannot resolve at map time as unknown, re-exported or not.
+        for (count, difference) in &differences {
+            assert!(
+                *count > 1
+                    && difference.starts_with("aggregated errors:")
+                    && difference.contains(r#"[("UnsafeDecoratorCall facade.register", 1)]"#)
+                    && difference.contains(r#"[("UnknownDecoratorCall facade.register", 1)]"#),
+                "{count} shards: expected only the unknown-decorator label to differ, got: {difference}",
+            );
+        }
+    }
+
+    #[test]
+    fn identity_decorator_does_not_run_nested_helpers() {
+        for source in ["origin", "facade"] {
+            let origin = "registry = []\ndef deco(value):\n def unused():\n  registry.append(value)\n return lambda f: f\n";
+            let app = format!(
+                "from {source} import deco\ndef run():\n @deco(1)\n def f(): pass\n return f\nrun()\n"
+            );
+            let modules = vec![
+                ("origin", origin),
+                ("facade", "from origin import deco\n"),
+                ("app", &app),
+            ];
+            assert_passing(
+                &run_lifeguard_analysis(&modules),
+                vec!["origin", "facade", "app"],
+            );
+            assert_paths_agree_sharded(&modules);
+        }
     }
 }

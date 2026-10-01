@@ -65,6 +65,7 @@ use crate::names::enclosing_module;
 use crate::names::enclosing_module_str;
 use crate::resolution::get_function_safety;
 use crate::resolution::resolve_program;
+use crate::safety_resolver::ReExportIndex;
 use crate::source_map::AstResult;
 use crate::source_map::ModuleProvider;
 use crate::stubs::Stubs;
@@ -208,6 +209,7 @@ fn build_nested_functions_map(analysis_map: &AnalysisMap) -> AHashMap<ModuleName
                     // Keep only immediate children; deeper wrappers run later.
                     if v.definitions.is_function_scope(child)
                         && child.parent().as_ref() == Some(parent)
+                        && !v.definitions.identity_decorator_factories.contains(parent)
                     {
                         map.entry(*parent).or_default().push(*child);
                     }
@@ -369,6 +371,13 @@ impl GlobalAnalysisState {
                 };
                 if let Some(mut safety_entry) = safety_map.get_mut(&module) {
                     if let SafetyResult::Ok(module_safety) = safety_entry.value_mut() {
+                        info.returns_identity_decorator =
+                            project.analysis_map.get(&module).is_some_and(|analysis| {
+                                analysis
+                                    .definitions
+                                    .identity_decorator_factories
+                                    .contains(&fqn)
+                            });
                         if let Some(mutated) = project.resolve_cached_mutated_params_for(&fqn) {
                             if method_receiver_offset(&fqn, &project.classes, false) == Some(1)
                                 && mutated
@@ -440,14 +449,18 @@ impl GlobalAnalysisState {
         self.set_function_safety(func, FunctionSafetyInfo::new(FunctionSafety::Unsafe));
     }
 
-    fn mark_unsafe_missing_dep(&self, func: &ModuleName, callee: &ModuleName) {
-        self.function_safety
+    fn mark_unsafe_missing_dep(&self, func: &ModuleName, callee: &ModuleName, decorator: bool) {
+        let mut info = self
+            .function_safety
             .entry(*func)
             .and_modify(|info| {
                 info.verdict.insert(FunctionSafety::UnsafeMissingDep);
                 info.missing_dep_callees.insert(*callee);
             })
             .or_insert_with(|| FunctionSafetyInfo::unsafe_missing_dep(*callee));
+        if decorator {
+            info.missing_dep_decorators.insert(*callee);
+        }
     }
 
     fn is_unsafe(&self, func: &ModuleName) -> bool {
@@ -1514,10 +1527,15 @@ impl ProjectInfo {
             let resolved =
                 resolve_enclosing_module(fqn, |name| self.analysis_map.contains_key(name));
             if let Some((module, local)) = resolved {
+                let mut info = entry.value().clone();
+                info.returns_identity_decorator = self.analysis_map[&module]
+                    .definitions
+                    .identity_decorator_factories
+                    .contains(fqn);
                 by_module
                     .entry(module)
                     .or_default()
-                    .insert(local.to_owned(), entry.value().clone());
+                    .insert(local.to_owned(), info);
             }
         });
         let mut view: AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>> =
@@ -1563,6 +1581,7 @@ impl ProjectInfo {
                 .iter()
                 .map(|(module, candidates)| (*module, candidates.as_slice())),
             AHashSet::new(),
+            &ReExportIndex::new(&[]),
             // Never reached, which is why the index handed to promotion above can
             // be empty: `resolve_program` only indexes a name when a module-scope
             // candidate is *confirmed*, and none can be here. Asserted rather than
@@ -2092,15 +2111,34 @@ impl ProjectInfo {
         let callee_recoverable = state.function_safety.get(&callee.func).is_some_and(|info| {
             info.verdict.has(FunctionSafety::UnsafeMissingDep)
                 && !info.verdict.has(FunctionSafety::Unsafe)
-        });
+        }) || (is_parameterized_decorator_effect(callee.effect)
+            && self
+                .nested_functions
+                .get(&callee.func)
+                .is_some_and(|children| {
+                    children.iter().any(|child| {
+                        state
+                            .function_safety
+                            .get(child)
+                            .is_some_and(|info| info.verdict.has(FunctionSafety::UnsafeMissingDep))
+                    })
+                }));
         if callee_recoverable {
             if !state.is_unsafe(func) {
-                state.mark_unsafe_missing_dep(func, &callee.func);
+                state.mark_unsafe_missing_dep(
+                    func,
+                    &callee.func,
+                    is_parameterized_decorator_effect(callee.effect),
+                );
             }
         } else if self.can_resolve_call(callee, state) {
             state.mark_unsafe(func);
         } else if !state.is_unsafe(func) {
-            state.mark_unsafe_missing_dep(func, &callee.func);
+            state.mark_unsafe_missing_dep(
+                func,
+                &callee.func,
+                is_parameterized_decorator_effect(callee.effect),
+            );
         }
     }
 
@@ -2429,7 +2467,11 @@ impl ProjectInfo {
                                 if !self.functions.contains_key(&callee)
                                     && !self.mutated_params.contains_key(&callee)
                                 {
-                                    state.mark_unsafe_missing_dep(&func, &callee);
+                                    state.mark_unsafe_missing_dep(
+                                        &func,
+                                        &callee,
+                                        is_parameterized_decorator_effect(eff),
+                                    );
                                     ret = false;
                                 }
                             }
