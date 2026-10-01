@@ -499,11 +499,19 @@ impl<'a> CombinedDefinitionClassBuilder<'a> {
                     !matches!(definition.style, DefinitionStyle::MutableCapture(..))
                 })
         });
+        let fields: AHashSet<Name> = class
+            .fields
+            .iter()
+            .map(|field| field.name.clone())
+            .collect();
         for (name, definition) in &self.definitions_map[&scope].definitions {
-            if class.get_field(name).is_none()
-                && !matches!(definition.style, DefinitionStyle::MutableCapture(..))
-                && (!matches!(definition.style, DefinitionStyle::Annotated(..))
-                    || definition.needs_anywhere)
+            if !fields.contains(name)
+                && !matches!(
+                    definition.style,
+                    DefinitionStyle::MutableCapture(..)
+                        | DefinitionStyle::Annotated(..)
+                        | DefinitionStyle::Delete
+                )
             {
                 class.fields.push(Field {
                     kind: FieldKind::ClassVar,

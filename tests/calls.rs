@@ -380,38 +380,18 @@ forward(registry)  # E: imported-var-argument
     }
 
     #[test]
-    fn test_reexported_callables_two_hops() {
-        let facade = format!("from origin import {REEXPORT_NAMES}");
-        let outer = format!("from facade import {REEXPORT_NAMES}");
+    fn test_reexported_callables_two_aliased_hops() {
+        let names: Vec<&str> = REEXPORT_NAMES.split(", ").collect();
+        let aliased =
+            |f: fn(&str) -> String| names.iter().map(|n| f(n)).collect::<Vec<_>>().join(", ");
+        let facade = format!("from origin import {}", aliased(|n| format!("{n} as _{n}")));
+        let outer = format!("from facade import {}", aliased(|n| format!("_{n} as {n}")));
         let consumer = reexport_consumer(&format!("from outer import {REEXPORT_NAMES}"));
         check_all(vec![
             ("origin", REEXPORT_ORIGIN),
             ("facade", &facade),
             ("outer", &outer),
             ("consumer", &consumer),
-        ]);
-    }
-
-    #[test]
-    fn test_reexported_callables_aliased() {
-        let facade = r#"
-from origin import pure as p, unsafe as u, Unsafe as U, register as r
-"#;
-        let consumer = r#"
-from facade import p, u, U, r
-
-p(1)
-u()  # E: unsafe-function-call
-U()  # E: unsafe-function-call
-
-@r  # E: unsafe-decorator-call
-def b():
-    ...
-"#;
-        check_all(vec![
-            ("origin", REEXPORT_ORIGIN),
-            ("facade", facade),
-            ("consumer", consumer),
         ]);
     }
 
@@ -445,6 +425,10 @@ class C(Base):
     @classmethod
     def class_mutate(cls, value):
         value["seen"] = True
+
+    @classmethod
+    def from_value(cls, value):
+        return cls.build(value)
 "#;
         let body = r#"
 from origin import registry
@@ -455,6 +439,7 @@ C.unsafe(1)  # E: unsafe-function-call
 C.mutate(registry)  # E: imported-var-argument
 C.inherited_mutate(registry)  # E: imported-var-argument
 C.class_mutate(registry)  # E: imported-var-argument
+C.from_value(1)  # E: unsafe-function-call
 "#;
         let direct = format!("import origin\n{body}").replace("\nC.", "\norigin.C.");
         let consumer = format!("import facade\n{body}").replace("\nC.", "\nfacade.C.");
@@ -467,9 +452,27 @@ C.class_mutate(registry)  # E: imported-var-argument
     }
 
     #[test]
+    fn test_inherited_method_through_reexported_or_shadowed_names() {
+        check_all(vec![
+            ("pkg", "from pkg.foo import foo\n"),
+            (
+                "pkg.foo",
+                "def foo():\n pass\nclass A:\n @staticmethod\n def m():\n  raise Exception()\nclass Base(A):\n pass\n",
+            ),
+            ("facade", "from pkg.foo import Base\n"),
+            (
+                "app",
+                "import pkg.foo\nimport facade\nclass Sub(facade.Base):\n pass\npkg.foo.Base.m()  # E: unsafe-function-call\nSub.m()  # E: unsafe-method-call\n",
+            ),
+        ]);
+    }
+
+    #[test]
     fn test_annotation_without_value_does_not_shadow_inherited_method() {
         for body in [
             "method: object",
+            "if True:\n  method: object\n else:\n  method: object",
+            "method: object\n del method",
             "global method\n method = None",
             "from typing import TYPE_CHECKING\n if TYPE_CHECKING:\n  method = None",
         ] {

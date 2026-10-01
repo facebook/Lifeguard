@@ -254,9 +254,7 @@ fn merge_all_functions_and_methods(
     )
 }
 
-/// Map each re-exported name to the name its re-export chain ends at. A name that
-/// is also a concrete function or class keeps its definition, and a chain that
-/// cycles has no entry.
+/// Map each re-exported name to the end of its re-export chain.
 fn collect_re_exports(
     exports: &Exports,
     effect_table: &EffectTable,
@@ -1064,9 +1062,7 @@ fn method_receiver_offset(method: &ModuleName, classes: &ClassTable, bound: bool
     })
 }
 
-/// The name `name` is defined under when it, or the class it is an attribute
-/// of, is re-exported: with `facade` re-exporting `origin.C`, `facade.C.m`
-/// resolves to `origin.C.m`. Concrete definitions win over re-exports.
+/// Rewrite `name`, or the class owning it, through re-exports: `facade.C.m` -> `origin.C.m`.
 fn resolve_re_export(
     name: &ModuleName,
     functions: &AHashMap<ModuleName, ModuleName>,
@@ -1080,17 +1076,14 @@ fn resolve_re_export(
         return *name;
     }
     name.iter_parents()
-        .find_map(|(owner, dot)| {
-            re_exports
-                .get(&owner)
-                .map(|target| target.append_str(&name.as_str()[dot + 1..]))
+        .find_map(|(owner, dot)| match re_exports.get(&owner) {
+            Some(target) => Some(target.append_str(&name.as_str()[dot + 1..])),
+            None => (functions.contains_key(&owner) || classes.contains(&owner)).then_some(*name),
         })
         .unwrap_or(*name)
 }
 
-/// The definition in this library that `name` resolves to: `name` itself, the
-/// end of its re-export chain, or, for a method its class does not define, the
-/// first definition along the class's MRO.
+/// The definition `name` resolves to through re-exports and the class MRO.
 fn resolve_definition(
     name: &ModuleName,
     functions: &AHashMap<ModuleName, ModuleName>,
@@ -1117,23 +1110,14 @@ fn resolve_definition(
     c3_linearize(class_bases, &class)
         .into_iter()
         .skip(1)
-        .map(|base| {
-            resolve_re_export(
-                &base.append_str(method.as_str()),
-                functions,
-                classes,
-                re_exports,
-            )
-        })
+        .map(|base| base.append_str(method.as_str()))
         .find(is_defined)
 }
 
 /// Yield each `(callee, arg_offset)` a call binds to: the function(s) whose
 /// parameters the call's explicit arguments map to, paired with the number of
-/// implicit leading parameters (the receiver) to skip. A callee binds to the
-/// definition `resolve_definition` finds for it, as body-safety checks do; one
-/// this library does not define keeps the name it was imported under, which is
-/// what cross-library mutation checks match the caller's imports against.
+/// implicit leading parameters (the receiver) to skip. Callees not defined in
+/// this library keep their imported name, which cross-library checks match.
 fn iter_callees<'a>(
     eff: &'a Effect,
     functions: &AHashMap<ModuleName, ModuleName>,
@@ -1173,8 +1157,7 @@ fn iter_callees<'a>(
             // consider both to avoid missing a mutated parameter.
             None => (Some(0), Some(1)),
         },
-        // A function call can name a method through its class (`C.m(...)`),
-        // which binds like an unbound method call.
+        // `C.m(...)` binds like an unbound method call.
         _ => (
             Some(method_receiver_offset(&name, classes, false).unwrap_or(0)),
             None,
@@ -1367,11 +1350,21 @@ impl ProjectInfo {
         let classes = time("    Merging all classes", || {
             merge_all_classes(&mut analysis_map)
         });
-        let (class_bases, re_exports) = time("    Indexing class bases + re-exports", || {
-            rayon::join(
-                || classes.base_edges().into_iter().collect(),
-                || collect_re_exports(exports, &effect_table, &functions, &classes),
-            )
+        let re_exports = time("    Getting re-exports", || {
+            collect_re_exports(exports, &effect_table, &functions, &classes)
+        });
+        let class_bases = time("    Indexing class bases", || {
+            classes
+                .base_edges()
+                .into_iter()
+                .map(|(class, bases)| {
+                    let bases = bases
+                        .into_iter()
+                        .map(|base| re_exports.get(&base).copied().unwrap_or(base))
+                        .collect();
+                    (class, bases)
+                })
+                .collect()
         });
         let (nested_functions, mutated_params) = rayon::join(
             || {
@@ -1409,8 +1402,6 @@ impl ProjectInfo {
         self.functions.contains_key(name) || self.classes.contains(name)
     }
 
-    /// The name `name` is defined under: the method an instance call dispatches
-    /// to, or where its re-export resolves. It need not be defined anywhere.
     fn defining_name(&self, name: &ModuleName) -> ModuleName {
         if self.is_defined(name) {
             return *name;
@@ -1425,8 +1416,6 @@ impl ProjectInfo {
 
     fn resolve_callable(&self, name: &ModuleName) -> Option<ModuleName> {
         let defining = self.defining_name(name);
-        // An unresolved re-export still names its definition, so a missing
-        // dependency is recorded against the name that defines it.
         resolve_definition(
             &defining,
             &self.functions,
@@ -2033,23 +2022,20 @@ impl ProjectInfo {
                 self.check_call_safety(&mut call, state, true)?;
             } else if eff.kind == EffectKind::ImportedTypeAttr {
                 // Check if this is a property access
-                if let Some((typ, attr)) = eff.name.split_attr() {
-                    if let Some(field) = self
-                        .classes
-                        .lookup(&typ)
-                        .and_then(|cls| cls.get_field(&attr))
-                    {
-                        if field.kind == FieldKind::Property {
-                            let mut call = Call {
-                                caller_module: mod_name,
-                                effect: eff,
-                                func: eff.name,
-                                stack: CallStack::new(*scope),
-                                is_module_scope: true,
-                            };
-                            self.check_call_safety(&mut call, state, true)?;
-                        }
-                    }
+                let is_property = self
+                    .resolve_callable(&eff.name)
+                    .and_then(|name| name.split_attr())
+                    .and_then(|(typ, attr)| self.classes.lookup(&typ)?.get_field(&attr))
+                    .is_some_and(|field| field.kind == FieldKind::Property);
+                if is_property {
+                    let mut call = Call {
+                        caller_module: mod_name,
+                        effect: eff,
+                        func: eff.name,
+                        stack: CallStack::new(*scope),
+                        is_module_scope: true,
+                    };
+                    self.check_call_safety(&mut call, state, true)?;
                 }
             } else if eff.kind == EffectKind::UnconfirmedTypeAttr {
                 // The map phase cannot tell if this access runs a property getter,
@@ -2345,7 +2331,16 @@ impl ProjectInfo {
     }
 
     fn class_receiver_mutation_module(&self, effect: &Effect) -> Option<ModuleName> {
-        let callee = self.resolve_callable(&effect.name)?;
+        let defining = self.defining_name(&effect.name);
+        let (receiver, _) = defining.split_attr()?;
+        let class = self.classes.lookup(&receiver)?;
+        let callee = resolve_definition(
+            &defining,
+            &self.functions,
+            &self.classes,
+            &self.re_exports,
+            &self.class_bases,
+        )?;
         if method_receiver_offset(&callee, &self.classes, false) != Some(1) {
             return None;
         }
@@ -2364,8 +2359,6 @@ impl ProjectInfo {
         {
             return None;
         }
-        let (receiver, _) = self.defining_name(&effect.name).split_attr()?;
-        let class = self.classes.lookup(&receiver)?;
         let (scope, _) = receiver.split_attr()?;
         self.analysis_map
             .get(&class.module)?
@@ -2623,9 +2616,6 @@ mod tests {
         assert_leveled_before(module, "m.Base.static_method", "m.caller");
     }
 
-    /// A parameterized decorator reached through the MRO: `check_decorator_nested_functions`
-    /// reads the nested functions of `Base.deco`, so they have to be leveled
-    /// before the caller even though the effect names `Sub.deco`.
     #[test]
     fn inherited_decorator_nested_functions_are_leveled_before_their_reader() {
         let module = r#"
