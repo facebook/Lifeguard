@@ -887,6 +887,63 @@ pub fn partition_modules<'a>(
     groups
 }
 
+/// A fixed-seed pseudo-random source. Property tests have to reproduce exactly
+/// from a failure message, so they cannot draw randomness from the environment.
+pub struct TestRng(u64);
+
+impl TestRng {
+    pub fn new(seed: u64) -> Self {
+        // xorshift64 is absorbing at zero, so never seed it there.
+        Self(if seed == 0 {
+            0x9E37_79B9_7F4A_7C15
+        } else {
+            seed
+        })
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        let mut state = self.0;
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        self.0 = state;
+        state
+    }
+
+    /// A value in `0..bound`. Panics on an empty range, which is a test bug.
+    pub fn below(&mut self, bound: usize) -> usize {
+        assert!(bound > 0, "TestRng::below needs a non-empty range");
+        (self.next_u64() % bound as u64) as usize
+    }
+}
+
+/// Randomly assign each module to one of `shards` groups, dropping empties.
+/// Unlike [`partition_modules`], group sizes are uneven, which is closer to how
+/// real libraries divide a program.
+pub fn random_partition<'a>(
+    modules: &[(&'a str, &'a str)],
+    shards: usize,
+    rng: &mut TestRng,
+) -> Vec<Vec<(&'a str, &'a str)>> {
+    let mut groups = vec![Vec::new(); shards];
+    for module in modules {
+        let index = rng.below(shards);
+        groups[index].push(*module);
+    }
+    groups.retain(|group| !group.is_empty());
+    groups
+}
+
+/// How a parity run hands its per-shard caches to the reduce.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CacheDelivery {
+    /// Straight from memory.
+    InMemory,
+    /// Written and read back first, the way Buck delivers them. This is what
+    /// makes a parity run also a round-trip test of the wire format.
+    Serialized,
+}
+
 /// Build one library cache, the way the map phase (`analyze-library`) does.
 pub fn build_library_cache(sources: &TestSources) -> LibraryCache {
     let config = AnalysisConfig::default();
@@ -1154,18 +1211,54 @@ pub fn run_whole_program_path<'a>(
     }
 }
 
-/// Run `fixture` through the incremental path: map each shard to a cache, then
+/// Run a fixture through the incremental path: map each shard to a cache, then
 /// merge and reduce them exactly as `analyze-binary` does.
 pub fn run_incremental_analysis<'a>(
     fixture: impl Into<ParityFixture<'a>>,
     shards: Shards,
     options: &Options,
 ) -> PathRun {
-    let caches: Vec<LibraryCache> = fixture
-        .into()
-        .shards(shards)
+    let sources = fixture.into().shards(shards);
+    run_incremental_on_sources(&sources, CacheDelivery::InMemory, options)
+}
+
+/// The same over explicit shard groups, for fixtures that choose their own
+/// partition rather than sharding by position.
+pub fn run_incremental_analysis_on_groups(
+    groups: &[Vec<(&str, &str)>],
+    delivery: CacheDelivery,
+    options: &Options,
+) -> PathRun {
+    let sources: Vec<TestSources> = groups.iter().map(|group| TestSources::new(group)).collect();
+    run_incremental_on_sources(&sources, delivery, options)
+}
+
+/// One map per library, then the reduce. `delivery` decides whether the caches
+/// reach it in memory or through a file, which is what makes the wire encoding
+/// part of the test rather than an assumption.
+fn run_incremental_on_sources(
+    sources: &[TestSources],
+    delivery: CacheDelivery,
+    options: &Options,
+) -> PathRun {
+    // Kept alive until the reduce has read every cache back.
+    let cache_dir = TempDir::new().expect("create temp dir for caches");
+    let caches: Vec<LibraryCache> = sources
         .iter()
-        .map(build_library_cache)
+        .enumerate()
+        .map(|(index, source)| {
+            let cache = build_library_cache(source);
+            match delivery {
+                CacheDelivery::InMemory => cache,
+                CacheDelivery::Serialized => {
+                    let path = cache_dir.path().join(format!("shard-{index}.bin"));
+                    cache
+                        .write_to_file(&path)
+                        .expect("cache write should succeed");
+                    LibraryCache::read_from_file(&path).expect("cache read should succeed")
+                }
+            }
+        })
         .collect();
     let resolved = ReduceWorkspace::merge(caches, options.python_version)
         .expect("a parity fixture should produce at least one cache")
@@ -1266,80 +1359,78 @@ impl ParityFacts {
 /// Report the first field on which two analyses disagree, or `None` if they
 /// agree. Returning one field keeps the failure readable; a whole-struct
 /// `assert_eq!` on a large fixture prints two walls of text.
-/// The parameters are named for the paths they are labelled as: the rendered
-/// message says `whole-program` for the first and `incremental` for the second,
-/// and `parity.rs` asserts on that order.
 fn first_parity_difference(
-    whole_program: &ParityFacts,
-    incremental: &ParityFacts,
+    labels: (&str, &str),
+    left: &ParityFacts,
+    right: &ParityFacts,
 ) -> Option<String> {
-    fn diff<T: std::fmt::Debug + PartialEq>(
-        field: &str,
-        whole_program: &T,
-        incremental: &T,
-    ) -> Option<String> {
-        (whole_program != incremental).then(|| {
-            format!(
-                "{field}:\n  whole-program: {whole_program:?}\n  incremental:   {incremental:?}"
-            )
-        })
-    }
+    let diff = |field: &str, left: &dyn std::fmt::Debug, right: &dyn std::fmt::Debug| {
+        format!(
+            "{field}:\n  {}: {left:?}\n  {}: {right:?}",
+            labels.0, labels.1
+        )
+    };
 
-    diff(
-        "passing modules",
-        &whole_program.passing,
-        &incremental.passing,
-    )
-    .or_else(|| {
-        diff(
-            "failing modules",
-            &whole_program.failing,
-            &incremental.failing,
-        )
-    })
-    .or_else(|| {
-        diff(
+    if left.passing != right.passing {
+        return Some(diff("passing modules", &left.passing, &right.passing));
+    }
+    if left.failing != right.failing {
+        return Some(diff("failing modules", &left.failing, &right.failing));
+    }
+    if left.load_imports_eagerly != right.load_imports_eagerly {
+        return Some(diff(
             "load_imports_eagerly",
-            &whole_program.load_imports_eagerly,
-            &incremental.load_imports_eagerly,
-        )
-    })
-    .or_else(|| {
-        diff(
+            &left.load_imports_eagerly,
+            &right.load_imports_eagerly,
+        ));
+    }
+    if left.lazy_eligible != right.lazy_eligible {
+        return Some(diff(
             "lazy_eligible",
-            &whole_program.lazy_eligible,
-            &incremental.lazy_eligible,
-        )
-    })
-    .or_else(|| {
-        diff(
-            "aggregated errors",
-            &whole_program.errors,
-            &incremental.errors,
-        )
-    })
-    .or_else(|| {
-        diff(
+            &left.lazy_eligible,
+            &right.lazy_eligible,
+        ));
+    }
+    if left.errors != right.errors {
+        return Some(diff("aggregated errors", &left.errors, &right.errors));
+    }
+    if left.module_errors != right.module_errors {
+        return Some(diff(
             "per-module errors",
-            &whole_program.module_errors,
-            &incremental.module_errors,
-        )
-    })
-    .or_else(|| {
-        diff(
+            &left.module_errors,
+            &right.module_errors,
+        ));
+    }
+    if left.implicit_imports != right.implicit_imports {
+        return Some(diff(
             "implicit imports",
-            &whole_program.implicit_imports,
-            &incremental.implicit_imports,
-        )
-    })
-    .or_else(|| {
-        diff(
+            &left.implicit_imports,
+            &right.implicit_imports,
+        ));
+    }
+    if left.import_cycles != right.import_cycles {
+        return Some(diff(
             "import cycles",
-            &whole_program.import_cycles,
-            &incremental.import_cycles,
-        )
-    })
-    .or_else(|| diff("report", &whole_program.report, &incremental.report))
+            &left.import_cycles,
+            &right.import_cycles,
+        ));
+    }
+    if left.report != right.report {
+        return Some(diff("report", &left.report, &right.report));
+    }
+    None
+}
+
+/// Assert two runs agree, reporting the first field that differs. `context`
+/// names the run, so a property test can say which partition failed.
+pub fn assert_analyses_agree(context: &str, expected: &PathRun, actual: &PathRun) {
+    let expected_facts = ParityFacts::of(expected);
+    let actual_facts = ParityFacts::of(actual);
+    if let Some(difference) =
+        first_parity_difference(("expected", "actual"), &expected_facts, &actual_facts)
+    {
+        panic!("paths disagree ({context}) -- {difference}");
+    }
 }
 
 /// The shard counts on which the two paths disagree, with the first differing
@@ -1366,8 +1457,12 @@ pub fn path_differences<'a>(
                 Shards::new(count),
                 &options,
             ));
-            first_parity_difference(&whole_program, &incremental)
-                .map(|difference| (count, difference))
+            first_parity_difference(
+                ("whole-program", "incremental  "),
+                &whole_program,
+                &incremental,
+            )
+            .map(|difference| (count, difference))
         })
         .collect()
 }
