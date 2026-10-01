@@ -77,7 +77,7 @@ class FileIO(RawIOBase, _RawIOBase, BinaryIO):  # type: ignore[misc]  # incompat
     def read(self, size: int | None = -1, /) -> bytes | MaybeNone: ...
 
 class BytesIO(BufferedIOBase, _BufferedIOBase, BinaryIO):  # type: ignore[misc]  # incompatible definitions of methods in the base classes
-    def __init__(self, initial_bytes: ReadableBuffer = b"") -> None: ...
+    def __init__(self, initial_bytes: ReadableBuffer = b"") -> None: no_effects()
     # BytesIO does not contain a "name" field. This workaround is necessary
     # to allow BytesIO sub-classes to add this field, as it is defined
     # as a read-only property on IO[].
@@ -215,7 +215,7 @@ class TextIOWrapper(TextIOBase, _TextIOBase, TextIO, Generic[_BufferT_co]):  # t
     def truncate(self, pos: int | None = None, /) -> int: ...
 
 class StringIO(TextIOBase, _TextIOBase, TextIO):  # type: ignore[misc]  # incompatible definitions of write in the base classes
-    def __init__(self, initial_value: str | None = "", newline: str | None = "\n") -> None: ...
+    def __init__(self, initial_value: str | None = "", newline: str | None = "\n") -> None: no_effects()
     # StringIO does not contain a "name" field. This workaround is necessary
     # to allow StringIO sub-classes to add this field, as it is defined
     # as a read-only property on IO[].

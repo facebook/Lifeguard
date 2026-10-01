@@ -50,8 +50,8 @@ if sys.version_info >= (3, 11):
 
 def expectedFailure(test_item: _FT) -> _FT: ...
 def skip(reason: str) -> Callable[[_FT], _FT]: no_effects()
-def skipIf(condition: object, reason: str) -> Callable[[_FT], _FT]: ...
-def skipUnless(condition: object, reason: str) -> Callable[[_FT], _FT]: ...
+def skipIf(condition: object, reason: str) -> Callable[[_FT], _FT]: no_effects()
+def skipUnless(condition: object, reason: str) -> Callable[[_FT], _FT]: no_effects()
 
 class SkipTest(Exception):
     def __init__(self, reason: str) -> None: no_effects()
