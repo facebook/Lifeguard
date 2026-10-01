@@ -187,6 +187,10 @@ pub struct ImportGraph {
     pub graph: Graph,
     missing: AHashMap<ModuleName, AHashSet<ModuleName>>,
     ambiguous: AHashMap<ModuleName, AHashSet<ModuleName>>,
+    /// Edges written *only* inside an `if __name__ == "__main__"` body. They
+    /// run in the module the binary starts from and nowhere else, but the map
+    /// does not know which module that is, so the tag travels to the reduce.
+    main_guard_only: AHashMap<ModuleName, AHashSet<ModuleName>>,
 }
 
 impl ImportGraph {
@@ -195,6 +199,7 @@ impl ImportGraph {
             graph: Graph::new(),
             missing: AHashMap::new(),
             ambiguous: AHashMap::new(),
+            main_guard_only: AHashMap::new(),
         }
     }
 
@@ -247,6 +252,11 @@ impl ImportGraph {
         self.ambiguous.get(name)
     }
 
+    /// Imports of `name` that only ever appear inside a `__main__` guard.
+    pub fn get_main_guard_only_imports(&self, name: &ModuleName) -> Option<&AHashSet<ModuleName>> {
+        self.main_guard_only.get(name)
+    }
+
     /// Check if a module has any imports to unidentified/missing modules.
     pub fn has_missing_import(&self, from: &ModuleName, module: &ModuleName) -> bool {
         self.missing
@@ -297,6 +307,16 @@ struct ModuleImportCollector<'a> {
     config: &'a AnalysisConfig,
     imports: Imports,
     ambiguous_imports: Imports,
+    /// Imports recorded with no enclosing `__main__` guard. An import written
+    /// both inside and outside one runs either way, so the guarded tag only
+    /// applies to what never appears here.
+    unguarded_imports: Imports,
+    /// The same, for ambiguous candidates. They bypass `record` (they are not
+    /// graph edges yet), so without their own set they would carry no guard
+    /// provenance and the reduce could resolve a guard-only one into a real
+    /// dependency for a module whose guard never runs.
+    unguarded_ambiguous: Imports,
+    main_guard_depth: usize,
     has_importlib: bool,
     has_import_module: bool,
 }
@@ -315,19 +335,53 @@ impl<'a> ModuleImportCollector<'a> {
             config,
             imports: Imports::new(),
             ambiguous_imports: Imports::new(),
+            unguarded_imports: Imports::new(),
+            unguarded_ambiguous: Imports::new(),
+            main_guard_depth: 0,
             has_importlib: false,
             has_import_module: false,
         }
     }
 
-    fn collect(mut self, ast: &ModModule) -> (Imports, Imports) {
+    fn collect(mut self, ast: &ModModule) -> (Imports, Imports, Imports) {
         self.stmts(&ast.body);
-        (self.imports, self.ambiguous_imports)
+        // Guard-only across both kinds of edge: a name written unguarded in
+        // either capacity runs either way, so union the unguarded sides rather
+        // than tagging each kind on its own.
+        let unguarded: Imports = self
+            .unguarded_imports
+            .union(&self.unguarded_ambiguous)
+            .copied()
+            .collect();
+        let main_guard_only = self
+            .imports
+            .union(&self.ambiguous_imports)
+            .filter(|m| !unguarded.contains(m))
+            .copied()
+            .collect();
+        (self.imports, self.ambiguous_imports, main_guard_only)
+    }
+
+    /// Record an edge, and whether it was reached outside every `__main__`
+    /// guard. Every insertion into `imports` goes through here so the two sets
+    /// cannot drift.
+    fn record(&mut self, m: ModuleName) {
+        self.imports.insert(m);
+        if self.main_guard_depth == 0 {
+            self.unguarded_imports.insert(m);
+        }
     }
 
     fn if_(&mut self, s: &StmtIf) {
-        for (_, body) in self.config.lg_pruned_if_branches(s, self.module) {
+        for (test, body) in self.config.lg_pruned_if_branches(s, self.module) {
+            let guard = test.is_some_and(AnalysisConfig::is_main_guard);
+            if guard {
+                self.main_guard_depth += 1;
+            }
             self.stmts(body);
+            if guard {
+                self.main_guard_depth -= 1;
+            }
         }
     }
 
@@ -373,7 +427,7 @@ impl<'a> ModuleImportCollector<'a> {
         };
 
         if let Some(imp) = import_module_state.match_call(call) {
-            self.imports.insert(imp);
+            self.record(imp);
         }
     }
 
@@ -387,10 +441,10 @@ impl<'a> ModuleImportCollector<'a> {
             // Insert parent modules; for "a.b.c.d" this adds "a", "a.b", "a.b.c".
             for (i, c) in imp_str.char_indices() {
                 if c == '.' {
-                    self.imports.insert(ModuleName::from_str(&imp_str[..i]));
+                    self.record(ModuleName::from_str(&imp_str[..i]));
                 }
             }
-            self.imports.insert(imp);
+            self.record(imp);
         }
     }
 
@@ -403,7 +457,7 @@ impl<'a> ModuleImportCollector<'a> {
             .new_maybe_relative(self.is_init, import.level, rel)
         {
             if parent.as_str() != "" {
-                self.imports.insert(parent);
+                self.record(parent);
             }
 
             for name in &import.names {
@@ -429,12 +483,15 @@ impl<'a> ModuleImportCollector<'a> {
         };
 
         if self.graph.contains(&maybe_sub) || !self.graph.contains(&parent) {
-            self.imports.insert(maybe_sub);
+            self.record(maybe_sub);
         } else {
             // Parent is in graph but child is not. Could be an attribute
             // of the parent or a submodule defined in a different library.
             // Record as ambiguous for cross-library resolution.
             self.ambiguous_imports.insert(maybe_sub);
+            if self.main_guard_depth == 0 {
+                self.unguarded_ambiguous.insert(maybe_sub);
+            }
         }
     }
 }
@@ -443,10 +500,12 @@ struct CollectedImports {
     module: ModuleName,
     imports: Imports,
     ambiguous: Imports,
+    main_guard_only: Imports,
 }
 
 struct ImportGraphBuilder<'a> {
     graph: Graph,
+    main_guard_only: AHashMap<ModuleName, AHashSet<ModuleName>>,
     missing: AHashMap<ModuleName, AHashSet<ModuleName>>,
     ambiguous: AHashMap<ModuleName, AHashSet<ModuleName>>,
     config: &'a AnalysisConfig,
@@ -458,6 +517,7 @@ impl<'a> ImportGraphBuilder<'a> {
         Self {
             // 4x edge estimate: dotted imports like `a.b.c` expand into multiple edges
             graph: Graph::with_capacity(node_count, node_count * 4),
+            main_guard_only: AHashMap::new(),
             missing: AHashMap::new(),
             ambiguous: AHashMap::new(),
             config,
@@ -474,11 +534,12 @@ impl<'a> ImportGraphBuilder<'a> {
 
     fn collect_imports(&self, name: ModuleName, module: &ParsedModule) -> CollectedImports {
         let collector = ModuleImportCollector::new(name, module.is_init, &self.graph, self.config);
-        let (imports, ambiguous) = collector.collect(&module.ast);
+        let (imports, ambiguous, main_guard_only) = collector.collect(&module.ast);
         CollectedImports {
             module: name,
             imports,
             ambiguous,
+            main_guard_only,
         }
     }
 
@@ -502,6 +563,12 @@ impl<'a> ImportGraphBuilder<'a> {
                         .or_default()
                         .extend(collected.ambiguous);
                 }
+                if !collected.main_guard_only.is_empty() {
+                    self.main_guard_only
+                        .entry(collected.module)
+                        .or_default()
+                        .extend(collected.main_guard_only);
+                }
             }
         });
 
@@ -509,6 +576,7 @@ impl<'a> ImportGraphBuilder<'a> {
             graph: self.graph,
             missing: self.missing,
             ambiguous: self.ambiguous,
+            main_guard_only: self.main_guard_only,
         }
     }
 

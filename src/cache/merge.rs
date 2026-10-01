@@ -270,6 +270,7 @@ impl CachedModule {
         self.imports.extend(other.imports);
         self.missing_imports
             .retain(|m| other.missing_imports.contains(m));
+        self.main_guard.merge(other.main_guard);
         self.ambiguous_imports.extend(other.ambiguous_imports);
         self.side_effect_imports.extend(other.side_effect_imports);
         self.safety.merge(other.safety);
@@ -441,6 +442,7 @@ pub(super) fn merge_class_properties(
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     #[test]

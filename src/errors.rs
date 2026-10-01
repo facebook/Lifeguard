@@ -198,6 +198,9 @@ pub struct SafetyError {
     /// True when this error is from a parameterized decorator (`@deco(...)`),
     /// whose returned wrapper also runs at decoration time.
     pub parameterized_decorator: bool,
+    /// Produced inside an `if __name__ == "__main__":` body. The reduce drops it
+    /// for every module that is not the binary's main module.
+    pub from_main_guard: bool,
 }
 
 impl SafetyError {
@@ -215,7 +218,14 @@ impl SafetyError {
             metadata: metadata.parse().unwrap(),
             range,
             parameterized_decorator: false,
+            from_main_guard: false,
         }
+    }
+
+    /// The same error, attributed to a `__main__` guard body.
+    pub fn from_main_guard(mut self) -> Self {
+        self.from_main_guard = true;
+        self
     }
 
     pub fn new_from_effect(kind: ErrorKind, eff: &Effect) -> Self {
@@ -224,6 +234,7 @@ impl SafetyError {
             metadata: eff.name.as_str().parse().unwrap(),
             range: eff.range,
             parameterized_decorator: is_parameterized_decorator_effect(eff),
+            from_main_guard: eff.from_main_guard,
         }
     }
 
@@ -287,6 +298,7 @@ struct SerializedSafetyError {
     kind: ErrorKind,
     metadata: String,
     parameterized_decorator: bool,
+    from_main_guard: bool,
 }
 
 /// The same shape, borrowed, for the write path. The metadata is interned, so
@@ -299,6 +311,7 @@ struct SerializedSafetyErrorRef<'a> {
     kind: ErrorKind,
     metadata: &'a str,
     parameterized_decorator: bool,
+    from_main_guard: bool,
 }
 
 impl Serialize for SafetyError {
@@ -307,6 +320,7 @@ impl Serialize for SafetyError {
             kind: self.kind,
             metadata: self.metadata.as_str(),
             parameterized_decorator: self.parameterized_decorator,
+            from_main_guard: self.from_main_guard,
         }
         .serialize(serializer)
     }
@@ -322,6 +336,7 @@ impl<'de> Deserialize<'de> for SafetyError {
             // file the error sits, and nothing downstream of a cache reads one.
             range: TextRange::default(),
             parameterized_decorator: wire.parameterized_decorator,
+            from_main_guard: wire.from_main_guard,
         })
     }
 }
@@ -338,6 +353,7 @@ impl Ord for SafetyError {
                 self.parameterized_decorator
                     .cmp(&other.parameterized_decorator)
             })
+            .then_with(|| self.from_main_guard.cmp(&other.from_main_guard))
     }
 }
 

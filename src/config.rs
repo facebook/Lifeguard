@@ -74,6 +74,15 @@ impl AnalysisConfig {
         }
     }
 
+    /// Whether `test` is the `if __name__ == "__main__"` guard.
+    ///
+    /// Exposed so the map can *record* a guard it is not pruning: a library does
+    /// not know which binary it will end up in, so it analyzes the body and
+    /// marks it, leaving the reduce to decide (invariant I7).
+    pub fn is_main_guard(test: &Expr) -> bool {
+        is_name_main_guard(test)
+    }
+
     pub fn lg_pruned_if_branches<'a>(
         &'a self,
         x: &'a StmtIf,

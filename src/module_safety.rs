@@ -195,13 +195,17 @@ pub struct PropertyCandidate {
     /// The access site, for a confirmed candidate to report where it came from.
     /// In process only: a cache carries no positions.
     pub range: TextRange,
+    /// Recorded inside an `if __name__ == "__main__":` body.
+    pub from_main_guard: bool,
 }
 
 impl Ord for PropertyCandidate {
     /// Over the fields a cache carries, and only those: ordering by position
     /// would be an order the wire cannot reproduce.
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.attribute.cmp(&other.attribute)
+        self.attribute
+            .cmp(&other.attribute)
+            .then_with(|| self.from_main_guard.cmp(&other.from_main_guard))
     }
 }
 
@@ -225,6 +229,8 @@ pub struct MutationCandidate {
     pub imported_args: ImportedArgs,
     /// The call site.
     pub range: TextRange,
+    /// Recorded inside an `if __name__ == "__main__":` body.
+    pub from_main_guard: bool,
 }
 
 #[derive(Debug)]

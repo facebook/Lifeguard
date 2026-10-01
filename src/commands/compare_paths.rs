@@ -40,6 +40,7 @@ use crate::runner::DEFAULT_PYTHON_VERSION;
 use crate::runner::Options;
 use crate::runner::analyze_library;
 use crate::runner::analyze_whole_program;
+use crate::runner::check_main_module;
 use crate::runner::parse_python_version;
 use crate::source_map;
 use crate::source_map::SourceMap;
@@ -67,6 +68,12 @@ pub struct ComparePathsArgs {
     /// Print each path's verdict, failing deps, and errors for this module.
     #[arg(long = "explain")]
     pub explain: Option<String>,
+
+    /// Name of the main module, given to both paths. Without it neither path
+    /// accounts for `__main__` guards, so the comparison cannot see the filter
+    /// a real build's reduce applies.
+    #[arg(long = "main-module")]
+    pub main_module: Option<String>,
 
     /// Python version to use for parsing
     #[arg(long = "python-version", default_value = DEFAULT_PYTHON_VERSION)]
@@ -120,7 +127,8 @@ fn cache_errors(cache: &LibraryCache) -> ErrorMap {
 /// then read the remaining per-module errors. The bundled stub graph is injected
 /// here too, so both paths resolve against the same module set.
 fn post_resolution_errors(cache: LibraryCache, options: &Options) -> ErrorMap {
-    let resolved = ReduceWorkspace::single(cache, options.python_version).resolve();
+    let resolved =
+        ReduceWorkspace::single(cache, options.python_version).resolve(options.main_module);
     cache_errors(resolved.resolved_cache())
 }
 
@@ -200,7 +208,7 @@ fn run_incremental(
     cache.set_class_facts(result.class_bases, result.class_properties);
     cache.set_constructor_callees(result.constructor_callees);
     let resolved = time("Resolving incremental cache", || {
-        ReduceWorkspace::single(cache, options.python_version).resolve()
+        ReduceWorkspace::single(cache, options.python_version).resolve(options.main_module)
     });
     let analysis = LifeGuardAnalysis::from_resolved_cache(&resolved, options);
     // The reduce cleared/retained errors in place, so read them post-resolution.
@@ -390,12 +398,13 @@ pub fn run(args: ComparePathsArgs) -> Result<()> {
     let options = Options {
         verbose_output_path: None,
         sorted_output: true,
-        main_module: None,
+        main_module: args.main_module.as_deref().map(ModuleName::from_str),
         python_version,
     };
 
     let compute_errors = args.explain.is_some();
     let src_map = source_map::load_source_map(&args.db_path)?;
+    check_main_module(options.main_module, |name| src_map.contains_key(&name))?;
     let single_pass = run_single_pass(src_map.clone(), &root_dir, &options, compute_errors)?;
     let incremental = run_incremental(src_map, &root_dir, &options, compute_errors)?;
 
@@ -528,6 +537,7 @@ mod tests {
     use crate::cache::CachedExports;
     use crate::cache::CachedModule;
     use crate::cache::CachedModuleSafety;
+    use crate::cache::MainGuardFacts;
     use crate::errors::ErrorKind;
     use crate::errors::SafetyError;
     use crate::hasher::AHashMap;
@@ -612,6 +622,7 @@ mod tests {
                     function_safety: AHashMap::new(),
                     mutation_candidates: Vec::new(),
                     property_candidates: Vec::new(),
+                    main_guard: MainGuardFacts::default(),
                 },
                 CachedModule {
                     name: dependency,
@@ -628,6 +639,7 @@ mod tests {
                     .collect(),
                     mutation_candidates: Vec::new(),
                     property_candidates: Vec::new(),
+                    main_guard: MainGuardFacts::default(),
                 },
             ],
             exports: empty_exports(),
@@ -645,7 +657,7 @@ mod tests {
         // injecting the stub graph would add hundreds of unrelated modules.
         let resolved =
             ReduceWorkspace::from_merged(cache, AHashSet::new(), MergedClassFacts::default())
-                .resolve();
+                .resolve(None);
         let errors = cache_errors(resolved.resolved_cache());
 
         assert!(

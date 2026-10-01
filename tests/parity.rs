@@ -17,11 +17,21 @@
 
 #[cfg(test)]
 mod tests {
+    use lifeguard::pyrefly::module_name::ModuleName;
+    use lifeguard::runner::Options;
+    use lifeguard::test_lib::CacheDelivery;
     use lifeguard::test_lib::ParityFixture;
+    use lifeguard::test_lib::PathRun;
+    use lifeguard::test_lib::Shards;
     use lifeguard::test_lib::assert_passing;
     use lifeguard::test_lib::assert_paths_agree_sharded;
+    use lifeguard::test_lib::assert_paths_agree_sharded_with_options;
+    use lifeguard::test_lib::partition_modules;
     use lifeguard::test_lib::path_differences;
+    use lifeguard::test_lib::run_incremental_analysis_on_groups;
     use lifeguard::test_lib::run_lifeguard_analysis;
+    use lifeguard::test_lib::verbose_test_options;
+    use starlark_map::small_set::SmallSet;
 
     /// Assert the star-import gap precisely, so that any new unknown failures
     /// still show up.
@@ -647,5 +657,245 @@ mod tests {
                  re-export, got: {difference}",
             );
         }
+    }
+
+    /// A `__main__` guard only runs in the module the binary starts from, and
+    /// only the reduce knows which that is. So the map analyzes the guard body
+    /// and marks what it produces, and the reduce drops the marked facts
+    /// everywhere except the entry module.
+    ///
+    /// `mixed` is the precision half: a filter that dropped a non-entry
+    /// module's facts wholesale would still give `library` the right verdict,
+    /// and only an unguarded error in the same module says otherwise.
+    #[test]
+    fn main_guard_facts_apply_only_to_the_entry_module() {
+        let unsafe_guard = r#"
+            def _run():
+                raise RuntimeError("boom")
+
+            if __name__ == "__main__":
+                _run()
+        "#;
+        let mixed = r#"
+            def _run():
+                raise RuntimeError("boom")
+
+            _run()
+
+            if __name__ == "__main__":
+                _run()
+        "#;
+        let modules = vec![
+            ("entry", unsafe_guard),
+            ("library", unsafe_guard),
+            ("mixed", mixed),
+        ];
+
+        let (passing, failing) = verdicts_with_entry_as_main(&modules, Shards::new(1));
+
+        assert_eq!(
+            failing,
+            vec!["entry".to_owned(), "mixed".to_owned()],
+            "the entry module runs its guard, and `mixed` fails on its unguarded call",
+        );
+        assert!(
+            passing.contains(&"library".to_owned()),
+            "the same code in a non-entry module never runs: {passing:?}",
+        );
+    }
+
+    /// `ExecCall` is a `force_imports_eager_overrides` record rather than an
+    /// error, and it lands in a different output field, so the filter has to
+    /// reach it separately.
+    #[test]
+    fn main_guard_eager_overrides_apply_only_to_the_entry_module() {
+        let exec_in_guard = r#"
+            if __name__ == "__main__":
+                exec("x = 1")
+        "#;
+        let modules = vec![("entry", exec_in_guard), ("library", exec_in_guard)];
+
+        let options = entry_as_main_options();
+        assert_paths_agree_sharded_with_options(&modules, &options);
+        let run = run_serialized(&modules, Shards::new(1), &options);
+
+        let eager: Vec<String> = sorted_names(&run.analysis().output.load_imports_eagerly);
+        assert_eq!(
+            eager,
+            vec!["entry".to_owned()],
+            "only the entry module actually reaches its `exec`",
+        );
+    }
+
+    /// An import written only inside a `__main__` guard is not a dependency of
+    /// any module but the entry one -- the body never runs there, so nothing has
+    /// to be loaded eagerly for it. Unlike a `def`-local import, this needs no
+    /// call analysis to establish: a function defined inside the guard is never
+    /// even defined.
+    ///
+    /// An edge is a set member, not an occurrence, so its provenance is a set
+    /// the module carries rather than a flag on the edge itself.
+    #[test]
+    fn main_guard_import_edges_apply_only_to_the_entry_module() {
+        let unsafe_mod = r#"
+            def _run():
+                raise RuntimeError("boom")
+
+            _run()
+        "#;
+        let importer = r#"
+            if __name__ == "__main__":
+                import unsafe_mod
+        "#;
+        let modules = vec![
+            ("unsafe_mod", unsafe_mod),
+            ("entry", importer),
+            ("library", importer),
+        ];
+
+        let options = entry_as_main_options();
+        assert_paths_agree_sharded_with_options(&modules, &options);
+        let run = run_serialized(&modules, Shards::new(1), &options);
+        let deps = |module: &str| {
+            run.analysis()
+                .output
+                .lazy_eligible
+                .get(&ModuleName::from_str(module))
+                .map(|set| set.iter().map(|n| n.as_str().to_owned()).collect())
+                .unwrap_or_else(Vec::new)
+        };
+
+        // The control: without the edge reaching the reduce at all, neither
+        // module would name it and the assertion below would pass vacuously.
+        assert!(
+            deps("entry").contains(&"unsafe_mod".to_owned()),
+            "the entry module runs its guard, so the import is a real dependency: {:?}",
+            deps("entry"),
+        );
+        assert!(
+            !deps("library").contains(&"unsafe_mod".to_owned()),
+            "the same import in a non-entry module never runs: {:?}",
+            deps("library"),
+        );
+    }
+
+    /// A mutation candidate is not an error when the guard filter runs: the
+    /// reduce confirms it later and *then* emits `ImportedVarArgument`.
+    /// Filtering only the errors the map recorded would let a guarded call back
+    /// in through that discharge.
+    #[test]
+    fn main_guard_mutation_candidates_apply_only_to_the_entry_module() {
+        let setup = r#"
+            def configure(x):
+                x.enabled = True
+        "#;
+        let caller = r#"
+            from setup import configure
+            from config import settings
+
+            if __name__ == "__main__":
+                configure(settings)
+        "#;
+        let modules = vec![("setup", setup), ("entry", caller), ("library", caller)];
+
+        // Three shards put `setup` in neither caller's library, so the mutation
+        // has to travel as a candidate rather than as a local effect.
+        let (passing, failing) = verdicts_with_entry_as_main(&modules, Shards::new(3));
+
+        assert!(
+            failing.contains(&"entry".to_owned()),
+            "the entry module runs the call, so the confirmed candidate stands: {failing:?}",
+        );
+        assert!(
+            passing.contains(&"library".to_owned()),
+            "the same call in a non-entry module never runs: {passing:?}",
+        );
+    }
+
+    /// The same for a property candidate, which the reduce resolves even later
+    /// -- after error clearing has finished.
+    #[test]
+    fn main_guard_property_candidates_apply_only_to_the_entry_module() {
+        let feature_base = r#"
+            class Features(set):
+                mapping = {}
+
+                def update_mapping(self):
+                    self.mapping = dict([(f.name, f) for f in iter(self)])
+
+                @property
+                def PATTERN(self):
+                    self.update_mapping()
+                    return " | ".join([str(f) for f in iter(self)])
+        "#;
+        let reader = r#"
+            from feature_base import Features
+
+            if __name__ == "__main__":
+                features = Features()
+                PATTERN = features.PATTERN
+        "#;
+        let modules = vec![
+            ("feature_base", feature_base),
+            ("entry", reader),
+            ("library", reader),
+        ];
+
+        // Neither reader may share a library with `feature_base`: a reader that
+        // can see the class records the effect directly and never reaches the
+        // obligation path this test is about.
+        let (passing, failing) = verdicts_with_entry_as_main(&modules, Shards::new(3));
+
+        assert!(
+            failing.contains(&"entry".to_owned()),
+            "the entry module reads the property, so the obligation stands: {failing:?}",
+        );
+        assert!(
+            passing.contains(&"library".to_owned()),
+            "the same read in a non-entry module never happens: {passing:?}",
+        );
+    }
+
+    /// Verbose, so that the path comparison covers implicit imports and cycles
+    /// too -- the guard body is analyzed either way, so what it contributes to
+    /// those has to match as well.
+    fn entry_as_main_options() -> Options {
+        Options {
+            main_module: Some(ModuleName::from_str("entry")),
+            ..verbose_test_options()
+        }
+    }
+
+    /// Through the wire format, the way Buck delivers caches, so the provenance
+    /// the reduce filters on has to survive encoding and not just exist in
+    /// memory.
+    fn run_serialized(modules: &Vec<(&str, &str)>, shards: Shards, options: &Options) -> PathRun {
+        let groups = partition_modules(modules, shards);
+        run_incremental_analysis_on_groups(&groups, CacheDelivery::Serialized, options)
+    }
+
+    fn sorted_names(names: &SmallSet<ModuleName>) -> Vec<String> {
+        let mut out: Vec<String> = names.iter().map(|n| n.as_str().to_owned()).collect();
+        out.sort();
+        out
+    }
+
+    /// Which modules pass and which fail on the incremental path, with `entry`
+    /// named as the module the binary runs as `__main__`.
+    ///
+    /// Also asserts the whole-program path agrees: it reaches the same verdicts
+    /// by pruning the guard out of the AST, which is the reading the reduce-time
+    /// filter is supposed to reproduce.
+    fn verdicts_with_entry_as_main(
+        modules: &Vec<(&str, &str)>,
+        shards: Shards,
+    ) -> (Vec<String>, Vec<String>) {
+        let options = entry_as_main_options();
+        assert_paths_agree_sharded_with_options(modules, &options);
+        let run = run_serialized(modules, shards, &options);
+        (
+            sorted_names(&run.analysis().summary.passing_modules),
+            sorted_names(&run.analysis().summary.failing_modules),
+        )
     }
 }

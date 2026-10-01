@@ -19,6 +19,7 @@ use rayon::prelude::*;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::cache::main_guard::MainGuardFacts;
 use crate::errors::SafetyError;
 use crate::exports::Exports;
 use crate::hasher::AHashMap;
@@ -39,6 +40,7 @@ pub(super) struct GraphEdgeSets {
     pub(super) imports: AHashSet<ModuleName>,
     pub(super) missing_imports: AHashSet<ModuleName>,
     pub(super) ambiguous_imports: AHashSet<ModuleName>,
+    pub(super) main_guard_imports: AHashSet<ModuleName>,
 }
 
 pub(super) fn graph_edge_sets(graph: &ImportGraph, name: &ModuleName) -> GraphEdgeSets {
@@ -51,10 +53,15 @@ pub(super) fn graph_edge_sets(graph: &ImportGraph, name: &ModuleName) -> GraphEd
         .get_ambiguous_imports(name)
         .map(|m| m.iter().copied().collect())
         .unwrap_or_default();
+    let main_guard_imports = graph
+        .get_main_guard_only_imports(name)
+        .map(|m| m.iter().copied().collect())
+        .unwrap_or_default();
     GraphEdgeSets {
         imports,
         missing_imports,
         ambiguous_imports,
+        main_guard_imports,
     }
 }
 
@@ -239,6 +246,10 @@ pub struct CachedModule {
     /// Attribute accesses on a receiver whose class this library could not see,
     /// resolved against the merged class facts in the reduce step.
     pub property_candidates: Vec<PropertyCandidate>,
+    /// The edges only an `if __name__ == "__main__"` body writes. Dropped by
+    /// the reduce for every module that is not the binary's entry point, which
+    /// is the only place that knows which one that is.
+    pub main_guard: MainGuardFacts,
 }
 /// Safety analysis result for a cached module.
 #[derive(Serialize, Deserialize)]
@@ -308,6 +319,7 @@ impl LibraryCache {
                     imports,
                     missing_imports,
                     ambiguous_imports,
+                    main_guard_imports,
                 } = graph_edge_sets(import_graph, &name);
 
                 let se_imports: AHashSet<ModuleName> = side_effect_imports
@@ -337,6 +349,7 @@ impl LibraryCache {
                     function_safety,
                     mutation_candidates,
                     property_candidates,
+                    main_guard: MainGuardFacts::new(main_guard_imports),
                 }
             })
             .collect();
@@ -401,6 +414,7 @@ impl CachedModule {
             function_safety: AHashMap::new(),
             mutation_candidates: Vec::new(),
             property_candidates: Vec::new(),
+            main_guard: MainGuardFacts::default(),
         }
     }
 

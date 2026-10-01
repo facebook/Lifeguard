@@ -40,6 +40,7 @@
 
 mod artifact;
 mod bundled_stubs;
+mod main_guard;
 mod merge;
 mod reduce;
 
@@ -54,6 +55,7 @@ pub use crate::cache::artifact::ConstructorCallees;
 pub use crate::cache::artifact::LibraryCache;
 pub(crate) use crate::cache::artifact::constructor_mask_bits;
 pub use crate::cache::artifact::own_constructor_bit;
+pub use crate::cache::main_guard::MainGuardFacts;
 pub use crate::cache::merge::dedupe_implicit_imports;
 pub use crate::cache::reduce::MergedClassFacts;
 pub use crate::cache::reduce::ReduceWorkspace;

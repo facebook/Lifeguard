@@ -19,6 +19,7 @@ mod tests {
     use lifeguard::cache::CachedSafety;
     use lifeguard::cache::ConstructorCallees;
     use lifeguard::cache::LibraryCache;
+    use lifeguard::cache::MainGuardFacts;
     use lifeguard::cache::MergedClassFacts;
     use lifeguard::cache::ReduceWorkspace;
     use lifeguard::cache::ResolvedCache;
@@ -200,6 +201,7 @@ mod tests {
             function_safety: AHashMap::new(),
             mutation_candidates: Vec::new(),
             property_candidates: Vec::new(),
+            main_guard: MainGuardFacts::default(),
         })
     }
 
@@ -279,14 +281,14 @@ mod tests {
     /// injecting typeshed would add hundreds of modules none of them care about.
     fn resolve(cache: LibraryCache) -> ResolvedCache {
         reduce_workspace_from_merged(cache, AHashSet::default(), MergedClassFacts::default())
-            .resolve()
+            .resolve(None)
     }
 
     /// Merge a dependency in and resolve, keeping the folded class facts that
     /// `merge_dep_caches` produces.
     fn merge_and_resolve(mut cache: LibraryCache, dep_cache: LibraryCache) -> ResolvedCache {
         let merged = cache.merge_dep_caches(vec![dep_cache]);
-        reduce_workspace_from_merged(cache, AHashSet::default(), merged).resolve()
+        reduce_workspace_from_merged(cache, AHashSet::default(), merged).resolve(None)
     }
 
     fn round_trip(cache: &LibraryCache) -> LibraryCache {
@@ -309,9 +311,10 @@ mod tests {
             std::mem::size_of::<lifeguard::cache::ConstructorCallees>(),
             40,
         );
-        assert_eq!(std::mem::size_of::<CachedModule>(), 288);
+        assert_eq!(std::mem::size_of::<CachedModule>(), 320);
         assert_eq!(std::mem::size_of::<CachedSafety>(), 72);
         assert_eq!(std::mem::size_of::<CachedModuleSafety>(), 72);
+        assert_eq!(std::mem::size_of::<MainGuardFacts>(), 32);
         assert_eq!(std::mem::size_of::<lifeguard::errors::SafetyError>(), 24);
         assert_eq!(std::mem::size_of::<CachedExports>(), 48);
         assert_eq!(std::mem::size_of::<CachedReturnType>(), 16);
@@ -452,11 +455,13 @@ mod tests {
                 unsafe_args_expansion_min: Some(4),
             },
             range: TextRange::default(),
+            from_main_guard: false,
         };
 
         let property_candidate = PropertyCandidate {
             attribute: mn("dep.Klass.prop"),
             range: TextRange::new(4.into(), 9.into()),
+            from_main_guard: false,
         };
 
         let cache = LibraryCache {
@@ -715,6 +720,7 @@ mod tests {
                 ..Default::default()
             },
             range: TextRange::default(),
+            from_main_guard: false,
         };
 
         // Copy A of `dup` carries no mutation candidate.
@@ -757,6 +763,7 @@ mod tests {
             arg_offset: 0,
             imported_args: ImportedArgs::default(),
             range: TextRange::default(),
+            from_main_guard: false,
         };
         let distinct_candidate = MutationCandidate {
             callee: mn("dep.validate"),
@@ -2442,7 +2449,7 @@ mod tests {
             !graph_only_stubs.contains(&mn("typing_extensions")),
             "an already-present real module must not be overwritten by the stub graph",
         );
-        let resolved = with.resolve();
+        let resolved = with.resolve(None);
         let analysis = LifeGuardAnalysis::from_resolved_cache(&resolved, &options);
         assert!(
             te_inherits_typing(&analysis),
@@ -2457,7 +2464,7 @@ mod tests {
         let without = make_cache();
         let resolved =
             reduce_workspace_from_merged(without, AHashSet::default(), MergedClassFacts::default())
-                .resolve();
+                .resolve(None);
         let analysis = LifeGuardAnalysis::from_resolved_cache(&resolved, &options);
         assert!(
             !te_inherits_typing(&analysis),
@@ -2593,7 +2600,7 @@ mod tests {
         let graph_only_stubs = [mn("collections")].into_iter().collect();
         let resolved =
             reduce_workspace_from_merged(cache, graph_only_stubs, MergedClassFacts::default())
-                .resolve();
+                .resolve(None);
         let analysis = LifeGuardAnalysis::from_resolved_cache(&resolved, &options);
 
         let consumer_deps = analysis
@@ -2641,7 +2648,7 @@ mod tests {
         let graph_only_stubs = Default::default();
         let resolved =
             reduce_workspace_from_merged(cache, graph_only_stubs, MergedClassFacts::default())
-                .resolve();
+                .resolve(None);
         let analysis = LifeGuardAnalysis::from_resolved_cache(&resolved, &options);
 
         let consumer_deps = analysis

@@ -389,6 +389,11 @@ pub struct Effect {
     /// Try handlers from enclosing try blocks at the call site.
     /// Only present for runnable effects inside try bodies.
     pub try_handlers: Option<Box<[TryHandler]>>,
+    /// Produced inside an `if __name__ == "__main__":` body, so it happens only
+    /// in the module the binary starts from. Stamped by
+    /// [`crate::module_effects::ModuleEffects::add_effect`] rather than by each
+    /// producer, so a new effect cannot forget it.
+    pub from_main_guard: bool,
 }
 
 impl Effect {
@@ -399,6 +404,7 @@ impl Effect {
             range,
             data: EffectData::None,
             try_handlers: None,
+            from_main_guard: false,
         }
     }
 
@@ -414,6 +420,7 @@ impl Effect {
             range,
             data,
             try_handlers: None,
+            from_main_guard: false,
         }
     }
 

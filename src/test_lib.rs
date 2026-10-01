@@ -1107,6 +1107,12 @@ pub struct PathRun {
     module_errors: ModuleErrors,
 }
 
+impl PathRun {
+    pub fn analysis(&self) -> &LifeGuardAnalysis {
+        &self.analysis
+    }
+}
+
 /// What a parity fixture analyzes: the modules, and which of them are stubs.
 ///
 /// Most fixtures are just a module list, so `&Vec<(&str, &str)>` converts into
@@ -1262,7 +1268,7 @@ fn run_incremental_on_sources(
         .collect();
     let resolved = ReduceWorkspace::merge(caches, options.python_version)
         .expect("a parity fixture should produce at least one cache")
-        .resolve();
+        .resolve(options.main_module);
     PathRun {
         analysis: LifeGuardAnalysis::from_resolved_cache(&resolved, options),
         module_errors: cached_module_errors(resolved.resolved_cache()),
@@ -1445,9 +1451,19 @@ pub fn path_differences<'a>(
 ) -> Vec<(usize, String)> {
     // Verbose output is what carries implicit imports and import cycles; it does
     // not write a file, since the harness builds the analysis directly.
-    let options = verbose_test_options();
+    path_differences_with_options(fixture, shard_counts, &verbose_test_options())
+}
+
+/// [`path_differences`] for a fixture whose verdicts depend on an option the
+/// default does not set, such as `main_module`. Pass verbose options, or the
+/// comparison silently drops implicit imports and import cycles.
+fn path_differences_with_options<'a>(
+    fixture: impl Into<ParityFixture<'a>>,
+    shard_counts: &[usize],
+    options: &Options,
+) -> Vec<(usize, String)> {
     let fixture = fixture.into();
-    let whole_program = ParityFacts::of(&run_whole_program_path(fixture, &options));
+    let whole_program = ParityFacts::of(&run_whole_program_path(fixture, options));
 
     shard_counts
         .iter()
@@ -1455,7 +1471,7 @@ pub fn path_differences<'a>(
             let incremental = ParityFacts::of(&run_incremental_analysis(
                 fixture,
                 Shards::new(count),
-                &options,
+                options,
             ));
             first_parity_difference(
                 ("whole-program", "incremental  "),
@@ -1479,6 +1495,19 @@ pub fn assert_paths_agree<'a>(fixture: impl Into<ParityFixture<'a>>, shard_count
 /// single-library case and to split related modules apart in two different ways.
 pub fn assert_paths_agree_sharded<'a>(fixture: impl Into<ParityFixture<'a>>) {
     assert_paths_agree(fixture, &[1, 2, 3]);
+}
+
+/// [`assert_paths_agree_sharded`] with caller-supplied options.
+pub fn assert_paths_agree_sharded_with_options<'a>(
+    fixture: impl Into<ParityFixture<'a>>,
+    options: &Options,
+) {
+    if let Some((count, difference)) = path_differences_with_options(fixture, &[1, 2, 3], options)
+        .into_iter()
+        .next()
+    {
+        panic!("paths disagree with {count} shard(s) -- {difference}");
+    }
 }
 
 /// Create a new temp directory and write each `(rel_path, contents)` pair

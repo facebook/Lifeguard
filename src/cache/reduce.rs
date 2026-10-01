@@ -32,6 +32,7 @@ use crate::cache::artifact::CachedReExport;
 use crate::cache::artifact::CachedSafety;
 use crate::cache::artifact::ConstructorCallees;
 use crate::cache::artifact::LibraryCache;
+use crate::cache::main_guard::drop_main_guarded;
 use crate::cache::merge::dedupe_implicit_imports;
 use crate::cache::merge::fold_constructor_callees;
 use crate::cache::merge::fold_fqn_lists;
@@ -54,6 +55,7 @@ use crate::pyrefly::sys_info::PythonVersion;
 use crate::resolution::ResolutionOutcome;
 use crate::resolution::resolve_program;
 use crate::resolution::unqualified_index_key;
+use crate::runner::check_main_module;
 use crate::safety_resolver::DecoratorVerdictMap;
 use crate::safety_resolver::SafetyResolver;
 use crate::traits::ModuleNameExt;
@@ -172,8 +174,35 @@ impl ReduceWorkspace {
         self.artifact_module_count
     }
 
+    /// [`crate::runner::check_main_module`] against the merged module set.
+    pub fn check_main_module(&self, main_module: Option<ModuleName>) -> anyhow::Result<()> {
+        check_main_module(main_module, |name| {
+            self.cache.modules.iter().any(|module| module.name == name)
+        })
+    }
+
+    /// Drop what a `__main__` guard produced, for every module that is not the
+    /// one the binary runs as `__main__`.
+    ///
+    /// Which module that is is known only here, which is why the map keeps the
+    /// facts and the reduce discards them. What a guard produced, and what
+    /// dropping it means for each kind of fact, is [`super::main_guard`]'s.
+    fn apply_main_module(&mut self, main_module: Option<ModuleName>) {
+        let Some(main_module) = main_module else {
+            return;
+        };
+        self.cache
+            .modules
+            .par_iter_mut()
+            .filter(|module| module.name != main_module)
+            .for_each(|module| {
+                drop_main_guarded(module);
+            });
+    }
+
     /// Resolve cross-library errors and consume the mutable reduce workspace.
-    pub fn resolve(mut self) -> ResolvedCache {
+    pub fn resolve(mut self, main_module: Option<ModuleName>) -> ResolvedCache {
+        self.apply_main_module(main_module);
         self.cache.resolve_cross_library_errors(self.merged);
         ResolvedCache {
             cache: self.cache,
@@ -669,6 +698,7 @@ mod tests {
                 arg_offset: 0,
                 imported_args: ImportedArgs::default(),
                 range: TextRange::default(),
+                from_main_guard: false,
             });
             LibraryCache {
                 modules: vec![cached_module],

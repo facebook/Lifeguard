@@ -539,6 +539,7 @@ mod tests {
                 ..Default::default()
             },
             range: TextRange::default(),
+            from_main_guard: false,
         };
         let mut errors = Vec::new();
 
@@ -586,6 +587,7 @@ mod tests {
                 ..Default::default()
             },
             range: TextRange::default(),
+            from_main_guard: false,
         };
         // Passes its imported object at index 1, which misses the parameter
         // `dependency.mutate` mutates, so this candidate is not confirmed. The
@@ -602,6 +604,7 @@ mod tests {
                 ..Default::default()
             },
             range: TextRange::default(),
+            from_main_guard: false,
         };
 
         // `elsewhere.sink` mutates its argument, which is what confirms the first

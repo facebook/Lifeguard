@@ -1578,10 +1578,16 @@ impl<'a> SourceAnalyzer<'a> {
             .config
             .lg_pruned_if_branches(x, self.info.module_name)
         {
+            // The test itself always runs, so it is evaluated unmarked; only the
+            // body is guard-produced. A `__main__` guard the config did not prune
+            // means this action does not know the binary, so mark what the body
+            // produces and leave the decision to the reduce.
             if let Some(test) = test {
                 self.expr(test, output);
             }
+            let outer = output.enter_main_guard(test.is_some_and(AnalysisConfig::is_main_guard));
             self.stmts(body, output);
+            output.leave_main_guard(outer);
         }
     }
 

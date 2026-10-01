@@ -38,7 +38,11 @@ pub struct AnalyzeBinaryArgs {
     #[arg(long, default_value_t = false, action = ArgAction::SetTrue)]
     pub sorted_output: bool,
 
-    /// Name of the main module (the module run as __main__)
+    /// Name of the main module (the module run as __main__).
+    ///
+    /// Facts a `__main__` guard produced are kept for this module and dropped
+    /// for every other, which is the only point in the pipeline that knows the
+    /// answer: a library map action does not know which binary it serves.
     #[arg(long = "main-module")]
     pub main_module: Option<String>,
 
@@ -79,12 +83,16 @@ pub fn run(args: AnalyzeBinaryArgs) -> Result<()> {
         workspace.artifact_module_count(),
         workspace.module_count()
     );
-    let resolved = time("Resolving cross-library facts", || workspace.resolve());
+    let main_module = args.main_module.as_deref().map(ModuleName::from_str);
+    workspace.check_main_module(main_module)?;
+    let resolved = time("Resolving cross-library facts", || {
+        workspace.resolve(main_module)
+    });
 
     let options = Options {
         verbose_output_path: None,
         sorted_output: args.sorted_output,
-        main_module: args.main_module.map(|s| ModuleName::from_str(&s)),
+        main_module,
         python_version,
     };
 

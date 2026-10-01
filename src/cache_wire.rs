@@ -27,6 +27,7 @@ use crate::cache::CachedReturnType;
 use crate::cache::CachedSafety;
 use crate::cache::ConstructorCallees;
 use crate::cache::LibraryCache;
+use crate::cache::MainGuardFacts;
 use crate::effects::ImportedArgs;
 use crate::errors::SafetyError;
 use crate::hasher::AHashMap;
@@ -67,6 +68,7 @@ struct WireModule {
     missing_imports: Vec<NameId>,
     ambiguous_imports: Vec<NameId>,
     side_effect_imports: Vec<NameId>,
+    main_guard_imports: Vec<NameId>,
     function_safety: Vec<(String, WireFunctionSafetyInfo)>,
     mutation_candidates: Vec<WireMutationCandidate>,
     property_candidates: Vec<WirePropertyCandidate>,
@@ -100,6 +102,7 @@ struct WireMutatedParam {
 #[derive(Serialize, Deserialize)]
 struct WirePropertyCandidate {
     attribute: NameId,
+    from_main_guard: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -108,6 +111,7 @@ struct WireMutationCandidate {
     site: WireMutationCandidateSite,
     arg_offset: usize,
     imported_args: WireImportedArgs,
+    from_main_guard: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -191,6 +195,9 @@ fn collect_module_names(module: &CachedModule, names: &mut AHashSet<ModuleName>)
     names.extend(module.missing_imports.iter().copied());
     names.extend(module.ambiguous_imports.iter().copied());
     names.extend(module.side_effect_imports.iter().copied());
+    // A subset of `imports` in practice, but collected explicitly so the table
+    // does not depend on that holding.
+    names.extend(module.main_guard.imports().iter().copied());
     if let CachedSafety::Ok(safety) = &module.safety {
         names.extend(safety.implicit_imports.iter().copied());
     }
@@ -441,6 +448,12 @@ impl WireModule {
                 .iter()
                 .map(|name| table.id(*name))
                 .collect(),
+            main_guard_imports: module
+                .main_guard
+                .imports()
+                .iter()
+                .map(|name| table.id(*name))
+                .collect(),
             function_safety: module
                 .function_safety
                 .iter()
@@ -469,6 +482,7 @@ impl WireModule {
             missing_imports: decode_name_set(names, self.missing_imports)?,
             ambiguous_imports: decode_name_set(names, self.ambiguous_imports)?,
             side_effect_imports: decode_name_set(names, self.side_effect_imports)?,
+            main_guard: MainGuardFacts::new(decode_name_set(names, self.main_guard_imports)?),
             function_safety: self
                 .function_safety
                 .into_iter()
@@ -492,6 +506,7 @@ impl WirePropertyCandidate {
     fn encode(candidate: &PropertyCandidate, table: &NameTable) -> Self {
         Self {
             attribute: table.id(candidate.attribute),
+            from_main_guard: candidate.from_main_guard,
         }
     }
 
@@ -501,6 +516,7 @@ impl WirePropertyCandidate {
             // Not carried: a cached offset would tie the bytes to where in the
             // file the access sits.
             range: TextRange::default(),
+            from_main_guard: self.from_main_guard,
         })
     }
 }
@@ -591,6 +607,7 @@ impl WireMutationCandidate {
             callee: table.id(candidate.callee),
             site,
             arg_offset: candidate.arg_offset,
+            from_main_guard: candidate.from_main_guard,
             imported_args: WireImportedArgs {
                 unsafe_arg_indices: candidate.imported_args.unsafe_arg_indices,
                 unsafe_keyword_names: candidate
@@ -621,6 +638,7 @@ impl WireMutationCandidate {
             // Not carried: a cached offset would tie the bytes to where in the
             // file the call sits.
             range: TextRange::default(),
+            from_main_guard: self.from_main_guard,
             imported_args: ImportedArgs {
                 unsafe_arg_indices: self.imported_args.unsafe_arg_indices,
                 unsafe_keyword_names: decode_names(names, self.imported_args.unsafe_keyword_names)?,

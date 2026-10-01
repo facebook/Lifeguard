@@ -52,6 +52,26 @@ pub fn parse_python_version(s: &str) -> Result<PythonVersion> {
     Ok(version)
 }
 
+/// Reject a `--main-module` that names no module in the build, per `known`.
+///
+/// Such a name prunes every module's guard bodies, exactly like the `""`
+/// sentinel, and does so on every path -- so a typo or a rename keeps the paths
+/// agreeing while the entry module quietly loses the one guard body that runs.
+pub fn check_main_module(
+    main_module: Option<ModuleName>,
+    known: impl Fn(ModuleName) -> bool,
+) -> Result<()> {
+    let Some(name) = main_module.filter(|name| !name.as_str().is_empty()) else {
+        return Ok(());
+    };
+    anyhow::ensure!(
+        known(name),
+        "--main-module {name} names no module in this build; pass \"\" for a binary whose \
+         entry file is imported normally (buck `main_function`)",
+    );
+    Ok(())
+}
+
 pub fn to_ruff_version(v: &PythonVersion) -> ruff_python_ast::PythonVersion {
     match (v.major, v.minor) {
         (3, 12) => ruff_python_ast::PythonVersion::PY312,
@@ -111,16 +131,23 @@ pub struct LibraryAnalysisFacts {
     pub class_properties: Vec<(ModuleName, Vec<String>)>,
 }
 
-/// Shared source indexing and AST analysis behind the two public phase APIs.
-/// Produces the whole-program shape; `analyze_library` narrows it to the subset
-/// a library's cache can carry.
+/// Shared source indexing and AST analysis behind the public phase APIs.
+///
+/// `pruned_main_module` is `None` for everything a build runs.
+/// Only the whole-program reference passes one, so that `compare-paths` checks
+/// the reduce-time filter against pruning the AST -- two independent readings
+/// of the same guard.
+///
+/// Produces the whole-program shape; `analyze_library` narrows it to the
+/// subset a library's cache can carry.
 fn run_local_pipeline(
     src_map: SourceMap,
     root_dir: &std::path::Path,
     mode: ExecutionMode,
     options: &Options,
+    pruned_main_module: Option<ModuleName>,
 ) -> Result<WholeProgramFacts> {
-    let config = AnalysisConfig::with_python_version(options.python_version, options.main_module);
+    let config = AnalysisConfig::with_python_version(options.python_version, pruned_main_module);
 
     let sources = time("Building sources", || {
         Sources::new_with_version(src_map, root_dir.to_path_buf(), options.python_version)
@@ -160,12 +187,22 @@ fn run_local_pipeline(
 }
 
 /// Analyze a complete source database for direct output generation.
+///
+/// This is the only caller that prunes `__main__` guards during analysis. It is
+/// not what a build runs -- it is the reference the parity harness compares the
+/// reduce-time filter against.
 pub fn analyze_whole_program(
     src_map: SourceMap,
     root_dir: &std::path::Path,
     options: &Options,
 ) -> Result<WholeProgramFacts> {
-    run_local_pipeline(src_map, root_dir, ExecutionMode::WholeProgram, options)
+    run_local_pipeline(
+        src_map,
+        root_dir,
+        ExecutionMode::WholeProgram,
+        options,
+        options.main_module,
+    )
 }
 
 /// Analyze one library into provisional facts for cache serialization.
@@ -185,7 +222,7 @@ pub fn analyze_library(
         class_bases,
         constructor_callees,
         class_properties,
-    } = run_local_pipeline(src_map, root_dir, ExecutionMode::Incremental, options)?;
+    } = run_local_pipeline(src_map, root_dir, ExecutionMode::Incremental, options, None)?;
     Ok(LibraryAnalysisFacts {
         safety_map,
         import_graph,

@@ -1539,6 +1539,7 @@ impl ProjectInfo {
                                 arg_offset,
                                 imported_args: call_data.imported_args().clone(),
                                 range: eff.range,
+                                from_main_guard: eff.from_main_guard,
                             },
                         ));
                     }
@@ -1932,6 +1933,7 @@ impl ProjectInfo {
                         PropertyCandidate {
                             attribute: eff.name,
                             range: eff.range,
+                            from_main_guard: eff.from_main_guard,
                         },
                     );
                 }
