@@ -60,6 +60,8 @@ use crate::module_safety::MutationCandidateSite;
 use crate::module_safety::ParamPosition;
 use crate::module_safety::SafetyResult;
 use crate::mro::c3_linearize;
+use crate::names::enclosing_module;
+use crate::names::enclosing_module_str;
 use crate::resolution::get_function_safety;
 use crate::resolution::resolve_program;
 use crate::source_map::AstResult;
@@ -274,56 +276,21 @@ fn remove_unsafe_re_exports(effect_table: &EffectTable, re_exports: &mut AHashSe
     }
 }
 
-/// Resolve a scope FQN to its enclosing module and, when the scope is nested
-/// inside that module, the scope's module-local name. `is_module` identifies
-/// which names name a module. Returns `None` if no ancestor is a module.
+/// Split a scope FQN into the module that contains it and its module-local name.
+/// `is_module` identifies which names name a module. Returns `None` when no
+/// ancestor is a module.
+///
+/// The search is over proper ancestors, so a scope that is itself a module
+/// splits against its parent package: `pkg.mod` becomes `(pkg, "mod")`, consistent
+/// with `SafetyResolver::split_at_module`
+///
+/// Callers that need to distinguish "this scope is a module" from "this scope is
+/// nested in one" should ask `is_module` directly; see `mutation_candidate_scope`.
 fn resolve_enclosing_module<'a>(
     scope: &'a ModuleName,
     is_module: impl Fn(&ModuleName) -> bool,
-) -> Option<(ModuleName, Option<&'a str>)> {
-    if is_module(scope) {
-        return Some((*scope, None));
-    }
-    scope
-        .iter_parents()
-        .find(|(parent, _)| is_module(parent))
-        .map(|(module, dot_pos)| (module, Some(&scope.as_str()[dot_pos + 1..])))
-}
-
-/// As [`resolve_enclosing_module`], but probing candidate names as string slices.
-///
-/// `ModuleName::from_str` interns, so probing with it pays the global interner for
-/// every ancestor tried, and leaves a permanent entry behind for each one that is
-/// not a module. A caller splitting many names against one module set should build
-/// a `&str` view of that set once and probe it instead.
-fn resolve_enclosing_module_str<'a>(
-    scope: &'a ModuleName,
-    is_module: impl Fn(&str) -> bool,
-) -> Option<(ModuleName, Option<&'a str>)> {
-    let name = scope.as_str();
-    if is_module(name) {
-        return Some((*scope, None));
-    }
-    let mut end = name.len();
-    while let Some(pos) = name[..end].rfind('.') {
-        end = pos;
-        if is_module(&name[..pos]) {
-            return Some((ModuleName::from_str(&name[..pos]), Some(&name[pos + 1..])));
-        }
-    }
-    None
-}
-
-/// Resolve a nested scope to a proper ancestor module. Unlike
-/// `resolve_enclosing_module`, this never treats `scope` itself as a module.
-fn resolve_enclosing_parent_module<'a>(
-    scope: &'a ModuleName,
-    is_module: impl Fn(&ModuleName) -> bool,
 ) -> Option<(ModuleName, &'a str)> {
-    scope
-        .iter_parents()
-        .find(|(parent, _)| is_module(parent))
-        .map(|(module, dot_pos)| (module, &scope.as_str()[dot_pos + 1..]))
+    enclosing_module(scope.as_str(), is_module)
 }
 
 /// Collected output from the analysis pipeline.
@@ -370,14 +337,14 @@ impl GlobalAnalysisState {
             function_safety,
         } = self;
         if mode == ExecutionMode::Incremental {
-            // Consumed rather than iterated by reference: every verdict is moved
-            // into the module that owns it, so none of them is cloned.
             let modules: Vec<ModuleName> = safety_map.iter().map(|entry| *entry.key()).collect();
             let module_strs: AHashSet<&str> = modules.iter().map(|m| m.as_str()).collect();
 
+            // Consumed rather than iterated by reference: every verdict is moved
+            // into the module that owns it, so none of them is cloned.
             function_safety.into_par_iter().for_each(|(fqn, mut info)| {
-                let Some((module, Some(local_name))) =
-                    resolve_enclosing_module_str(&fqn, |p| module_strs.contains(p))
+                let Some((module, local_name)) =
+                    enclosing_module_str(fqn.as_str(), |p| module_strs.contains(p))
                 else {
                     return;
                 };
@@ -1402,7 +1369,7 @@ impl ProjectInfo {
         state.function_safety.par_iter().for_each(|entry| {
             let fqn = entry.key();
             let resolved =
-                resolve_enclosing_parent_module(fqn, |name| self.analysis_map.contains_key(name));
+                resolve_enclosing_module(fqn, |name| self.analysis_map.contains_key(name));
             if let Some((module, local)) = resolved {
                 by_module
                     .entry(module)
@@ -1568,9 +1535,15 @@ impl ProjectInfo {
         scope: &ModuleName,
         import_graph: &'a ImportGraph,
     ) -> Option<MutationCandidateScope<'a>> {
-        let (module, caller_function) =
-            resolve_enclosing_module(scope, |name| self.analysis_map.contains_key(name))?;
-        let caller_function = caller_function.map(ModuleName::from_str);
+        // A module-scope effect has no enclosing function; anything else is
+        // named relative to the module that contains it.
+        let (module, caller_function) = if self.analysis_map.contains_key(scope) {
+            (*scope, None)
+        } else {
+            let (module, local) =
+                resolve_enclosing_module(scope, |name| self.analysis_map.contains_key(name))?;
+            (module, Some(ModuleName::from_str(local)))
+        };
         let missing = import_graph.get_missing_imports(&module);
         let ambiguous = import_graph.get_ambiguous_imports(&module);
         if missing.is_none() && ambiguous.is_none() {
@@ -2460,52 +2433,39 @@ mod tests {
     }
 
     #[test]
-    fn enclosing_parent_module_ignores_same_named_module() {
+    fn a_scope_that_is_itself_a_module_splits_against_its_parent() {
+        // `package.child` is both a module and a scope. It has to decompose the
+        // way `SafetyResolver::split_at_module` will decompose it on the way back
+        // out, which is against the parent package.
         let package = ModuleName::from_str("package");
         let scope = ModuleName::from_str("package.child");
         let modules = AHashSet::from_iter([package, scope]);
 
         assert_eq!(
-            resolve_enclosing_parent_module(&scope, |name| modules.contains(name)),
-            Some((package, "child"))
+            resolve_enclosing_module(&scope, |name| modules.contains(name)),
+            Some((package, "child")),
         );
+    }
+
+    #[test]
+    fn a_scope_with_no_module_ancestor_does_not_resolve() {
+        let scope = ModuleName::from_str("orphan.scope");
+        let modules = AHashSet::from_iter([ModuleName::from_str("unrelated")]);
+
         assert_eq!(
             resolve_enclosing_module(&scope, |name| modules.contains(name)),
-            Some((scope, None))
+            None,
         );
     }
 
     #[test]
-    fn enclosing_module_resolution_needs_a_module_ancestor() {
-        let scope = ModuleName::from_str("package.child.leaf");
-        let no_modules = |_: &ModuleName| false;
-
-        assert_eq!(
-            resolve_enclosing_module(&scope, no_modules),
-            None,
-            "a scope that is neither a module nor nested in one resolves to nothing",
-        );
-        assert_eq!(
-            resolve_enclosing_parent_module(&scope, no_modules),
-            None,
-            "the parent-only form has no ancestor to resolve against either",
-        );
-    }
-
-    #[test]
-    fn enclosing_parent_module_rejects_scope_only_module() {
+    fn a_module_scope_with_no_module_parent_does_not_resolve() {
         let scope = ModuleName::from_str("package.child");
         let modules = AHashSet::from_iter([scope]);
 
         assert_eq!(
-            resolve_enclosing_parent_module(&scope, |name| modules.contains(name)),
-            None,
-            "a proper ancestor is required, so a scope that is only itself a module does not resolve",
-        );
-        assert_eq!(
             resolve_enclosing_module(&scope, |name| modules.contains(name)),
-            Some((scope, None)),
-            "the scope-inclusive form still resolves it — that is the whole difference between the two",
+            None,
         );
     }
 }
