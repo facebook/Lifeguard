@@ -5,7 +5,28 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! Cache artifacts and the map-reduce pipeline that resolves them.
+//! The phases a program's facts pass through between the map and the output.
+//!
+//! Each phase is a distinct type, and the only way to move forward is the
+//! transition that consumes the previous one:
+//!
+//! ```text
+//! LibraryCache      one library's facts, as the map produced them.
+//!   |               Import edges are still split into resolved, missing and
+//!   |               ambiguous; verdicts still carry unresolved obligations.
+//!   |  merge / single
+//!   v
+//! ReduceWorkspace   several libraries merged into one module universe, with the
+//!   |               bundled stub graph injected. Still unresolved.
+//!   |  resolve
+//!   v
+//! ResolvedCache     cross-library resolution has run: imports are settled,
+//!                   verdicts are final, and verified errors have been cleared.
+//! ```
+//!
+//! `LibraryCache` is also the container the workspace merges into, so it names
+//! the *shape* of the facts rather than the phase. The phase is the type holding
+//! it, which is why resolution is not reachable on a `LibraryCache` directly.
 //!
 //! The implementation is split by responsibility:
 //!

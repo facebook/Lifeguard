@@ -25,6 +25,7 @@ use crate::analyzer::analyze;
 use crate::cache::CachedModuleSafety;
 use crate::cache::CachedSafety;
 use crate::cache::LibraryCache;
+use crate::cache::MergedClassFacts;
 use crate::cache::ReduceWorkspace;
 use crate::config::AnalysisConfig;
 use crate::effects::Effect;
@@ -1314,14 +1315,15 @@ pub fn populate_temp_dir(files: &[(&str, &str)]) -> TempDir {
 /// Wrap an already merged cache and the graph-only stubs injected into it,
 /// skipping the stub injection `ReduceWorkspace::single` and `merge` perform.
 ///
-/// Test support only. Production reduces have to go through a path which
-/// establish the stub-set invariant; this exists so a test can hand the reduce
+/// Test support only. Production reduces have to go through a path that
+/// establishes the stub-set invariant; this exists so a test can hand the reduce
 /// a cache it assembled itself, or replay one it just took apart.
 pub fn reduce_workspace_from_merged(
     cache: LibraryCache,
     graph_only_stubs: AHashSet<ModuleName>,
+    merged: MergedClassFacts,
 ) -> ReduceWorkspace {
-    ReduceWorkspace::from_merged(cache, graph_only_stubs)
+    ReduceWorkspace::from_merged(cache, graph_only_stubs, merged)
 }
 
 #[cfg(test)]

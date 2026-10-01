@@ -31,6 +31,7 @@ use pyrefly_python::module_name::ModuleName;
 
 use crate::cache::CachedSafety;
 use crate::cache::LibraryCache;
+#[cfg(test)]
 use crate::cache::MergedClassFacts;
 use crate::cache::ReduceWorkspace;
 use crate::output::LifeGuardAnalysis;
@@ -115,19 +116,12 @@ fn cache_errors(cache: &LibraryCache) -> ErrorMap {
         .collect()
 }
 
-/// Run the same post-map reduction steps that can clear cross-library false
-/// positives, then read the remaining per-module errors.
-fn resolved_cache_errors(mut cache: LibraryCache) -> ErrorMap {
-    // Nothing was merged into this cache, so there are no folded class facts.
-    cache.resolve_cross_library_errors(MergedClassFacts::default());
-    cache_errors(&cache)
-}
-
-/// Rebuild graph-only bundled stubs before resolution, matching the incremental
-/// binary reduce path.
-fn post_resolution_errors(mut cache: LibraryCache, options: &Options) -> ErrorMap {
-    cache.inject_bundled_stub_graph(options.python_version);
-    resolved_cache_errors(cache)
+/// Put a single-pass cache through the same reduction the incremental path runs,
+/// then read the remaining per-module errors. The bundled stub graph is injected
+/// here too, so both paths resolve against the same module set.
+fn post_resolution_errors(cache: LibraryCache, options: &Options) -> ErrorMap {
+    let resolved = ReduceWorkspace::single(cache, options.python_version).resolve();
+    cache_errors(resolved.resolved_cache())
 }
 
 fn sorted(names: impl IntoIterator<Item = ModuleName>) -> Vec<ModuleName> {
@@ -644,7 +638,12 @@ mod tests {
             ]),
         );
 
-        let errors = resolved_cache_errors(cache);
+        // No bundled stubs: this fixture is about cross-library resolution, and
+        // injecting the stub graph would add hundreds of unrelated modules.
+        let resolved =
+            ReduceWorkspace::from_merged(cache, AHashSet::new(), MergedClassFacts::default())
+                .resolve();
+        let errors = cache_errors(resolved.resolved_cache());
 
         assert!(
             !errors.contains_key(&caller),

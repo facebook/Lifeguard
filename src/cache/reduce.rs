@@ -56,7 +56,11 @@ use crate::resolution::unqualified_index_key;
 use crate::safety_resolver::DecoratorVerdictMap;
 use crate::safety_resolver::SafetyResolver;
 
-/// Mutable reduce workspace decoded from one or more serialized library artifacts.
+/// One or more libraries merged into a single module universe, with the bundled
+/// stub graph injected -- the input to cross-library resolution.
+///
+/// Holding this type means the facts are merged but *not* resolved.
+/// [`Self::resolve`] consumes it, which is what keeps the two states apart.
 pub struct ReduceWorkspace {
     cache: LibraryCache,
     graph_only_stubs: AHashSet<ModuleName>,
@@ -86,12 +90,19 @@ pub struct ResolvedCache {
 }
 
 impl ReduceWorkspace {
-    /// Wrap an already merged cache and the graph-only stubs injected into it,
-    /// bypassing the stub injection that `single` and `merge` perform. Only
-    /// tests want that, so the public door is
+    /// Wrap an already merged cache, the graph-only stubs injected into it, and
+    /// whatever `merge_dep_caches` folded together on the way. Passing
+    /// `MergedClassFacts::default()` is only correct when nothing was merged --
+    /// otherwise the folded class facts are silently dropped.
+    ///
+    /// Only tests want this, so the public door is
     /// [`crate::test_lib::reduce_workspace_from_merged`]; this stays crate-private
     /// so no production caller can skip the stub-set invariant.
-    pub(crate) fn from_merged(cache: LibraryCache, graph_only_stubs: AHashSet<ModuleName>) -> Self {
+    pub(crate) fn from_merged(
+        cache: LibraryCache,
+        graph_only_stubs: AHashSet<ModuleName>,
+        merged: MergedClassFacts,
+    ) -> Self {
         let artifact_module_count = cache
             .modules
             .len()
@@ -101,7 +112,7 @@ impl ReduceWorkspace {
             cache,
             graph_only_stubs,
             artifact_module_count,
-            merged: MergedClassFacts::default(),
+            merged,
         }
     }
 
@@ -143,6 +154,12 @@ impl ReduceWorkspace {
         Ok(Self::single_with(cache, python_version, merged))
     }
 
+    /// The bundled stubs injected as graph-only nodes when this workspace was
+    /// built. They are part of the merged graph but carry no verdict.
+    pub fn graph_only_stubs(&self) -> &AHashSet<ModuleName> {
+        &self.graph_only_stubs
+    }
+
     /// Return the total number of modules, including injected bundled stubs.
     pub fn module_count(&self) -> usize {
         self.cache.modules.len()
@@ -168,8 +185,13 @@ impl ResolvedCache {
         &self.cache
     }
 
-    pub(crate) fn modules(&self) -> &[CachedModule] {
+    pub fn modules(&self) -> &[CachedModule] {
         &self.cache.modules
+    }
+
+    /// Convenience lookup for tests that inspect resolved cache contents.
+    pub fn find_module(&self, name: ModuleName) -> Option<&CachedModule> {
+        self.cache.modules.iter().find(|module| module.name == name)
     }
 
     pub(crate) fn graph_only_stubs(&self) -> &AHashSet<ModuleName> {
@@ -361,7 +383,7 @@ impl LibraryCache {
 
     /// Resolve missing imports against the merged cache and selectively clear
     /// false errors using per-function safety verdicts.
-    pub fn resolve_cross_library_errors(&mut self, merged: MergedClassFacts) {
+    fn resolve_cross_library_errors(&mut self, merged: MergedClassFacts) {
         let module_names: AHashSet<ModuleName> = self.modules.iter().map(|m| m.name).collect();
         let ambiguous_resolved = self.resolve_ambiguous_imports(&module_names);
 
@@ -514,7 +536,7 @@ mod tests {
         };
         let graph_only_stubs = AHashSet::from_iter([ModuleName::from_str("missing_stub")]);
 
-        ReduceWorkspace::from_merged(cache, graph_only_stubs);
+        ReduceWorkspace::from_merged(cache, graph_only_stubs, MergedClassFacts::default());
     }
 
     #[test]

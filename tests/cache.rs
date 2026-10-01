@@ -19,6 +19,8 @@ mod tests {
     use lifeguard::cache::ConstructorCallees;
     use lifeguard::cache::LibraryCache;
     use lifeguard::cache::MergedClassFacts;
+    use lifeguard::cache::ReduceWorkspace;
+    use lifeguard::cache::ResolvedCache;
     use lifeguard::cache::dedupe_implicit_imports;
     use lifeguard::config::AnalysisConfig;
     use lifeguard::effects::ImportedArgs;
@@ -26,6 +28,7 @@ mod tests {
     use lifeguard::errors::SafetyError;
     use lifeguard::exports::Exports;
     use lifeguard::hasher::AHashMap;
+    use lifeguard::hasher::AHashSet;
     use lifeguard::hasher::HashMapExt;
     use lifeguard::imports::ImportGraph;
     use lifeguard::imports::resolve_to_known_module;
@@ -215,15 +218,10 @@ mod tests {
         cache
     }
 
-    fn resolved_cache(own: &[(&str, &str)], dependencies: &[(&str, &str)]) -> LibraryCache {
-        let dep_cache = build_cache(&TestSources::new(dependencies));
-        merge_and_resolve(build_cache(&TestSources::new(own)), dep_cache)
-    }
-
-    fn merge_and_resolve(mut cache: LibraryCache, dep_cache: LibraryCache) -> LibraryCache {
-        let merged_facts = cache.merge_dep_caches(vec![dep_cache]);
-        cache.resolve_cross_library_errors(merged_facts);
-        cache
+    fn resolved_module<'a>(resolved: &'a ResolvedCache, name: &str) -> &'a CachedModule {
+        resolved
+            .find_module(mn(name))
+            .unwrap_or_else(|| panic!("resolved cache should contain module {name}"))
     }
 
     fn module<'a>(cache: &'a LibraryCache, name: &str) -> &'a CachedModule {
@@ -265,6 +263,21 @@ mod tests {
             std::process::id(),
             nanos
         ))
+    }
+
+    /// Run a cache through the reduce the way `analyze-binary` does, minus the
+    /// bundled stub graph: these fixtures are about cross-library resolution, and
+    /// injecting typeshed would add hundreds of modules none of them care about.
+    fn resolve(cache: LibraryCache) -> ResolvedCache {
+        reduce_workspace_from_merged(cache, AHashSet::default(), MergedClassFacts::default())
+            .resolve()
+    }
+
+    /// Merge a dependency in and resolve, keeping the folded class facts that
+    /// `merge_dep_caches` produces.
+    fn merge_and_resolve(mut cache: LibraryCache, dep_cache: LibraryCache) -> ResolvedCache {
+        let merged = cache.merge_dep_caches(vec![dep_cache]);
+        reduce_workspace_from_merged(cache, AHashSet::default(), merged).resolve()
     }
 
     fn round_trip(cache: &LibraryCache) -> LibraryCache {
@@ -820,9 +833,9 @@ mod tests {
             "caller should be unsafe before merge (dep is missing)",
         );
 
-        let own_cache = merge_and_resolve(own_cache, dep_cache);
+        let resolved = merge_and_resolve(own_cache, dep_cache);
 
-        let caller_after = module(&own_cache, "caller");
+        let caller_after = resolved.find_module(mn("caller")).unwrap();
         assert!(
             caller_after.is_safe(),
             "caller should be safe after resolving cross-library constructor call",
@@ -831,25 +844,27 @@ mod tests {
 
     #[test]
     fn test_resolve_cross_library_unsafe_constructor() {
-        let cache = resolved_cache(
-            &[(
-                "caller",
-                "from dep import MyClass\n\
-                 instance = MyClass()\n",
-            )],
-            &[
-                (
-                    "dep",
-                    "import dep_state\n\
+        let dep_cache = build_cache(&TestSources::new(&[
+            (
+                "dep",
+                "import dep_state\n\
              class MyClass:\n\
              \x20   def __init__(self):\n\
              \x20       dep_state.counter = dep_state.counter + 1\n",
-                ),
-                ("dep_state", "counter = 0\n"),
-            ],
-        );
+            ),
+            ("dep_state", "counter = 0\n"),
+        ]));
 
-        let caller = module(&cache, "caller");
+        let own_sources = TestSources::new(&[(
+            "caller",
+            "from dep import MyClass\n\
+             instance = MyClass()\n",
+        )]);
+        let own_cache = build_cache(&own_sources);
+
+        let resolved = merge_and_resolve(own_cache, dep_cache);
+
+        let caller = resolved.find_module(mn("caller")).unwrap();
         assert!(
             !caller.is_safe(),
             "caller should remain unsafe when constructor has side effects",
@@ -862,25 +877,26 @@ mod tests {
         // safe in isolation, but `caller` passes imported state into it at import,
         // so `caller` must stay unsafe. The class FQN is unresolved in the consuming
         // library, so the mutation candidate records the class, not `__init__`.
-        let cache = resolved_cache(
-            &[
-                ("config", "settings = 1\n"),
-                (
-                    "caller",
-                    "from dep import MyClass\n\
-                     from config import settings\n\
-                     instance = MyClass(settings)\n",
-                ),
-            ],
-            &[(
-                "dep",
-                "class MyClass:\n\
-                 \x20   def __init__(self, x):\n\
-                 \x20       x.attr = 1\n",
-            )],
-        );
+        let dep_cache = build_cache(&TestSources::new(&[(
+            "dep",
+            "class MyClass:\n\
+             \x20   def __init__(self, x):\n\
+             \x20       x.attr = 1\n",
+        )]));
 
-        let caller = module(&cache, "caller");
+        let own_cache = build_cache(&TestSources::new(&[
+            ("config", "settings = 1\n"),
+            (
+                "caller",
+                "from dep import MyClass\n\
+                 from config import settings\n\
+                 instance = MyClass(settings)\n",
+            ),
+        ]));
+
+        let resolved = merge_and_resolve(own_cache, dep_cache);
+
+        let caller = resolved.find_module(mn("caller")).unwrap();
         assert!(
             !caller.is_safe(),
             "constructor mutates the imported arg, so caller must stay unsafe",
@@ -913,9 +929,9 @@ mod tests {
         )]);
         let own_cache = build_cache(&own_sources);
 
-        let own_cache = merge_and_resolve(own_cache, dep_cache);
+        let resolved = merge_and_resolve(own_cache, dep_cache);
 
-        let caller = module(&own_cache, "caller");
+        let caller = resolved.find_module(mn("caller")).unwrap();
         assert!(
             !caller.is_safe(),
             "caller should remain unsafe: Foo.__init__ mutates module globals",
@@ -1145,16 +1161,16 @@ mod tests {
             ),
         ]));
 
-        let own_cache = merge_and_resolve(own_cache, dep_cache);
+        let resolved = merge_and_resolve(own_cache, dep_cache);
 
-        let m = module(&own_cache, "m");
+        let m = resolved.find_module(mn("m")).unwrap();
         assert_eq!(
             m.function_safety.get("f").map(|i| i.verdict),
             Some(FunctionSafety::Unsafe),
             "f passes an imported var to a cross-library mutating parameter",
         );
 
-        let app = module(&own_cache, "app");
+        let app = resolved.find_module(mn("app")).unwrap();
         assert!(
             !app.is_safe(),
             "app calls f at import time, so importing app runs the cross-library mutation",
@@ -1182,9 +1198,9 @@ mod tests {
             ),
         ]));
 
-        let own_cache = merge_and_resolve(own_cache, dep_cache);
+        let resolved = merge_and_resolve(own_cache, dep_cache);
 
-        let main = module(&own_cache, "main");
+        let main = resolved.find_module(mn("main")).unwrap();
         assert!(
             !main.is_safe(),
             "main mutates the imported `settings` via cross-library `configure` at import time",
@@ -1205,13 +1221,9 @@ mod tests {
         let mut cache = LibraryCache::empty();
         cache.modules = vec![models, helpers];
 
-        cache.resolve_cross_library_errors(MergedClassFacts::default());
+        let resolved = resolve(cache);
 
-        let models = cache
-            .modules
-            .iter()
-            .find(|module| module.name == mn("models"))
-            .unwrap();
+        let models = resolved.find_module(mn("models")).unwrap();
         let verdict = models
             .function_safety
             .get("Model")
@@ -1272,9 +1284,9 @@ mod tests {
             ),
         ]));
 
-        let own_cache = merge_and_resolve(own_cache, dep_cache);
+        let resolved = merge_and_resolve(own_cache, dep_cache);
 
-        let main = module(&own_cache, "main");
+        let main = resolved.find_module(mn("main")).unwrap();
         assert!(
             main.is_safe(),
             "configure does not mutate its parameter, so main is safe to lazily import",
@@ -1305,9 +1317,9 @@ mod tests {
             ("main", "from lib import g\ng()\n"),
         ]));
 
-        let own_cache = merge_and_resolve(own_cache, dep_cache);
+        let resolved = merge_and_resolve(own_cache, dep_cache);
 
-        let main = module(&own_cache, "main");
+        let main = resolved.find_module(mn("main")).unwrap();
         assert!(
             main.is_safe(),
             "g's cross-library callee does not mutate, so main must be safe",
@@ -1339,9 +1351,9 @@ mod tests {
             ("main", "from lib import f\nf()\n"),
         ]));
 
-        let own_cache = merge_and_resolve(own_cache, dep_cache);
+        let resolved = merge_and_resolve(own_cache, dep_cache);
 
-        let main = module(&own_cache, "main");
+        let main = resolved.find_module(mn("main")).unwrap();
         assert!(
             main.is_safe(),
             "the whole chain is non-mutating, so main must be safe",
@@ -1373,9 +1385,9 @@ mod tests {
             ("main", "from lib import g\ng()\n"),
         ]));
 
-        let own_cache = merge_and_resolve(own_cache, dep_cache);
+        let resolved = merge_and_resolve(own_cache, dep_cache);
 
-        let main = module(&own_cache, "main");
+        let main = resolved.find_module(mn("main")).unwrap();
         assert!(
             !main.is_safe(),
             "g's cross-library callee resolves unsafe, so main must stay unsafe",
@@ -1501,9 +1513,9 @@ mod tests {
             "caller should be unsafe before merge (dep is missing)",
         );
 
-        let own_cache = merge_and_resolve(own_cache, dep_cache);
+        let resolved = merge_and_resolve(own_cache, dep_cache);
 
-        let caller_after = module(&own_cache, "caller");
+        let caller_after = resolved.find_module(mn("caller")).unwrap();
         assert!(
             caller_after.is_safe(),
             "caller should be safe after resolving cross-library function call",
@@ -1534,7 +1546,7 @@ mod tests {
         import_graph.graph.add_edge(&mn("caller"), &mn("dep"));
 
         let exports = Exports::empty();
-        let mut cache =
+        let cache =
             LibraryCache::build(&safety_map, &import_graph, &exports, &SideEffectMap::new());
 
         assert!(
@@ -1542,9 +1554,9 @@ mod tests {
             "no missing imports",
         );
 
-        cache.resolve_cross_library_errors(MergedClassFacts::default());
+        let resolved = resolve(cache);
 
-        let caller = module(&cache, "caller");
+        let caller = resolved.find_module(mn("caller")).unwrap();
         assert!(
             !caller.is_safe(),
             "errors from already-imported modules should not be cleared (conservative)",
@@ -1555,7 +1567,7 @@ mod tests {
     /// set it would derive itself.
     #[test]
     fn test_recorded_constructor_callees_outrank_derived_ones() {
-        let mut cache = LibraryCache {
+        let cache = LibraryCache {
             modules: vec![
                 cached_module("app")
                     .errors(vec![cached_error(
@@ -1577,9 +1589,9 @@ mod tests {
             ..Default::default()
         };
 
-        cache.resolve_cross_library_errors(MergedClassFacts::default());
+        let resolved = resolve(cache);
 
-        let app = module(&cache, "app");
+        let app = resolved_module(&resolved, "app");
         assert!(
             !app.is_safe(),
             "an inherited Unsafe constructor recorded by the map phase must keep the call unsafe",
@@ -1590,7 +1602,7 @@ mod tests {
     /// pinning the verdict rather than the mere presence of a recorded entry.
     #[test]
     fn test_recorded_safe_constructor_callee_clears() {
-        let mut cache = LibraryCache {
+        let cache = LibraryCache {
             modules: vec![
                 cached_module("app")
                     .errors(vec![cached_error(
@@ -1612,9 +1624,9 @@ mod tests {
             ..Default::default()
         };
 
-        cache.resolve_cross_library_errors(MergedClassFacts::default());
+        let resolved = resolve(cache);
 
-        let app = module(&cache, "app");
+        let app = resolved_module(&resolved, "app");
         assert!(
             app.is_safe(),
             "a recorded constructor callee that is Safe should clear the call",
@@ -1627,28 +1639,28 @@ mod tests {
     /// `__post_init__`, and this cleared.
     #[test]
     fn test_own_new_side_effect_keeps_call_unsafe() {
-        let cache = resolved_cache(
-            &[(
-                "caller",
-                "from dep import Widget\n\
-                 instance = Widget()\n",
-            )],
-            &[
-                (
-                    "dep",
-                    "import dep_state\n\
-                     class Widget:\n\
-                     \x20   def __new__(cls):\n\
-                     \x20       dep_state.counter = dep_state.counter + 1\n\
-                     \x20       return super().__new__(cls)\n\
-                     \x20   def __init__(self):\n\
-                     \x20       pass\n",
-                ),
-                ("dep_state", "counter = 0\n"),
-            ],
-        );
+        let dep_cache = build_cache(&TestSources::new(&[
+            (
+                "dep",
+                "import dep_state\n\
+                 class Widget:\n\
+                 \x20   def __new__(cls):\n\
+                 \x20       dep_state.counter = dep_state.counter + 1\n\
+                 \x20       return super().__new__(cls)\n\
+                 \x20   def __init__(self):\n\
+                 \x20       pass\n",
+            ),
+            ("dep_state", "counter = 0\n"),
+        ]));
+        let own_cache = build_cache(&TestSources::new(&[(
+            "caller",
+            "from dep import Widget\n\
+             instance = Widget()\n",
+        )]));
 
-        let caller = module(&cache, "caller");
+        let resolved = merge_and_resolve(own_cache, dep_cache);
+
+        let caller = resolved_module(&resolved, "caller");
         assert!(
             !caller.is_safe(),
             "a side effect in the class's own __new__ must keep the call unsafe",
@@ -1662,31 +1674,31 @@ mod tests {
     /// -- the aggregate `Sentinel` verdict alone would clear it.
     #[test]
     fn test_cross_library_inherited_constructor_stays_unsafe() {
-        let cache = resolved_cache(
-            &[(
-                "caller",
-                "from sub import Sentinel\n\
-                 instance = Sentinel()\n",
-            )],
-            &[
-                (
-                    "base",
-                    "import base_state\n\
+        let dep_cache = build_cache(&TestSources::new(&[
+            (
+                "base",
+                "import base_state\n\
                      class Base:\n\
                      \x20   def __init__(self):\n\
                      \x20       base_state.counter = base_state.counter + 1\n",
-                ),
-                ("base_state", "counter = 0\n"),
-                (
-                    "sub",
-                    "from base import Base\n\
+            ),
+            ("base_state", "counter = 0\n"),
+            (
+                "sub",
+                "from base import Base\n\
                      class Sentinel(Base):\n\
                      \x20   pass\n",
-                ),
-            ],
-        );
+            ),
+        ]));
+        let own_cache = build_cache(&TestSources::new(&[(
+            "caller",
+            "from sub import Sentinel\n\
+                 instance = Sentinel()\n",
+        )]));
 
-        let caller = module(&cache, "caller");
+        let resolved = merge_and_resolve(own_cache, dep_cache);
+
+        let caller = resolved_module(&resolved, "caller");
         assert!(
             !caller.is_safe(),
             "an inherited constructor with a side effect must keep the call unsafe",
@@ -1697,29 +1709,29 @@ mod tests {
     /// verdict rather than to the mere presence of an inherited constructor.
     #[test]
     fn test_cross_library_inherited_safe_constructor_clears() {
-        let cache = resolved_cache(
-            &[(
-                "caller",
-                "from sub import Sentinel\n\
-                 instance = Sentinel()\n",
-            )],
-            &[
-                (
-                    "base",
-                    "class Base:\n\
+        let dep_cache = build_cache(&TestSources::new(&[
+            (
+                "base",
+                "class Base:\n\
                      \x20   def __init__(self):\n\
                      \x20       self.value = 0\n",
-                ),
-                (
-                    "sub",
-                    "from base import Base\n\
+            ),
+            (
+                "sub",
+                "from base import Base\n\
                      class Sentinel(Base):\n\
                      \x20   pass\n",
-                ),
-            ],
-        );
+            ),
+        ]));
+        let own_cache = build_cache(&TestSources::new(&[(
+            "caller",
+            "from sub import Sentinel\n\
+                 instance = Sentinel()\n",
+        )]));
 
-        let caller = module(&cache, "caller");
+        let resolved = merge_and_resolve(own_cache, dep_cache);
+
+        let caller = resolved_module(&resolved, "caller");
         assert!(
             caller.is_safe(),
             "an inherited constructor with no side effect should clear the call",
@@ -1735,7 +1747,7 @@ mod tests {
     /// error therefore has to read the constructor methods, not that entry.
     #[test]
     fn test_safe_constructor_error_clears_without_promotion() {
-        let mut cache = LibraryCache {
+        let cache = LibraryCache {
             modules: vec![
                 cached_module("app")
                     .errors(vec![cached_error(
@@ -1754,15 +1766,15 @@ mod tests {
             ..Default::default()
         };
 
-        cache.resolve_cross_library_errors(MergedClassFacts::default());
+        let resolved = resolve(cache);
 
-        let app = module(&cache, "app");
+        let app = resolved_module(&resolved, "app");
         assert!(app.is_safe(), "safe constructor call should be cleared");
     }
 
     #[test]
     fn test_safe_constructor_error_uses_nested_module_parent() {
-        let mut cache = LibraryCache {
+        let cache = LibraryCache {
             modules: vec![
                 cached_module("pkg").build(),
                 cached_module("pkg.debug")
@@ -1786,9 +1798,9 @@ mod tests {
             ..Default::default()
         };
 
-        cache.resolve_cross_library_errors(MergedClassFacts::default());
+        let resolved = resolve(cache);
 
-        let debug = module(&cache, "pkg.debug");
+        let debug = resolved_module(&resolved, "pkg.debug");
         assert!(
             debug.is_safe(),
             "same-module constructor calls should use the concrete nested module and the constructor method verdict",
@@ -1797,7 +1809,7 @@ mod tests {
 
     #[test]
     fn test_safe_function_error_does_not_clear_without_promotion() {
-        let mut cache = LibraryCache {
+        let cache = LibraryCache {
             modules: vec![
                 cached_module("app")
                     .errors(vec![cached_error(
@@ -1814,9 +1826,9 @@ mod tests {
             ..Default::default()
         };
 
-        cache.resolve_cross_library_errors(MergedClassFacts::default());
+        let resolved = resolve(cache);
 
-        let app = module(&cache, "app");
+        let app = resolved_module(&resolved, "app");
         assert!(
             !app.is_safe(),
             "ordinary safe function calls should not clear in the no-promotion pass",
@@ -1825,7 +1837,7 @@ mod tests {
 
     #[test]
     fn test_unsafe_if_imported_constructor_clears_for_same_module() {
-        let mut cache = LibraryCache {
+        let cache = LibraryCache {
             modules: vec![
                 cached_module("dep")
                     .errors(vec![cached_error(
@@ -1844,9 +1856,9 @@ mod tests {
             ..Default::default()
         };
 
-        cache.resolve_cross_library_errors(MergedClassFacts::default());
+        let resolved = resolve(cache);
 
-        let dep = module(&cache, "dep");
+        let dep = resolved_module(&resolved, "dep");
         assert!(
             dep.is_safe(),
             "UnsafeIfImported constructors are safe when called from their own module",
@@ -1855,7 +1867,7 @@ mod tests {
 
     #[test]
     fn test_unsafe_if_imported_constructor_stays_unsafe_cross_module() {
-        let mut cache = LibraryCache {
+        let cache = LibraryCache {
             modules: vec![
                 cached_module("app")
                     .errors(vec![cached_error(
@@ -1877,9 +1889,9 @@ mod tests {
             ..Default::default()
         };
 
-        cache.resolve_cross_library_errors(MergedClassFacts::default());
+        let resolved = resolve(cache);
 
-        let app = module(&cache, "app");
+        let app = resolved_module(&resolved, "app");
         assert!(
             !app.is_safe(),
             "UnsafeIfImported constructors stay unsafe when called cross-module",
@@ -1888,7 +1900,7 @@ mod tests {
 
     #[test]
     fn test_class_decorator_error_uses_constructor_safety() {
-        let mut cache = LibraryCache {
+        let cache = LibraryCache {
             modules: vec![
                 cached_module("app")
                     .errors(vec![parameterized_decorator_error("dep.Decorator")])
@@ -1908,9 +1920,9 @@ mod tests {
             ..Default::default()
         };
 
-        cache.resolve_cross_library_errors(MergedClassFacts::default());
+        let resolved = resolve(cache);
 
-        let app = module(&cache, "app");
+        let app = resolved_module(&resolved, "app");
         assert!(
             app.is_safe(),
             "class decorators should be verified from constructor safety, not class method safety",
@@ -1935,9 +1947,9 @@ mod tests {
             "caller should be unsafe before merge (pkg.sub is unresolved)",
         );
 
-        let own_cache = merge_and_resolve(own_cache, dep_cache);
+        let resolved = merge_and_resolve(own_cache, dep_cache);
 
-        let caller = module(&own_cache, "caller");
+        let caller = resolved.find_module(mn("caller")).unwrap();
         assert!(
             caller.imports.contains(&mn("pkg.sub")),
             "ambiguous import pkg.sub should be resolved as a real import",
@@ -1955,20 +1967,15 @@ mod tests {
             ("pkg.one", "def helper(): return 1\n"),
             ("pkg.two", "def helper(): return 2\n"),
         ]));
-        let mut own_cache = build_cache(&TestSources::new(&[
+        let own_cache = build_cache(&TestSources::new(&[
             ("caller_one", "from pkg import one\nx = one.helper()\n"),
             ("caller_two", "from pkg import two\nx = two.helper()\n"),
         ]));
 
-        let merged_facts = own_cache.merge_dep_caches(vec![dep_cache]);
-        own_cache.resolve_cross_library_errors(merged_facts);
+        let resolved = merge_and_resolve(own_cache, dep_cache);
 
         for (caller_name, imported_name) in [("caller_one", "pkg.one"), ("caller_two", "pkg.two")] {
-            let caller = own_cache
-                .modules
-                .iter()
-                .find(|module| module.name == mn(caller_name))
-                .unwrap();
+            let caller = resolved.find_module(mn(caller_name)).unwrap();
             assert!(caller.imports.contains(&mn(imported_name)));
             assert!(caller.is_safe());
         }
@@ -1988,9 +1995,9 @@ mod tests {
             "top unsafe before merge (mid is missing)",
         );
 
-        let own_cache = merge_and_resolve(own_cache, dep_cache);
+        let resolved = merge_and_resolve(own_cache, dep_cache);
 
-        let top = module(&own_cache, "top");
+        let top = resolved.find_module(mn("top")).unwrap();
         assert!(
             !top.is_safe(),
             "top must stay unsafe: importing it runs f() -> unsafe g()",
@@ -2011,9 +2018,9 @@ mod tests {
             "top unsafe before merge (mid is missing)",
         );
 
-        let own_cache = merge_and_resolve(own_cache, dep_cache);
+        let resolved = merge_and_resolve(own_cache, dep_cache);
 
-        let top = module(&own_cache, "top");
+        let top = resolved.find_module(mn("top")).unwrap();
         assert!(
             top.is_safe(),
             "top should be safe: f() only reaches the now-resolved safe g()",
@@ -2042,9 +2049,9 @@ mod tests {
             ("top", "from mid import f\nf()\n"),
         ]));
 
-        let own_cache = merge_and_resolve(own_cache, dep_cache);
+        let resolved = merge_and_resolve(own_cache, dep_cache);
 
-        let top = module(&own_cache, "top");
+        let top = resolved.find_module(mn("top")).unwrap();
         assert!(
             !top.is_safe(),
             "g resolves safe but f's UnsafeIfImported floor survives, so top must stay unsafe",
@@ -2094,7 +2101,7 @@ mod tests {
 
     #[test]
     fn test_reduce_keeps_unsafe_method_error_with_safe_class_prefix() {
-        let mut cache = LibraryCache {
+        let cache = LibraryCache {
             modules: vec![
                 cached_module("app")
                     .errors(vec![cached_error(
@@ -2111,9 +2118,11 @@ mod tests {
             ..Default::default()
         };
 
-        cache.resolve_cross_library_errors(MergedClassFacts::default());
+        let resolved = resolve(cache);
 
-        let app = module(&cache, "app");
+        let app = resolved
+            .find_module(mn("app"))
+            .expect("app module should be present");
         let CachedSafety::Ok(safety) = &app.safety else {
             panic!("app should have cached module safety");
         };
@@ -2133,7 +2142,7 @@ mod tests {
 
     #[test]
     fn test_reduce_keeps_unknown_method_error_without_exact_method_verdict() {
-        let mut cache = LibraryCache {
+        let cache = LibraryCache {
             modules: vec![
                 cached_module("app")
                     .errors(vec![cached_error(
@@ -2150,9 +2159,11 @@ mod tests {
             ..Default::default()
         };
 
-        cache.resolve_cross_library_errors(MergedClassFacts::default());
+        let resolved = resolve(cache);
 
-        let app = module(&cache, "app");
+        let app = resolved
+            .find_module(mn("app"))
+            .expect("app module should be present");
         let CachedSafety::Ok(safety) = &app.safety else {
             panic!("app should have cached module safety");
         };
@@ -2172,7 +2183,7 @@ mod tests {
 
     #[test]
     fn test_reduce_keeps_unqualified_unknown_decorator_despite_global_safe_name() {
-        let mut cache = LibraryCache {
+        let cache = LibraryCache {
             modules: vec![
                 cached_module("app")
                     .errors(vec![cached_error(ErrorKind::UnknownDecoratorCall, "deco")])
@@ -2186,9 +2197,11 @@ mod tests {
             ..Default::default()
         };
 
-        cache.resolve_cross_library_errors(MergedClassFacts::default());
+        let resolved = resolve(cache);
 
-        let app = module(&cache, "app");
+        let app = resolved
+            .find_module(mn("app"))
+            .expect("app module should be present");
         let CachedSafety::Ok(safety) = &app.safety else {
             panic!("app should have cached module safety");
         };
@@ -2204,7 +2217,7 @@ mod tests {
 
     #[test]
     fn test_reduce_keeps_unqualified_unknown_call_from_resolved_module() {
-        let mut cache = LibraryCache {
+        let cache = LibraryCache {
             modules: vec![
                 cached_module("app")
                     .errors(vec![cached_error(ErrorKind::UnknownFunctionCall, "b()")])
@@ -2216,9 +2229,11 @@ mod tests {
             ..Default::default()
         };
 
-        cache.resolve_cross_library_errors(MergedClassFacts::default());
+        let resolved = resolve(cache);
 
-        let app = module(&cache, "app");
+        let app = resolved
+            .find_module(mn("app"))
+            .expect("app module should be present");
         let CachedSafety::Ok(safety) = &app.safety else {
             panic!("app should have cached module safety");
         };
@@ -2233,7 +2248,7 @@ mod tests {
 
     #[test]
     fn test_reduce_keeps_unqualified_unknown_call_despite_global_safe_name() {
-        let mut cache = LibraryCache {
+        let cache = LibraryCache {
             modules: vec![
                 cached_module("app")
                     .errors(vec![cached_error(ErrorKind::UnknownFunctionCall, "b()")])
@@ -2247,9 +2262,11 @@ mod tests {
             ..Default::default()
         };
 
-        cache.resolve_cross_library_errors(MergedClassFacts::default());
+        let resolved = resolve(cache);
 
-        let app = module(&cache, "app");
+        let app = resolved
+            .find_module(mn("app"))
+            .expect("app module should be present");
         let CachedSafety::Ok(safety) = &app.safety else {
             panic!("app should have cached module safety");
         };
@@ -2276,10 +2293,10 @@ mod tests {
         let mut cache = LibraryCache::empty();
         cache.modules = vec![app, dep];
 
-        cache.resolve_cross_library_errors(MergedClassFacts::default());
+        let resolved = resolve(cache);
 
         assert_eq!(
-            cache.modules[0]
+            resolved.modules()[0]
                 .function_safety
                 .get("wrapper")
                 .map(|info| info.verdict),
@@ -2304,14 +2321,14 @@ mod tests {
         let mut cache = LibraryCache::empty();
         cache.modules = vec![app, dep];
 
-        cache.resolve_cross_library_errors(MergedClassFacts::default());
+        let resolved = resolve(cache);
 
-        let CachedSafety::Ok(safety) = &cache.modules[0].safety else {
+        let CachedSafety::Ok(safety) = &resolved.modules()[0].safety else {
             panic!("app should have cached module safety");
         };
         assert!(safety.errors.is_empty());
         assert_eq!(
-            cache.modules[0]
+            resolved.modules()[0]
                 .function_safety
                 .get("wrapper")
                 .map(|info| info.verdict),
@@ -2336,9 +2353,9 @@ mod tests {
         let mut cache = LibraryCache::empty();
         cache.modules = vec![app, dep];
 
-        cache.resolve_cross_library_errors(MergedClassFacts::default());
+        let resolved = resolve(cache);
 
-        let CachedSafety::Ok(safety) = &cache.modules[0].safety else {
+        let CachedSafety::Ok(safety) = &resolved.modules()[0].safety else {
             panic!("app should have cached module safety");
         };
         assert!(safety.errors.is_empty());
@@ -2380,9 +2397,10 @@ mod tests {
                 .unwrap_or(false)
         };
 
-        // With injection: the cycle is rebuilt and `typing` propagates.
-        let mut with = make_cache();
-        let graph_only_stubs = with.inject_bundled_stub_graph(default_python_version());
+        // With injection: the cycle is rebuilt and `typing` propagates. Built the
+        // way the binary reduce builds it, which injects the stub graph.
+        let with = ReduceWorkspace::single(make_cache(), default_python_version());
+        let graph_only_stubs = with.graph_only_stubs().clone();
         assert!(
             graph_only_stubs.contains(&mn("typing")) && graph_only_stubs.contains(&mn("types")),
             "bundled stubs typing/types should be injected as graph-only modules",
@@ -2391,7 +2409,7 @@ mod tests {
             !graph_only_stubs.contains(&mn("typing_extensions")),
             "an already-present real module must not be overwritten by the stub graph",
         );
-        let resolved = reduce_workspace_from_merged(with, graph_only_stubs.clone()).resolve();
+        let resolved = with.resolve();
         let analysis = LifeGuardAnalysis::from_resolved_cache(&resolved, &options);
         assert!(
             te_inherits_typing(&analysis),
@@ -2403,10 +2421,10 @@ mod tests {
         );
 
         // Without injection: `typing` is not a node, so no propagation.
-        let mut empty = graph_only_stubs;
-        empty.clear();
         let without = make_cache();
-        let resolved = reduce_workspace_from_merged(without, empty).resolve();
+        let resolved =
+            reduce_workspace_from_merged(without, AHashSet::default(), MergedClassFacts::default())
+                .resolve();
         let analysis = LifeGuardAnalysis::from_resolved_cache(&resolved, &options);
         assert!(
             !te_inherits_typing(&analysis),
@@ -2416,7 +2434,7 @@ mod tests {
 
     #[test]
     fn test_reduce_keeps_unsafe_decorator_error_after_unrelated_promotion() {
-        let mut cache = LibraryCache {
+        let cache = LibraryCache {
             modules: vec![
                 cached_module("app")
                     .errors(vec![parameterized_decorator_error("app.deco")])
@@ -2432,9 +2450,11 @@ mod tests {
             ..Default::default()
         };
 
-        cache.resolve_cross_library_errors(MergedClassFacts::default());
+        let resolved = resolve(cache);
 
-        let app = module(&cache, "app");
+        let app = resolved
+            .find_module(mn("app"))
+            .expect("app module should be present");
         let CachedSafety::Ok(safety) = &app.safety else {
             panic!("app should have cached module safety");
         };
@@ -2455,7 +2475,7 @@ mod tests {
 
     #[test]
     fn test_reduce_clears_bare_decorator_error_without_nested_function_check() {
-        let mut cache = LibraryCache {
+        let cache = LibraryCache {
             modules: vec![
                 cached_module("app")
                     .errors(vec![cached_error(
@@ -2469,9 +2489,11 @@ mod tests {
             ..Default::default()
         };
 
-        cache.resolve_cross_library_errors(MergedClassFacts::default());
+        let resolved = resolve(cache);
 
-        let app = module(&cache, "app");
+        let app = resolved
+            .find_module(mn("app"))
+            .expect("app module should be present");
         let CachedSafety::Ok(safety) = &app.safety else {
             panic!("app should have cached module safety");
         };
@@ -2483,7 +2505,7 @@ mod tests {
 
     #[test]
     fn test_reduce_clears_decorator_error_when_nested_functions_are_safe() {
-        let mut cache = LibraryCache {
+        let cache = LibraryCache {
             modules: vec![
                 cached_module("app")
                     .errors(vec![parameterized_decorator_error("app.deco")])
@@ -2499,9 +2521,11 @@ mod tests {
             ..Default::default()
         };
 
-        cache.resolve_cross_library_errors(MergedClassFacts::default());
+        let resolved = resolve(cache);
 
-        let app = module(&cache, "app");
+        let app = resolved
+            .find_module(mn("app"))
+            .expect("app module should be present");
         let CachedSafety::Ok(safety) = &app.safety else {
             panic!("app should have cached module safety");
         };
@@ -2534,7 +2558,9 @@ mod tests {
             .push(safe_cached_module("collections", &[], &[]));
 
         let graph_only_stubs = [mn("collections")].into_iter().collect();
-        let resolved = reduce_workspace_from_merged(cache, graph_only_stubs).resolve();
+        let resolved =
+            reduce_workspace_from_merged(cache, graph_only_stubs, MergedClassFacts::default())
+                .resolve();
         let analysis = LifeGuardAnalysis::from_resolved_cache(&resolved, &options);
 
         let consumer_deps = analysis
@@ -2580,7 +2606,9 @@ mod tests {
         cache.modules.push(safe_cached_module("torch.nn", &[], &[]));
 
         let graph_only_stubs = Default::default();
-        let resolved = reduce_workspace_from_merged(cache, graph_only_stubs).resolve();
+        let resolved =
+            reduce_workspace_from_merged(cache, graph_only_stubs, MergedClassFacts::default())
+                .resolve();
         let analysis = LifeGuardAnalysis::from_resolved_cache(&resolved, &options);
 
         let consumer_deps = analysis

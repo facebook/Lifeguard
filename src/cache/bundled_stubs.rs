@@ -30,7 +30,7 @@ impl LibraryCache {
     /// matches the e2e graph: per-library caches drop stub-only modules, losing
     /// the typeshed import cycle. Skips names a real library already provides.
     /// Returns the injected names so the caller can keep them out of the safety map.
-    pub fn inject_bundled_stub_graph(
+    pub(super) fn inject_bundled_stub_graph(
         &mut self,
         python_version: PythonVersion,
     ) -> AHashSet<ModuleName> {

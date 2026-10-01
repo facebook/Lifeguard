@@ -57,9 +57,11 @@ pub(super) fn graph_edge_sets(graph: &ImportGraph, name: &ModuleName) -> GraphEd
     }
 }
 
-/// Cached analysis results for a single Python library.
-/// Contains all information needed to merge with other libraries
-/// in a map-reduce analysis pipeline.
+/// One library's analysis facts as the map phase produced them: everything
+/// needed to merge with other libraries, and nothing yet resolved against them.
+///
+/// This is the serialized artifact, and also the container [`super::ReduceWorkspace`]
+/// uses as a merge accumulator. See the module docs for the phases.
 #[derive(Serialize, Deserialize, Default)]
 pub struct LibraryCache {
     pub modules: Vec<CachedModule>,
