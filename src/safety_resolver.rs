@@ -34,6 +34,7 @@ use crate::hasher::FixedState;
 use crate::module_safety::FunctionSafety;
 use crate::module_safety::FunctionSafetyInfo;
 use crate::mro::c3_linearize;
+use crate::names::enclosing_module;
 use crate::traits::ModuleNameExt;
 
 /// Whether `local_name` is cached `Safe` in `fs`.
@@ -402,10 +403,7 @@ fn split_at_module_in<'n>(
     modules: &AHashSet<ModuleName>,
     func_name: &'n str,
 ) -> Option<(ModuleName, &'n str)> {
-    let fqn = ModuleName::from_str(func_name);
-    fqn.iter_parents()
-        .find(|(parent, _)| modules.contains(parent))
-        .map(|(parent, dot_pos)| (parent, &func_name[dot_pos + 1..]))
+    enclosing_module(func_name, |m| modules.contains(m))
 }
 
 /// Whether a plain function call can be verified as safe using cached

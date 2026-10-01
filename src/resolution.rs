@@ -19,6 +19,7 @@ use crate::module_safety::FunctionSafety;
 use crate::module_safety::FunctionSafetyInfo;
 use crate::module_safety::MutationCandidate;
 use crate::module_safety::MutationCandidateSite;
+use crate::names::enclosing_module;
 use crate::traits::ModuleNameExt;
 
 pub(crate) struct ResolutionOutcome {
@@ -256,13 +257,10 @@ struct PromotionCandidate {
 
 /// Split a callee at its longest known module prefix.
 fn resolve_callee(func_name: &str, module_names: &AHashSet<ModuleName>) -> ResolvedCallee {
-    match ModuleName::from_str(func_name)
-        .iter_parents()
-        .find(|(parent, _)| module_names.contains(parent))
-    {
-        Some((module, dot_pos)) => ResolvedCallee::Qualified {
+    match enclosing_module(func_name, |m| module_names.contains(m)) {
+        Some((module, local)) => ResolvedCallee::Qualified {
             module,
-            local: func_name[dot_pos + 1..].to_owned(),
+            local: local.to_owned(),
         },
         None => ResolvedCallee::Unqualified {
             name: func_name.to_owned(),
