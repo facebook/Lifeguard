@@ -257,6 +257,13 @@ impl Exports {
             .is_some_and(|resolved| is_class_export(&resolved.as_module_name()))
     }
 
+    /// Whether these sources export the symbol at all. A false `is_class` means
+    /// "not a class" only when this holds; otherwise the defining module is
+    /// simply not in this action's sources and the symbol's kind is unknown.
+    pub fn is_known_symbol(&self, name: &ModuleName) -> bool {
+        self.exports.contains_key(name)
+    }
+
     /// Check if a symbol is a global variable.
     pub fn is_global(&self, name: &ModuleName) -> bool {
         self.exports

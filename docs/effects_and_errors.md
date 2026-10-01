@@ -217,11 +217,12 @@ errors but not discover effects that were never extracted.
 | `DecoratorCall` / `ImportedDecoratorCall` | `@deco` | yes | `UnsafeDecoratorCall` | `UnknownDecoratorCall` | to resolve an imported decorator |
 | the same, with `EffectData::Call` | `@deco(args)` | yes | `UnsafeDecoratorCall`, and the factory's immediate nested functions must also be safe | `UnknownDecoratorCall` | as above, plus the factory's nested functions |
 | `ImportedTypeAttr` | attribute access on an instance of a class defined in *another* module | no | `UnsafeMethodCall` | — | **yes, entirely** |
+| `UnconfirmedTypeAttr` | the same, where this action cannot confirm the receiver's type is a class at all | no | `UnsafeMethodCall`, synthesized in the reduce | — | **yes, entirely** |
 | `UnknownObject` | attribute access on an unresolved object | no | — | `UnknownObject`, converted directly by `from_effect` | no |
 
-### Why `ImportedTypeAttr` is the sharp edge
+### Why attribute access is the sharp edge
 
-`source_analyzer.rs` decides between three outcomes for `obj.attr`:
+`source_analyzer.rs` decides between four outcomes for `obj.attr`:
 
 ```rust
 if let Some(typ) = self.info.bindings.get_type(&res.scope, &res.name) {
@@ -230,35 +231,36 @@ if let Some(typ) = self.info.bindings.get_type(&res.scope, &res.name) {
     } else if self.info.exports.is_class(typ) {
         // class elsewhere: emit ImportedTypeAttr, resolved later in project.rs
     }
+} else if let Some(typ) = self.info.bindings.get_unconfirmed_type(...) {
+    // the receiver came from calling an imported name whose module is absent:
+    // emit UnconfirmedTypeAttr, recorded as a property candidate for the reduce
 }
 ```
 
-Both branches need facts from outside the file: `get_type` has to infer the
-receiver's type, which means resolving the constructor that produced it, and
-`is_class` reads another module's exports. When neither is available, the code
-falls through and emits *nothing*. The access is silently treated as inert.
+The first two branches need facts from outside the file: `get_type` has to infer
+the receiver's type, which means resolving the constructor that produced it, and
+`is_class` reads another module's exports.
 
-That is a real divergence between the two analysis paths, not a hypothetical:
+This was the one case where a map action extracted *less* rather than resolving
+less, and it produced a real false-safe:
 `libpasteurize.fixes.fix_features` reads `features.PATTERN`, which is a
 `@property` with a side effect. Analyzed with `libpasteurize.fixes.feature_base`
 present, it produces `ImportedTypeAttr` and the module fails. Analyzed in a shard
-without it, no effect is produced, and the module passes. The shard's cache does
-contain two `UnknownFunctionCall` errors for the unresolved constructors, which
-the reduce clears correctly once `feature_base` merges in — so the surviving
-difference is not something the reduce did wrong.
+without it, the access used to produce no effect at all, and the module passed.
+
+The fourth branch closes that. `match_imported_constructor` distinguishes
+"resolved, and not a class" from "cannot resolve, so unknowable", and only the
+second binds `Value::UnconfirmedInstance`. The access is then recorded as an
+`PropertyCandidate` — the symbolic type, the attribute and the source range —
+which `LibraryCache::resolve_property_candidates` settles once the merged
+`class_properties` show whether the attribute is a property and the merged
+verdicts show whether its getter is safe.
 
 Note also that `UnsafeMethodCall` covers both real method calls and this
 attribute access. The reduce discharges such an error by asking whether the named
 callee's verdict is safe, which for a property is a question about the getter's
 body rather than about whether the attribute is a property at all. The two
 coincide today, because a getter with a side effect is itself unsafe.
-
-### What this implies
-
-Making the incremental path agree with the whole-program path on this class of
-finding requires the map to record an obligation where it currently records
-nothing — an unresolved attribute access to be reclassified when the receiver's
-type resolves. Improving the reduce cannot close it.
 
 ## Pipeline Summary
 

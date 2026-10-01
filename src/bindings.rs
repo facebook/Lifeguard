@@ -52,6 +52,16 @@ pub enum Value {
     // A named variable (e.g. a global constant) whose type we cannot determine.
     // See Alias::Global for why this is useful.
     Variable(ModuleName),
+    // The result of calling an imported name that we cannot confirm is a class
+    UnconfirmedInstance(ModuleName),
+}
+
+/// What `Name(...)` on an imported name was found to construct.
+enum Constructed {
+    /// The name resolves to a class in this action's sources.
+    Class(ModuleName),
+    /// The name's module is absent, so it may or may not be a class.
+    Unconfirmed(ModuleName),
 }
 
 impl Value {
@@ -211,6 +221,15 @@ impl BindingsTable {
         match val {
             Value::Unknown => None,
             Value::Instance(x) => Some(x),
+            _ => None,
+        }
+    }
+
+    /// The symbolic type of `C()` where `C` is an imported name that could not
+    /// be confirmed to be a class.
+    pub fn get_unconfirmed_type(&self, scope: &ModuleName, name: &Name) -> Option<&ModuleName> {
+        match self.lookup(scope, name)? {
+            Value::UnconfirmedInstance(x) => Some(x),
             _ => None,
         }
     }
@@ -718,9 +737,16 @@ impl<'a, 'b> BindingsTableBuilder<'a, 'b> {
             }
             self.add_binding(name.clone(), val);
         } else {
-            if let Some(typ) = self.match_imported_constructor(rhs) {
-                self.add_binding(name, Value::Instance(typ));
-                return;
+            match self.match_imported_constructor(rhs) {
+                Some(Constructed::Class(typ)) => {
+                    self.add_binding(name, Value::Instance(typ));
+                    return;
+                }
+                Some(Constructed::Unconfirmed(typ)) => {
+                    self.add_binding(name, Value::UnconfirmedInstance(typ));
+                    return;
+                }
+                None => {}
             }
             let val = self.expr_value(rhs);
             self.add_binding(name, val.clone());
@@ -730,7 +756,7 @@ impl<'a, 'b> BindingsTableBuilder<'a, 'b> {
     /// See if an expression is a constructor for an imported class, e.g.
     ///   from foo import A as FooA
     ///   x = FooA()  # returns `Some(foo.A)`
-    fn match_imported_constructor(&mut self, rhs: &Expr) -> Option<ModuleName> {
+    fn match_imported_constructor(&mut self, rhs: &Expr) -> Option<Constructed> {
         let Expr::Call(call) = rhs else {
             return None;
         };
@@ -738,10 +764,21 @@ impl<'a, 'b> BindingsTableBuilder<'a, 'b> {
             return None;
         };
         let imported_name = self.resolve_to_imported_name(&expr_name.id)?;
-        let source_name = self.exports.resolve_transitive(&imported_name)?;
-        self.exports
-            .is_class(&source_name.as_module_name())
-            .then(|| imported_name.as_module_name())
+        let Some(source_name) = self.exports.resolve_transitive(&imported_name) else {
+            // The import statement named it, but its module is not in this
+            // action's sources, so whether it is a class is unknowable here.
+            return Some(Constructed::Unconfirmed(imported_name.as_module_name()));
+        };
+        let source_name = source_name.as_module_name();
+        if self.exports.is_class(&source_name) {
+            return Some(Constructed::Class(imported_name.as_module_name()));
+        }
+        if self.exports.is_known_symbol(&source_name) {
+            // A confirmed non-constructor, which other inference (a stub's
+            // return annotation, say) may still type.
+            return None;
+        }
+        Some(Constructed::Unconfirmed(imported_name.as_module_name()))
     }
 
     // An `import` statement introduces a name into its scope. If that scope is visible at module

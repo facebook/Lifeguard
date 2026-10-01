@@ -1009,6 +1009,18 @@ impl<'a> SourceAnalyzer<'a> {
                     self.add_effect(eff, output);
                 }
             }
+        } else if let Some(typ) = self
+            .info
+            .bindings
+            .get_unconfirmed_type(&res.scope, &res.name)
+        {
+            // The receiver was built by calling an imported name whose module is
+            // absent, so we cannot yet tell whether the attribute is a property.
+            if !typ.as_str().starts_with("builtins.") {
+                let fname = typ.append(&attr.id);
+                let eff = Effect::new(EffectKind::UnconfirmedTypeAttr, fname, obj.range());
+                self.add_effect(eff, output);
+            }
         }
 
         if res.is_import() {

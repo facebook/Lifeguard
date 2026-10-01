@@ -58,6 +58,7 @@ use crate::module_safety::MutatedParam;
 use crate::module_safety::MutationCandidate;
 use crate::module_safety::MutationCandidateSite;
 use crate::module_safety::ParamPosition;
+use crate::module_safety::PropertyCandidate;
 use crate::module_safety::SafetyResult;
 use crate::mro::c3_linearize;
 use crate::names::enclosing_module;
@@ -304,6 +305,8 @@ pub struct AnalysisOutput {
     /// Class FQN -> the functions a constructor call to it dispatches to,
     /// resolved here where the class table is complete.
     pub constructor_callees: Vec<(ModuleName, ConstructorCallees)>,
+    /// Class FQN -> property field names, for resolving property candidates.
+    pub class_properties: Vec<(ModuleName, Vec<String>)>,
 }
 
 // Collects whole-project analysis output, as well as any global state that is required while
@@ -365,6 +368,16 @@ impl GlobalAnalysisState {
 
     fn add_error_to_module(&self, mod_name: &ModuleName, err: SafetyError) {
         self.update_module_safety(mod_name, |safety| safety.add_error(err));
+    }
+
+    fn add_property_candidate_to_module(
+        &self,
+        mod_name: &ModuleName,
+        candidate: PropertyCandidate,
+    ) {
+        self.update_module_safety(mod_name, |safety| {
+            safety.property_candidates.push(candidate)
+        });
     }
 
     fn add_force_imports_eager_override_to_module(&self, mod_name: &ModuleName, err: SafetyError) {
@@ -479,17 +492,32 @@ pub fn run_analysis(
         filter_out_stubs(&safety_map, sources)
     });
 
-    let class_bases = time("  Extracting class bases", || {
-        info.classes
-            .base_edges()
-            .into_par_iter()
-            .filter(|(class, _)| {
-                resolve_enclosing_module(class, |module| safety_map.contains_key(module)).is_some()
-            })
-            .collect()
+    // Filter the class facts to classes this pass owns.
+    let owned = |class: &ModuleName| {
+        resolve_enclosing_module(class, |module| safety_map.contains_key(module)).is_some()
+    };
+    let (class_bases, class_properties) = time("  Extracting class facts", || {
+        rayon::join(
+            || {
+                info.classes
+                    .base_edges()
+                    .into_par_iter()
+                    .filter(|(class, _)| owned(class))
+                    .collect()
+            },
+            || {
+                info.classes
+                    .property_edges()
+                    .into_par_iter()
+                    .filter(|(class, _)| owned(class))
+                    .collect()
+            },
+        )
     });
     let constructor_callees = time("  Resolving constructor callees", || {
-        info.resolved_constructor_callees()
+        let mut resolved = info.resolved_constructor_callees();
+        resolved.retain(|(class, _)| owned(class));
+        resolved
     });
 
     // Deallocating ProjectInfo takes seconds on large projects. Hand it to a
@@ -502,6 +530,7 @@ pub fn run_analysis(
         parse_errors,
         class_bases,
         constructor_callees,
+        class_properties,
     }
 }
 
@@ -1324,7 +1353,7 @@ impl ProjectInfo {
         self.analysis_map.par_iter().for_each(|(mod_name, result)| {
             let defs = &result.definitions;
             for scope in &defs.eager_scopes {
-                if let Err(e) = self.collect_errors_from_scope(mod_name, scope, &state) {
+                if let Err(e) = self.collect_errors_from_scope(mod_name, scope, mode, &state) {
                     state
                         .safety_map
                         .insert(*mod_name, SafetyResult::AnalysisError(e));
@@ -1855,6 +1884,7 @@ impl ProjectInfo {
         &self,
         mod_name: &ModuleName,
         scope: &ModuleName,
+        mode: ExecutionMode,
         state: &GlobalAnalysisState,
     ) -> Result<()> {
         let Some(effs) = self.effect_table.get(scope) else {
@@ -1891,6 +1921,19 @@ impl ProjectInfo {
                             self.check_call_safety(&mut call, state, true)?;
                         }
                     }
+                }
+            } else if eff.kind == EffectKind::UnconfirmedTypeAttr {
+                // The map phase cannot tell if this access runs a property getter,
+                // so it is recorded for the reduce. The whole-program path never needs
+                // it: it can see every class already.
+                if mode == ExecutionMode::Incremental {
+                    state.add_property_candidate_to_module(
+                        mod_name,
+                        PropertyCandidate {
+                            attribute: eff.name,
+                            range: eff.range,
+                        },
+                    );
                 }
             } else if eff.kind == EffectKind::ImportedVarMutation {
                 // We only want to capture this effect as an error if it is
@@ -2431,6 +2474,59 @@ mod tests {
         "#;
 
         assert_leveled_before(module, "m.Base.__init__", "m.Sub");
+    }
+
+    /// Every class fact a pass ships has to name a class this pass owns.
+    #[test]
+    fn class_facts_are_scoped_to_the_classes_the_pass_owns() {
+        // `datetime.timedelta` is a bundled stub class with a constructor, so it
+        // reaches the class table without the module ever being owned here.
+        let module = r#"
+            import datetime
+
+            SPAN = datetime.timedelta(days=1)
+        "#;
+
+        let sources = crate::test_lib::TestSources::new(&[("m", module)]);
+        let config = AnalysisConfig::default();
+        let (import_graph, exports, in_scope) = ImportGraph::make_with_exports(&sources, &config);
+        let output = run_analysis(
+            &sources,
+            &exports,
+            &import_graph,
+            &config,
+            ExecutionMode::Incremental,
+            &in_scope,
+        );
+
+        let owned = |class: &ModuleName| {
+            resolve_enclosing_module(class, |module| output.safety_map.contains_key(module))
+                .is_some()
+        };
+        let assert_owned = |kind: &str, classes: Vec<ModuleName>| {
+            let leaked: Vec<String> = classes
+                .into_iter()
+                .filter(|c| !owned(c))
+                .map(|c| c.as_str().to_owned())
+                .collect();
+            assert!(
+                leaked.is_empty(),
+                "{kind} names classes this pass does not own: {leaked:?}",
+            );
+        };
+
+        assert_owned(
+            "class_bases",
+            output.class_bases.iter().map(|(c, _)| *c).collect(),
+        );
+        assert_owned(
+            "class_properties",
+            output.class_properties.iter().map(|(c, _)| *c).collect(),
+        );
+        assert_owned(
+            "constructor_callees",
+            output.constructor_callees.iter().map(|(c, _)| *c).collect(),
+        );
     }
 
     #[test]

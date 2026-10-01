@@ -50,6 +50,8 @@ pub enum EffectKind {
     ImportedFunctionCall,
     // Accessing an attribute on an imported type (may be a property).
     ImportedTypeAttr,
+    // Accessing an attribute on a value whose class is not in scope.
+    UnconfirmedTypeAttr,
     // Calling a bound method, e.g. `obj.method(...)`
     MethodCall,
     // Calling a method through the class, e.g. `C.method(obj, ...)`
