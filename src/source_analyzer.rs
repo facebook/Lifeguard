@@ -737,6 +737,12 @@ impl<'a> SourceAnalyzer<'a> {
 
     /// The class a call to `func` returns: `func` itself when it names a class,
     /// otherwise its stub-annotated return type.
+    ///
+    /// A name this library cannot see at all is taken to be a class. A wrong
+    /// guess will be corrected at cross-library resolution time.
+    ///
+    /// A *confirmed* non-class still returns `None`: this library can see the
+    /// symbol and knows it is not a class, so there is nothing to merge.
     fn call_result_class(&self, func: &Expr) -> Option<ModuleName> {
         // A method on another call's result is not a name the resolver can see,
         // so resolve it against the class that call returns.
@@ -747,7 +753,10 @@ impl<'a> SourceAnalyzer<'a> {
         if self.info.exports.is_class(&name) {
             return Some(name);
         }
-        self.info.exports.resolve_return_class(&name)
+        if let Some(class) = self.info.exports.resolve_return_class(&name) {
+            return Some(class);
+        }
+        (!self.info.exports.is_known_symbol(&name)).then_some(name)
     }
 
     /// The fully qualified name a call target resolves to.

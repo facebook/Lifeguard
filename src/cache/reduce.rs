@@ -251,6 +251,7 @@ impl<'a> ResolutionContext<'a> {
         SafetyResolver::with_safe_index(modules, self.func_safety_by_module, globally_safe)
             .with_class_bases(self.class_bases)
             .with_constructor_callees(self.constructor_callees)
+            .with_mro_modules(self.module_names)
     }
 }
 

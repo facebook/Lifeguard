@@ -23,17 +23,17 @@ mod tests {
     use lifeguard::test_lib::path_differences;
     use lifeguard::test_lib::run_lifeguard_analysis;
 
-    /// Assert a known gap precisely, so that any new unknown failures still show up.
-    fn assert_known_gap(
-        modules: &Vec<(&str, &str)>,
-        whole_program_passing: &str,
-        incremental_passing: &str,
-        single_shard_reason: &str,
-    ) {
+    /// Assert the star-import gap precisely, so that any new unknown failures
+    /// still show up.
+    fn assert_star_import_gap(modules: &Vec<(&str, &str)>) {
         let differences = path_differences(modules, &[1, 2, 3]);
 
         let diverging: Vec<usize> = differences.iter().map(|(count, _)| *count).collect();
-        assert_eq!(diverging, vec![2, 3], "{}", single_shard_reason);
+        assert_eq!(
+            diverging,
+            vec![2, 3],
+            "one shard can expand the star locally, so the gap needs a split to appear",
+        );
         for (count, difference) in &differences {
             assert!(
                 difference.starts_with("passing modules:"),
@@ -42,37 +42,14 @@ mod tests {
             // Located by content and relative position rather than by matching
             // the rendered label, so reformatting the message cannot turn this
             // into an assertion that quietly checks nothing.
-            let whole_program = difference.find(whole_program_passing);
-            let incremental = difference.find(incremental_passing);
+            let whole_program = difference.find(r#"["app", "starbase", "starmid"]"#);
+            let incremental = difference.find(r#"["starbase", "starmid"]"#);
             assert!(
                 matches!((whole_program, incremental), (Some(w), Some(i)) if w < i),
                 "{count} shards: expected whole-program to pass `app` and incremental to fail it \
                  (conservative, not a false-safe), got: {difference}",
             );
         }
-    }
-
-    /// The two star fixtures diverge identically: the symbol's own safety does
-    /// not reach the outcome while the import is unresolved.
-    fn assert_star_import_gap(modules: &Vec<(&str, &str)>) {
-        assert_known_gap(
-            modules,
-            r#"["app", "starbase", "starmid"]"#,
-            r#"["starbase", "starmid"]"#,
-            "one shard can expand the star locally, so the gap needs a split to appear",
-        );
-    }
-
-    /// The chained-call fixtures below diverge the same way: A shard holding `app`
-    /// alone falls back to `UnknownFunctionCall <chained method>`, which the
-    /// reduce cannot resolve because it names no callee.
-    fn assert_chained_call_gap(modules: &Vec<(&str, &str)>) {
-        assert_known_gap(
-            modules,
-            r#"["app", "base", "sub"]"#,
-            r#"["base", "sub"]"#,
-            "one shard keeps every module in one library, so the gap needs a split to appear",
-        );
     }
 
     #[test]
@@ -365,7 +342,7 @@ mod tests {
     }
 
     #[test]
-    fn inherited_method_is_a_known_gap() {
+    fn inherited_method_agrees() {
         // Calling `Sub.method` resolves through the MRO to a base class in
         // another module, so the reduce has to complete the linearization from
         // cached class bases rather than from a local class table.
@@ -385,11 +362,11 @@ mod tests {
 
             value = Sub().method()
         "#;
-        assert_chained_call_gap(&vec![("base", base), ("sub", sub), ("app", app)]);
+        assert_paths_agree_sharded(&vec![("base", base), ("sub", sub), ("app", app)]);
     }
 
     #[test]
-    fn inherited_unsafe_method_is_a_known_gap() {
+    fn inherited_unsafe_method_agrees() {
         let base = r#"
             import os
 
@@ -408,11 +385,11 @@ mod tests {
 
             value = Sub().method()
         "#;
-        assert_chained_call_gap(&vec![("base", base), ("sub", sub), ("app", app)]);
+        assert_paths_agree_sharded(&vec![("base", base), ("sub", sub), ("app", app)]);
     }
 
     #[test]
-    fn overriding_method_shadows_base_is_a_known_gap() {
+    fn overriding_method_shadows_base_agrees() {
         // The override must win over the inherited method in both paths; the
         // reduce walks the MRO only when the class has no entry of its own.
         let base = r#"
@@ -433,7 +410,7 @@ mod tests {
 
             value = Sub().method()
         "#;
-        assert_chained_call_gap(&vec![("base", base), ("sub", sub), ("app", app)]);
+        assert_paths_agree_sharded(&vec![("base", base), ("sub", sub), ("app", app)]);
     }
 
     #[test]
