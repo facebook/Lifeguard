@@ -91,6 +91,8 @@ enum WireSafety {
 struct WireFunctionSafetyInfo {
     verdict: FunctionSafety,
     missing_dep_callees: Vec<NameId>,
+    missing_dep_decorators: Vec<NameId>,
+    returns_identity_decorator: bool,
     mutated_params: Vec<WireMutatedParam>,
 }
 
@@ -204,6 +206,7 @@ fn collect_module_names(module: &CachedModule, names: &mut AHashSet<ModuleName>)
     }
     for info in module.function_safety.values() {
         names.extend(info.missing_dep_callees.iter().copied());
+        names.extend(info.missing_dep_decorators.iter().copied());
         names.extend(info.mutated_params.iter().map(|param| param.name));
     }
     for candidate in &module.mutation_candidates {
@@ -565,6 +568,12 @@ impl WireFunctionSafetyInfo {
                 .iter()
                 .map(|name| table.id(*name))
                 .collect(),
+            missing_dep_decorators: info
+                .missing_dep_decorators
+                .iter()
+                .map(|name| table.id(*name))
+                .collect(),
+            returns_identity_decorator: info.returns_identity_decorator,
             mutated_params: info
                 .mutated_params
                 .iter()
@@ -580,6 +589,8 @@ impl WireFunctionSafetyInfo {
         Ok(FunctionSafetyInfo {
             verdict: self.verdict,
             missing_dep_callees: decode_name_set(names, self.missing_dep_callees)?,
+            missing_dep_decorators: decode_name_set(names, self.missing_dep_decorators)?,
+            returns_identity_decorator: self.returns_identity_decorator,
             mutated_params: self
                 .mutated_params
                 .into_iter()

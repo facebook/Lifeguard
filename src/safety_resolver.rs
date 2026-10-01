@@ -19,12 +19,14 @@
 //! an own verdict fall through to a base clears an override on its parent -- so
 //! they live together rather than beside the cache schema.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use dashmap::DashMap;
 use pyrefly_python::module_name::ModuleName;
 
 use crate::cache::CONSTRUCTOR_METHODS;
+use crate::cache::CachedReExport;
 use crate::cache::ConstructorCallees;
 use crate::errors::ErrorKind;
 use crate::errors::SafetyError;
@@ -48,13 +50,14 @@ fn lookup_in_safety_map(local_name: &str, fs: &AHashMap<String, FunctionSafetyIn
 /// Whether an unqualified decorator name is verified safe, memoized.
 ///
 /// The answer is "safe given *these* modules and *these* verdicts", which is why
-/// the map holds both and hands out the resolver itself: a resolver over other
-/// facts has no way to reach this cache. `scan_unqualified_decorator_safe` reads
-/// both, so pinning only the module set would leave the same sharing bug one
-/// level down.
+/// the map holds them and the re-export index and hands out the resolver itself:
+/// a resolver over other facts has no way to reach this cache. The unqualified
+/// decorator scan reads all three, so pinning only the module set would leave
+/// the same sharing bug one level down.
 pub(crate) struct DecoratorVerdictMap<'a> {
     modules: &'a AHashSet<ModuleName>,
     by_module: &'a AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
+    re_exports: &'a ReExportIndex<'a>,
     entries: DashMap<String, bool, FixedState>,
 }
 
@@ -62,10 +65,12 @@ impl<'a> DecoratorVerdictMap<'a> {
     pub(crate) fn new(
         modules: &'a AHashSet<ModuleName>,
         by_module: &'a AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
+        re_exports: &'a ReExportIndex<'a>,
     ) -> Self {
         Self {
             modules,
             by_module,
+            re_exports,
             entries: DashMap::default(),
         }
     }
@@ -79,8 +84,49 @@ impl<'a> DecoratorVerdictMap<'a> {
     pub(crate) fn resolver(&'a self, globally_safe: &'a AHashSet<String>) -> SafetyResolver<'a> {
         let mut resolver =
             SafetyResolver::with_safe_index(self.modules, self.by_module, globally_safe);
+        resolver.re_exports = Some(self.re_exports);
         resolver.decorator_verdicts = Some(self);
         resolver
+    }
+}
+
+/// Merged re-exports keyed by the exporting module and name, each pointing at
+/// the module and name it was imported from.
+pub(crate) struct ReExportIndex<'a> {
+    definitions: AHashMap<(ModuleName, &'a str), (ModuleName, &'a str)>,
+}
+
+impl<'a> ReExportIndex<'a> {
+    pub(crate) fn new(re_exports: &'a [CachedReExport]) -> Self {
+        Self {
+            definitions: re_exports
+                .iter()
+                .map(|re| {
+                    (
+                        (re.exported_module, re.exported_attr.as_str()),
+                        (re.imported_module, re.imported_attr.as_str()),
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    /// The module and name that `module.name`'s re-export chain ends at, or
+    /// `None` when the chain cycles.
+    fn definition_of<'n>(&self, module: ModuleName, name: &'n str) -> Option<(ModuleName, &'n str)>
+    where
+        'a: 'n,
+    {
+        let mut current = (module, name);
+        let mut visited = Vec::new();
+        while let Some(&next) = self.definitions.get(&current) {
+            if visited.contains(&current) {
+                return None;
+            }
+            visited.push(current);
+            current = next;
+        }
+        Some(current)
     }
 }
 
@@ -107,6 +153,7 @@ pub(crate) struct SafetyResolver<'a> {
     constructor_callees: Option<&'a HashMap<ModuleName, ConstructorCallees>>,
     /// Every module in the merge, used only to resolve MRO ancestors.
     mro_modules: Option<&'a AHashSet<ModuleName>>,
+    re_exports: Option<&'a ReExportIndex<'a>>,
 }
 
 impl<'a> SafetyResolver<'a> {
@@ -123,6 +170,7 @@ impl<'a> SafetyResolver<'a> {
             class_bases: None,
             constructor_callees: None,
             mro_modules: None,
+            re_exports: None,
         }
     }
 
@@ -140,6 +188,7 @@ impl<'a> SafetyResolver<'a> {
             class_bases: None,
             constructor_callees: None,
             mro_modules: None,
+            re_exports: None,
         }
     }
 
@@ -158,6 +207,12 @@ impl<'a> SafetyResolver<'a> {
         constructor_callees: &'a HashMap<ModuleName, ConstructorCallees>,
     ) -> Self {
         self.constructor_callees = Some(constructor_callees);
+        self
+    }
+
+    pub(crate) fn with_re_exports(mut self, re_exports: &'a ReExportIndex<'a>) -> Self {
+        self.decorator_verdicts = None;
+        self.re_exports = Some(re_exports);
         self
     }
 
@@ -242,21 +297,12 @@ impl<'a> SafetyResolver<'a> {
             .is_some_and(|(module, local)| self.qualified_safe(&module, local))
     }
 
-    /// Whether `module` declares `local` decorator-verified-safe: the shared
-    /// half of the two entry points below, which differ only in what they do
-    /// with a name that names no module.
-    fn decorator_safe_in(&self, module: &ModuleName, local: &str) -> bool {
-        self.by_module
-            .get(module)
-            .is_some_and(|fs| lookup_decorator_in_safety_map(local, fs))
-    }
-
     /// `is_decorator_call_verified_safe` restricted to a qualified name, for the
     /// same reason `is_call_verified_safe_no_unqualified` exists: an unbound
     /// short name has no proven callee to verify.
     fn is_decorator_call_verified_safe_no_unqualified(&self, func_name: &str) -> bool {
         self.split_at_module(func_name)
-            .is_some_and(|(module, local)| self.decorator_safe_in(&module, local))
+            .is_some_and(|(module, local)| self.decorator_safe_in(module, local))
     }
 
     /// Whether a parameterized-decorator call is safe: the factory AND every
@@ -267,7 +313,7 @@ impl<'a> SafetyResolver<'a> {
         // A qualified name names a callee, so its own verdict is the answer and
         // the unqualified fallback below must not rescue a `false`.
         if let Some((module, local)) = self.split_at_module(func_name) {
-            return self.decorator_safe_in(&module, local);
+            return self.decorator_safe_in(module, local);
         }
         let Some(cache) = self.decorator_verdicts else {
             return self.scan_unqualified_decorator_safe(func_name);
@@ -285,7 +331,39 @@ impl<'a> SafetyResolver<'a> {
     fn scan_unqualified_decorator_safe(&self, func_name: &str) -> bool {
         self.modules
             .iter()
-            .any(|module| self.decorator_safe_in(module, func_name))
+            .any(|module| self.decorator_safe_in(*module, func_name))
+    }
+
+    /// Whether `local` is a decorator verified safe in `module`, looked up where
+    /// its re-export chain ends when that has a verdict for it. A re-export copies
+    /// only the factory's own verdict, so its nested functions are only visible
+    /// at the definition.
+    fn decorator_safe_in(&self, module: ModuleName, local: &str) -> bool {
+        let (head, tail) = match local.split_once('.') {
+            Some((head, tail)) => (head, Some(tail)),
+            None => (local, None),
+        };
+        let (defining_module, defining_head) = match self.re_exports {
+            Some(index) => match index.definition_of(module, head) {
+                Some(definition) => definition,
+                None => return false,
+            },
+            None => (module, head),
+        };
+        let defining_local = match tail {
+            None => Cow::Borrowed(defining_head),
+            Some(_) if (defining_module, defining_head) == (module, head) => Cow::Borrowed(local),
+            Some(tail) => Cow::Owned(format!("{defining_head}.{tail}")),
+        };
+        match self.by_module.get(&defining_module) {
+            Some(fs) if fs.contains_key(defining_local.as_ref()) => {
+                lookup_decorator_in_safety_map(&defining_local, fs)
+            }
+            _ => self
+                .by_module
+                .get(&module)
+                .is_some_and(|fs| lookup_decorator_in_safety_map(local, fs)),
+        }
     }
 
     /// The combined verdict of the constructor callees the map phase recorded for
@@ -430,6 +508,9 @@ fn lookup_decorator_in_safety_map(
     if !lookup_in_safety_map(local_name, fs) {
         return false;
     }
+    if fs[local_name].returns_identity_decorator {
+        return true;
+    }
     // A class decorator returns the class, so its constructor methods (not
     // arbitrary nested defs) govern import-time safety; the aggregate-safe
     // factory verdict already reflects them.
@@ -459,7 +540,56 @@ fn is_class_like_entry(local_name: &str, fs: &AHashMap<String, FunctionSafetyInf
 
 #[cfg(test)]
 mod tests {
+    use ruff_python_ast::name::Name;
+
     use super::*;
+
+    #[test]
+    fn decorator_cache_is_tied_to_the_re_export_index() {
+        let origin = ModuleName::from_str("origin");
+        let facade = ModuleName::from_str("facade");
+        let modules = AHashSet::from_iter([origin, facade]);
+        let safe = || FunctionSafetyInfo::new(FunctionSafety::Safe);
+        let by_module = AHashMap::from_iter([
+            (
+                origin,
+                AHashMap::from_iter([
+                    ("register".to_owned(), safe()),
+                    (
+                        "register.inner".to_owned(),
+                        FunctionSafetyInfo::new(FunctionSafety::Unsafe),
+                    ),
+                ]),
+            ),
+            (
+                facade,
+                AHashMap::from_iter([("register".to_owned(), safe())]),
+            ),
+        ]);
+        let re_exports = [CachedReExport {
+            exported_module: facade,
+            exported_attr: Name::new_static("register"),
+            imported_module: origin,
+            imported_attr: Name::new_static("register"),
+        }];
+        let index = ReExportIndex::new(&re_exports);
+        let empty_index = ReExportIndex::new(&[]);
+        let globally_safe = AHashSet::default();
+        let without_exports = DecoratorVerdictMap::new(&modules, &by_module, &empty_index);
+        let resolver = without_exports.resolver(&globally_safe);
+        assert!(resolver.is_decorator_call_verified_safe("register"));
+        assert!(
+            !resolver
+                .with_re_exports(&index)
+                .is_decorator_call_verified_safe("register"),
+            "changing the re-export index must not reuse a cached safe verdict",
+        );
+        let with_exports = DecoratorVerdictMap::new(&modules, &by_module, &index);
+        let resolver = with_exports.resolver(&globally_safe);
+        assert!(!resolver.is_decorator_call_verified_safe("register"));
+        assert!(!resolver.is_decorator_call_verified_safe("register"));
+        assert!(!resolver.is_decorator_call_verified_safe("facade.register"));
+    }
 
     /// The flag and the kind travel separately through the cache, so an artifact
     /// written by another binary could pair them wrongly. The dispatch has to

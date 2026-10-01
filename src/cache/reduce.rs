@@ -57,6 +57,7 @@ use crate::resolution::resolve_program;
 use crate::resolution::unqualified_index_key;
 use crate::runner::warn_unknown_main_module;
 use crate::safety_resolver::DecoratorVerdictMap;
+use crate::safety_resolver::ReExportIndex;
 use crate::safety_resolver::SafetyResolver;
 use crate::traits::ModuleNameExt;
 
@@ -270,6 +271,7 @@ struct ResolutionContext<'a> {
     func_safety_by_module: &'a AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
     class_bases: &'a HashMap<ModuleName, Vec<ModuleName>>,
     constructor_callees: &'a HashMap<ModuleName, ConstructorCallees>,
+    re_exports: &'a ReExportIndex<'a>,
 }
 
 impl<'a> ResolutionContext<'a> {
@@ -283,6 +285,7 @@ impl<'a> ResolutionContext<'a> {
             .with_class_bases(self.class_bases)
             .with_constructor_callees(self.constructor_callees)
             .with_mro_modules(self.module_names)
+            .with_re_exports(self.re_exports)
     }
 }
 
@@ -321,6 +324,8 @@ fn is_resolved_error_verified_safe(
     whole_program: &SafetyResolver,
     scoped: Option<&SafetyResolver>,
     promoted: &AHashSet<(ModuleName, String)>,
+    ctx: &ResolutionContext<'_>,
+    imports: &AHashSet<ModuleName>,
 ) -> bool {
     // A constructor call clears on the class's map-phase-recorded callees, which
     // are whole-program facts. Scoping that check to a module's newly resolved
@@ -332,15 +337,25 @@ fn is_resolved_error_verified_safe(
     if error.kind == ErrorKind::UnsafeDecoratorCall || !qualified {
         return whole_program.is_error_verified_safe(error);
     }
-    // Own-module callees verify against merged verdicts, unless promoted:
-    // promotion evidence is cross-module, so it stays scoped like any other.
+    // Promoted own-module callees also need their recorded import bindings.
     if matches!(
         error.kind,
         ErrorKind::UnsafeFunctionCall | ErrorKind::UnsafeMethodCall
     ) && whole_program
         .split_at_module(error.metadata.as_str().trim_end_matches("()"))
         .is_some_and(|(module, local)| {
-            module == caller && !promoted.contains(&(module, local.to_owned()))
+            module == caller
+                && (!promoted.contains(&(module, local.to_owned()))
+                    || ctx.func_safety_by_module[&module]
+                        .get(local)
+                        .is_some_and(|info| {
+                            !info.missing_dep_callees.is_empty()
+                                && info.missing_dep_callees.iter().all(|callee| {
+                                    whole_program
+                                        .split_at_module(callee.as_str())
+                                        .is_some_and(|(dep, _)| imports.contains(&dep))
+                                })
+                        }))
         })
     {
         return whole_program.is_error_verified_safe(error);
@@ -379,8 +394,8 @@ impl LibraryCache {
     /// Clear cached errors that are verified safe by the resolved program facts.
     ///
     /// Qualified callees use the owning module's newly resolved imports,
-    /// except bound calls to the caller's own module, which use the merged
-    /// verdicts unless the callee was promoted. Unqualified callees use the
+    /// except bound calls to the caller's own module, which use merged verdicts
+    /// after checking promoted callees' import bindings. Unqualified callees use the
     /// whole-program safe-name index, and an `UnsafeDecoratorCall` uses the
     /// whole merged program's static verdicts.
     /// A qualified `UnknownDecoratorCall` is not in that last group: it names a
@@ -391,7 +406,7 @@ impl LibraryCache {
         // resolvers below are over a different module set, so they cannot reach
         // its cache.
         let decorator_verdicts =
-            DecoratorVerdictMap::new(ctx.module_names, ctx.func_safety_by_module);
+            DecoratorVerdictMap::new(ctx.module_names, ctx.func_safety_by_module, ctx.re_exports);
         let whole_program = decorator_verdicts
             .resolver(&outcome.globally_safe)
             .with_class_bases(ctx.class_bases)
@@ -415,6 +430,8 @@ impl LibraryCache {
                     &whole_program,
                     scoped.as_ref(),
                     &promoted,
+                    ctx,
+                    &module.imports,
                 )
             });
         });
@@ -540,6 +557,9 @@ impl LibraryCache {
         let class_properties = merge_class_properties(std::mem::take(&mut self.class_properties));
 
         self.propagate_re_export_safety();
+        // Taken out so the index can borrow them while the modules are mutated.
+        let re_exports = std::mem::take(&mut self.exports.re_exports);
+        let re_export_index = ReExportIndex::new(&re_exports);
 
         let mut func_safety_by_module: AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>> =
             self.modules
@@ -593,7 +613,8 @@ impl LibraryCache {
                     let resolver = SafetyResolver::new(&resolved_modules, &func_safety_by_module)
                         .with_class_bases(&class_bases)
                         .with_constructor_callees(&constructor_callees)
-                        .with_mro_modules(&module_names);
+                        .with_mro_modules(&module_names)
+                        .with_re_exports(&re_export_index);
                     // A recorded constructor callee outranks the class's
                     // aggregate verdict here too, or the error is gone before
                     // `finalize_resolution` ever sees it.
@@ -618,6 +639,7 @@ impl LibraryCache {
                 .iter()
                 .map(|module| (module.name, module.mutation_candidates.as_slice())),
             needed_unqualified,
+            &re_export_index,
             |module_name, metadata, range| {
                 module_errors
                     .entry(module_name)
@@ -643,9 +665,12 @@ impl LibraryCache {
                 func_safety_by_module: &func_safety_by_module,
                 class_bases: &class_bases,
                 constructor_callees: &constructor_callees,
+                re_exports: &re_export_index,
             },
             &outcome,
         );
+
+        self.exports.re_exports = re_exports;
 
         self.resolve_property_candidates(
             &module_names,
@@ -666,6 +691,8 @@ impl LibraryCache {
 
 #[cfg(test)]
 mod tests {
+    use ruff_python_ast::name::Name;
+
     use super::*;
     use crate::effects::ImportedArgs;
     use crate::module_safety::MutationCandidate;
@@ -896,6 +923,66 @@ mod tests {
         assert!(
             !resolver.is_call_verified_safe("m.D.method"),
             "diamond method resolves via C3 to the Unsafe right-branch override, not the Safe ancestor",
+        );
+    }
+
+    #[test]
+    fn reexported_decorator_is_checked_where_it_is_defined() {
+        let names = ["origin", "facade", "outer", "a", "b"].map(ModuleName::from_str);
+        let modules: AHashSet<ModuleName> = names.into_iter().collect();
+        let safe = || FunctionSafetyInfo::new(FunctionSafety::Safe);
+        // Propagation copies only the factory's own verdict to each re-export.
+        let mut by_module: AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>> = names
+            .into_iter()
+            .map(|module| {
+                let verdicts = [("register".to_owned(), safe()), ("wrap".to_owned(), safe())];
+                (module, verdicts.into_iter().collect())
+            })
+            .collect();
+        let origin = by_module.get_mut(&names[0]).expect("origin has verdicts");
+        origin.insert(
+            "register.decorator".to_owned(),
+            FunctionSafetyInfo::new(FunctionSafety::Unsafe),
+        );
+        origin.insert("wrap.inner".to_owned(), safe());
+        origin.insert("C.factory".to_owned(), safe());
+        let re_export_as = |from: &str, alias: &str, to: &str, attr: &str| CachedReExport {
+            exported_module: ModuleName::from_str(from),
+            exported_attr: Name::new(alias),
+            imported_module: ModuleName::from_str(to),
+            imported_attr: Name::new(attr),
+        };
+        let re_export = |from: &str, to: &str, attr: &str| re_export_as(from, attr, to, attr);
+        let re_exports = [
+            re_export("facade", "origin", "register"),
+            re_export("facade", "origin", "wrap"),
+            re_export_as("facade", "Alias", "origin", "C"),
+            re_export("outer", "facade", "register"),
+            re_export("a", "b", "register"),
+            re_export("b", "a", "register"),
+        ];
+        let index = ReExportIndex::new(&re_exports);
+        let resolver = SafetyResolver::new(&modules, &by_module).with_re_exports(&index);
+
+        assert!(
+            !resolver.is_decorator_call_verified_safe("outer.register"),
+            "a re-export chain reaches the factory's unsafe nested function",
+        );
+        assert!(
+            !resolver.is_decorator_call_verified_safe("a.register"),
+            "a re-export cycle has no definition to verify",
+        );
+        assert!(
+            !resolver.is_decorator_call_verified_safe("register"),
+            "an unqualified name is not verified through a re-exporting module",
+        );
+        assert!(
+            resolver.is_decorator_call_verified_safe("facade.wrap"),
+            "a re-exported factory whose nested functions are safe is verified",
+        );
+        assert!(
+            resolver.is_decorator_call_verified_safe("facade.Alias.factory"),
+            "a method of a class re-exported under another name is found by its defining name",
         );
     }
 

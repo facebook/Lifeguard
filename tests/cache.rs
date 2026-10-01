@@ -435,6 +435,8 @@ mod tests {
     fn test_cache_round_trip_function_safety_and_mutations() {
         let mut info = FunctionSafetyInfo::new(FunctionSafety::UnsafeMissingDep);
         info.missing_dep_callees = [mn("dep.callee")].into_iter().collect();
+        info.missing_dep_decorators = [mn("dep.callee")].into_iter().collect();
+        info.returns_identity_decorator = true;
         info.mutated_params = vec![MutatedParam {
             name: mn("pkg.param"),
             position: ParamPosition::Positional(2),
@@ -500,6 +502,41 @@ mod tests {
             vec![candidate],
             "mutation candidates (incl. imported_args details) should round-trip",
         );
+    }
+
+    #[test]
+    fn test_cache_identity_decorator_fact_round_trips_and_merges_conservatively() {
+        for identity in [false, true] {
+            for verdict in [FunctionSafety::Safe, FunctionSafety::Unsafe] {
+                let mut factory = FunctionSafetyInfo::new(verdict);
+                factory.returns_identity_decorator = identity;
+                let cache = LibraryCache {
+                    modules: vec![
+                        cached_module("app")
+                            .errors(vec![parameterized_decorator_error("dep.factory")])
+                            .build(),
+                        cached_module("dep")
+                            .function_safety([
+                                ("factory".to_owned(), factory.clone()),
+                                unsafe_("factory.unused"),
+                            ])
+                            .build(),
+                    ],
+                    ..Default::default()
+                };
+                let loaded = round_trip(&cache);
+                assert_eq!(module(&loaded, "dep").function_safety["factory"], factory);
+                let resolved = resolve(loaded);
+                let CachedSafety::Ok(safety) = &resolved_module(&resolved, "app").safety else {
+                    panic!("app should have cached module safety");
+                };
+                assert_eq!(safety.errors.is_empty(), identity && verdict.is_safe());
+                if identity {
+                    assert!(factory.merge(FunctionSafetyInfo::new(verdict)));
+                    assert!(!factory.returns_identity_decorator);
+                }
+            }
+        }
     }
 
     #[test]

@@ -9,6 +9,7 @@ use pyrefly_python::module_name::ModuleName;
 use pyrefly_python::symbol_kind::SymbolKind;
 use pyrefly_util::visit::Visit;
 use ruff_python_ast::Expr;
+use ruff_python_ast::Parameters;
 use ruff_python_ast::Stmt;
 use ruff_python_ast::StmtAssign;
 use ruff_python_ast::StmtClassDef;
@@ -59,6 +60,7 @@ pub struct DefinitionTable {
     // Holds an entry for exactly the function scopes (see `process_function_def`),
     // so its keys double as the set of function scopes.
     pub param_names: AHashMap<ModuleName, Vec<Name>>,
+    pub identity_decorator_factories: AHashSet<ModuleName>,
     // A `.pyi` is never executed, so no read in one is bounded by its position.
     pub is_stub: bool,
 }
@@ -71,6 +73,7 @@ impl DefinitionTable {
             eager_scopes: AHashSet::new(),
             enclosing_functions: AHashMap::new(),
             param_names: AHashMap::new(),
+            identity_decorator_factories: AHashSet::new(),
             is_stub: false,
         }
     }
@@ -384,6 +387,7 @@ struct CombinedDefinitionClassBuilder<'a> {
     eager_scopes: AHashSet<ModuleName>,
     enclosing_functions: AHashMap<ModuleName, ModuleName>,
     param_names: AHashMap<ModuleName, Vec<Name>>,
+    identity_decorator_factories: AHashSet<ModuleName>,
 
     // ClassTable fields
     classes_map: AHashMap<ModuleName, crate::class::Class>,
@@ -401,6 +405,7 @@ impl<'a> CombinedDefinitionClassBuilder<'a> {
             eager_scopes: AHashSet::new(),
             enclosing_functions: AHashMap::new(),
             param_names: AHashMap::new(),
+            identity_decorator_factories: AHashSet::new(),
             classes_map: AHashMap::new(),
         }
     }
@@ -494,10 +499,21 @@ impl<'a> CombinedDefinitionClassBuilder<'a> {
     }
 
     fn process_function_def(&mut self, func: &StmtFunctionDef) {
+        let unique_binding = self
+            .definitions_map
+            .get(&self.cursor.scope())
+            .and_then(|defs| defs.definitions.get(&func.name.id))
+            .is_some_and(|definition| {
+                !definition.needs_anywhere
+                    && definition.style == DefinitionStyle::Unannotated(SymbolKind::Function)
+            });
         self.cursor.enter_function_scope(func);
         let scope = self.cursor.scope();
 
         // Record for DefinitionTable
+        if unique_binding && returns_identity_decorator(func) {
+            self.identity_decorator_factories.insert(scope);
+        }
         if let Some(parent) = self.cursor.enclosing_function_scope() {
             self.enclosing_functions.insert(scope, parent);
         }
@@ -637,11 +653,76 @@ impl<'a> CombinedDefinitionClassBuilder<'a> {
             eager_scopes: self.eager_scopes,
             enclosing_functions: self.enclosing_functions,
             param_names: self.param_names,
+            identity_decorator_factories: self.identity_decorator_factories,
             is_stub: self.is_stub,
         };
         let classes = ClassTable::new(self.classes_map);
         (definitions, classes)
     }
+}
+
+fn returns_identity_decorator(func: &StmtFunctionDef) -> bool {
+    let Some((Stmt::Return(ret), preceding)) = func.body.split_last() else {
+        return false;
+    };
+    if func.is_async
+        || !func.decorator_list.is_empty()
+        || !preceding.iter().all(|stmt| match stmt {
+            Stmt::FunctionDef(_) | Stmt::ClassDef(_) | Stmt::Pass(_) => true,
+            Stmt::Expr(expr) => matches!(&*expr.value, Expr::StringLiteral(_)),
+            _ => false,
+        })
+    {
+        return false;
+    }
+    match ret.value.as_deref() {
+        Some(Expr::Lambda(lambda)) => lambda
+            .parameters
+            .as_deref()
+            .is_some_and(|params| returns_only_param(params, &lambda.body)),
+        // Only definitions precede the return, so a name bound once is the one returned.
+        Some(Expr::Name(name)) => {
+            let mut bindings = preceding.iter().filter(|stmt| match stmt {
+                Stmt::FunctionDef(def) => def.name.id == name.id,
+                Stmt::ClassDef(class) => class.name.id == name.id,
+                _ => false,
+            });
+            matches!(
+                (bindings.next(), bindings.next()),
+                (Some(Stmt::FunctionDef(def)), None) if is_identity_function(def)
+            )
+        }
+        _ => false,
+    }
+}
+
+fn is_identity_function(func: &StmtFunctionDef) -> bool {
+    let Some((Stmt::Return(ret), preceding)) = func.body.split_last() else {
+        return false;
+    };
+    !func.is_async
+        && func.decorator_list.is_empty()
+        && preceding.iter().all(|stmt| {
+            matches!(stmt, Stmt::Expr(expr) if matches!(&*expr.value, Expr::StringLiteral(_)))
+        })
+        && ret
+            .value
+            .as_deref()
+            .is_some_and(|value| returns_only_param(&func.parameters, value))
+}
+
+/// Whether `params` take one positional argument without a default and `value` is it.
+fn returns_only_param(params: &Parameters, value: &Expr) -> bool {
+    if params.posonlyargs.len() + params.args.len() != 1
+        || !params.kwonlyargs.is_empty()
+        || params.vararg.is_some()
+        || params.kwarg.is_some()
+    {
+        return false;
+    }
+    let param = params.iter_non_variadic_params().next().unwrap();
+    param.default().is_none()
+        && matches!(value, Expr::Name(name) if name.id == param.parameter.name.id)
 }
 
 #[cfg(test)]
@@ -673,6 +754,66 @@ mod tests {
             }
         }
         cursor
+    }
+
+    #[test]
+    fn test_identity_decorator_return_is_bounded() {
+        for (source, expected) in [
+            (
+                "def deco():\n 'doc'\n pass\n def unused(): pass\n return lambda f: f\n",
+                true,
+            ),
+            ("def deco():\n return lambda f, /: f\n", true),
+            ("async def deco():\n return lambda f: f\n", false),
+            ("@replace\ndef deco():\n return lambda f: f\n", false),
+            ("def deco():\n return lambda f=1: f\n", false),
+            ("def deco():\n return lambda f, extra: f\n", false),
+            ("def deco():\n return lambda *, f: f\n", false),
+            ("def deco():\n return lambda f, *args: f\n", false),
+            ("def deco():\n return lambda f, **kwargs: f\n", false),
+            ("def deco():\n return lambda f: unused(f)\n", false),
+            (
+                "def deco():\n if value: return unused\n return lambda f: f\n",
+                false,
+            ),
+            ("def deco():\n yield unused\n return lambda f: f\n", false),
+            (
+                "def deco():\n return lambda f: f\ndeco = replacement\n",
+                false,
+            ),
+            (
+                "def deco():\n def unused(): pass\n def wrap(f):\n  'doc'\n  return f\n return wrap\n",
+                true,
+            ),
+            (
+                "def deco():\n def wrap(f):\n  return unused(f)\n return wrap\n",
+                false,
+            ),
+            (
+                "def deco():\n @replace\n def wrap(f):\n  return f\n return wrap\n",
+                false,
+            ),
+            (
+                "def deco():\n async def wrap(f):\n  return f\n return wrap\n",
+                false,
+            ),
+            (
+                "def deco():\n def wrap(f):\n  return f\n class wrap: pass\n return wrap\n",
+                false,
+            ),
+            ("def deco():\n return wrap\n", false),
+        ] {
+            let parsed = parse_source(source, ModuleName::from_str("test"), false);
+            let (definitions, _) =
+                build_definitions_and_classes(&parsed, &AnalysisConfig::default());
+            assert_eq!(
+                definitions
+                    .identity_decorator_factories
+                    .contains(&ModuleName::from_str("test.deco")),
+                expected,
+                "{source}",
+            );
+        }
     }
 
     #[test]
