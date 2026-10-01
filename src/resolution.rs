@@ -23,7 +23,6 @@ use crate::traits::ModuleNameExt;
 pub(crate) struct ResolutionOutcome {
     pub promoted: Vec<(ModuleName, String)>,
     pub globally_safe: AHashSet<String>,
-    pub resolved_to_safe: bool,
 }
 
 /// The name an error contributes to the promotion index, or `None` if it
@@ -48,7 +47,7 @@ pub(crate) fn resolve_program<'a>(
     mut needed_unqualified: AHashSet<String>,
     mut module_scope_error: impl FnMut(ModuleName, String),
 ) -> ResolutionOutcome {
-    let resolved_to_safe = apply_mutation_candidates(
+    apply_mutation_candidates(
         candidates,
         module_names,
         function_safety,
@@ -64,7 +63,6 @@ pub(crate) fn resolve_program<'a>(
     ResolutionOutcome {
         promoted,
         globally_safe,
-        resolved_to_safe,
     }
 }
 
@@ -128,23 +126,20 @@ fn discharge_candidate(
     module: ModuleName,
     candidate: &MutationCandidate,
     function_safety: &mut AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
-) -> bool {
+) {
     let MutationCandidateSite::Function { name } = &candidate.site else {
-        return false;
+        return;
     };
     let Some(info) = get_function_safety_mut(function_safety, &module, name.as_str()) else {
-        return false;
+        return;
     };
 
     info.missing_dep_callees.remove(&candidate.callee);
     if !info.verdict.has(FunctionSafety::UnsafeMissingDep) || !info.missing_dep_callees.is_empty() {
-        return false;
+        return;
     }
 
     info.verdict.remove(FunctionSafety::UnsafeMissingDep);
-    // Other concerns such as `UnsafeIfImported` still make cross-module calls
-    // unsafe and cannot verify callers.
-    info.verdict.is_safe()
 }
 
 /// Resolve cached cross-library mutation candidates against merged function verdicts.
@@ -159,7 +154,7 @@ fn apply_mutation_candidates<'a>(
     module_names: &AHashSet<ModuleName>,
     function_safety: &mut AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
     mut module_scope_error: impl FnMut(ModuleName, String),
-) -> bool {
+) {
     let pairs: Vec<(ModuleName, &MutationCandidate)> = modules
         .flat_map(|(module, candidates)| {
             candidates.iter().map(move |candidate| (module, candidate))
@@ -197,11 +192,9 @@ fn apply_mutation_candidates<'a>(
         })
         .collect();
 
-    let mut resolved_to_safe = false;
     for (&(module, candidate), _) in pairs.iter().zip(&discharges).filter(|(_, d)| **d) {
-        resolved_to_safe |= discharge_candidate(module, candidate, function_safety);
+        discharge_candidate(module, candidate, function_safety);
     }
-    resolved_to_safe
 }
 
 /// Whether a candidate feeds imported state into a parameter its callee mutates.

@@ -362,33 +362,15 @@ impl<'a> SafetyResolver<'a> {
         }
     }
 
-    /// Whether `error` in `caller` may be dropped.
-    ///
-    /// A call to a class the map phase recorded constructor callees for is
-    /// decided by those callees alone. Such a call also does not consult `kinds`;
-    /// its answer follows from static verdicts, with no promotion evidence needed.
-    ///
-    /// Every other error clears only when `kinds` admits it and the general
-    /// verdict verifies it.
-    pub(crate) fn clears_error(
-        &self,
-        caller: ModuleName,
-        error: &CachedError,
-        kinds: impl Fn(ErrorKind) -> bool,
-    ) -> bool {
-        if let Some(cleared) = self.recorded_constructor_clears(caller, error) {
-            return cleared;
-        }
-        kinds(error.kind) && self.is_error_verified_safe(error)
-    }
-
     /// `Some(cleared)` when `error` is a call to a class with recorded
     /// constructor callees, `None` when no record applies and the general path
     /// decides.
     ///
+    /// The recorded callees decide in both directions, overriding the class's
+    /// aggregate verdict.
+    ///
     /// `Unknown*` kinds are included because they are what the map emits
-    /// for a class it could not bind -- the cross-library instantiation the
-    /// recorded callees exist to answer. The lookup is an exact match on a
+    /// for a class it could not bind. Resolved via an exact match on a
     /// recorded class FQN, so an unbound short name still cannot clear here.
     pub(crate) fn recorded_constructor_clears(
         &self,
