@@ -48,6 +48,7 @@ pub use crate::cache::artifact::CachedExports;
 pub use crate::cache::artifact::CachedModule;
 pub use crate::cache::artifact::CachedModuleSafety;
 pub use crate::cache::artifact::CachedReExport;
+pub use crate::cache::artifact::CachedReturnType;
 pub use crate::cache::artifact::CachedSafety;
 pub use crate::cache::artifact::ConstructorCallees;
 pub use crate::cache::artifact::LibraryCache;

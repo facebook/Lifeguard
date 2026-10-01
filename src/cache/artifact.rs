@@ -253,12 +253,22 @@ pub struct CachedModuleSafety {
     pub force_imports_eager_overrides: Vec<SafetyError>,
     pub implicit_imports: Vec<ModuleName>,
 }
-/// Cached re-export information for a library. Only re-exports are consumed by
-/// the reduce (`analyze-binary`); the map phase's other export tables
-/// (definitions/`__all__`/return types) are not, so they are not cached.
+/// Cached export information for a library: the parts of the map phase's export
+/// tables the reduce consumes.
+/// Definitions and `__all__` are map-only, and do not need to be cached.
 #[derive(Serialize, Deserialize, Default)]
 pub struct CachedExports {
     pub re_exports: Vec<CachedReExport>,
+    /// The return classes of annotated functions.
+    pub return_types: Vec<CachedReturnType>,
+}
+/// The class a call to `function` evaluates to, from its stub-declared return
+/// annotation. Return annotations are read from stubs only, so this is empty for
+/// a library with no stub of its own.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct CachedReturnType {
+    pub function: ModuleName,
+    pub class: ModuleName,
 }
 /// A cached re-export entry (module.attr -> source_module.source_attr).
 #[derive(Serialize, Deserialize)]
@@ -275,6 +285,7 @@ impl LibraryCache {
             modules: Vec::new(),
             exports: CachedExports {
                 re_exports: Vec::new(),
+                return_types: Vec::new(),
             },
             ..Default::default()
         }
@@ -333,7 +344,7 @@ impl LibraryCache {
         modules.sort_by_key(|m| m.name);
 
         let own_modules: AHashSet<ModuleName> = modules.iter().map(|m| m.name).collect();
-        let exports = CachedExports::from_exports(exports, &own_modules);
+        let exports = CachedExports::from_exports(exports, &own_modules, import_graph);
 
         LibraryCache {
             modules,
@@ -412,7 +423,11 @@ impl CachedExports {
     /// stubs' re-exports, identical across every cache; dropping them is safe because
     /// each re-export is owned by exactly one module's cache and the reduce rebuilds
     /// stub chains from the bundled stub graph.
-    pub(crate) fn from_exports(exports: &Exports, own_modules: &AHashSet<ModuleName>) -> Self {
+    pub(crate) fn from_exports(
+        exports: &Exports,
+        own_modules: &AHashSet<ModuleName>,
+        import_graph: &ImportGraph,
+    ) -> Self {
         let re_exports: Vec<CachedReExport> = exports
             .get_re_exports()
             .filter(|(module, _, _)| own_modules.contains(module))
@@ -424,17 +439,65 @@ impl CachedExports {
             })
             .collect();
 
-        let mut result = CachedExports { re_exports };
+        // A return type should be in the cache for the library owning the
+        // function's own module, resolved as the longest enclosing module
+        // rather than any ancestor: `pkg` must not ship facts for `pkg.sub`
+        // when another library owns `pkg.sub`.
+        //
+        // NOTE: The module is resolved against the *import graph*, which knows
+        // every module the library saw, and ownership is then checked on that
+        // exact module. Resolving against the owned set instead would ask "is
+        // some ancestor owned", which is wrong for the `pkg.sub` case above.
+        let return_types: Vec<CachedReturnType> = exports
+            .iter_return_types()
+            .filter(|(function, _)| {
+                function
+                    .iter_parents()
+                    .find(|(parent, _)| import_graph.contains(parent))
+                    .is_some_and(|(module, _)| own_modules.contains(&module))
+            })
+            .map(|(function, class)| CachedReturnType {
+                function: *function,
+                class: *class,
+            })
+            .collect();
+
+        let mut result = CachedExports {
+            re_exports,
+            return_types,
+        };
         result.sort_and_dedup();
         result
     }
 
+    /// Sort into a canonical order and keep one record per key.
+    ///
+    /// NOTE: Both sorts order by *more* than they dedup on. The sorts are unstable
+    /// and parallel, so records that tie on the dedup key come out in an order that
+    /// depends on how rayon split the slice; deduping then keeps whichever
+    /// landed first. Two records sharing a key but disagreeing on the rest should not
+    /// happen, since each is owned by exactly one library, but if it ever does, this
+    /// loses a fact reproducibly rather than differently each time.
     pub(crate) fn sort_and_dedup(&mut self) {
         self.re_exports.par_sort_by(|a, b| {
-            (&a.exported_module, &a.exported_attr).cmp(&(&b.exported_module, &b.exported_attr))
+            (
+                &a.exported_module,
+                &a.exported_attr,
+                &a.imported_module,
+                &a.imported_attr,
+            )
+                .cmp(&(
+                    &b.exported_module,
+                    &b.exported_attr,
+                    &b.imported_module,
+                    &b.imported_attr,
+                ))
         });
         self.re_exports.dedup_by(|a, b| {
             a.exported_module == b.exported_module && a.exported_attr == b.exported_attr
         });
+        self.return_types
+            .par_sort_by(|a, b| (&a.function, &a.class).cmp(&(&b.function, &b.class)));
+        self.return_types.dedup_by(|a, b| a.function == b.function);
     }
 }

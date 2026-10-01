@@ -23,6 +23,7 @@ use crate::cache::CachedExports;
 use crate::cache::CachedModule;
 use crate::cache::CachedModuleSafety;
 use crate::cache::CachedReExport;
+use crate::cache::CachedReturnType;
 use crate::cache::CachedSafety;
 use crate::cache::ConstructorCallees;
 use crate::cache::LibraryCache;
@@ -49,6 +50,7 @@ const WRITE_BUFFER_CAPACITY: usize = 1 << 20;
 struct WireHeader {
     names: Vec<ModuleName>,
     exports: Vec<WireReExport>,
+    return_types: Vec<(NameId, NameId)>,
     class_bases: Vec<(NameId, Vec<NameId>)>,
     /// Class id, its metaclass id when a metaclass bit is set, and the callee
     /// mask. The callee FQNs themselves are reconstructible from these, so they
@@ -145,6 +147,10 @@ impl NameTable {
             unique.insert(re_export.exported_module);
             unique.insert(re_export.imported_module);
         }
+        for return_type in &cache.exports.return_types {
+            unique.insert(return_type.function);
+            unique.insert(return_type.class);
+        }
         for (class, bases) in &cache.class_bases {
             unique.insert(*class);
             unique.extend(bases.iter().copied());
@@ -225,6 +231,13 @@ pub(crate) fn write(cache: &LibraryCache, path: &Path) -> Result<()> {
         .iter()
         .map(|re_export| WireReExport::encode(re_export, &table.ids))
         .collect();
+    let return_types: Vec<(NameId, NameId)> = cache
+        .exports
+        .return_types
+        .iter()
+        .map(|rt| (table.id(rt.function), table.id(rt.class)))
+        .collect();
+
     let class_bases = cache
         .class_bases
         .iter()
@@ -256,6 +269,7 @@ pub(crate) fn write(cache: &LibraryCache, path: &Path) -> Result<()> {
     let header = WireHeader {
         names: table.names,
         exports,
+        return_types,
         class_bases,
         constructor_callees,
         class_properties,
@@ -321,6 +335,16 @@ pub(crate) fn read(path: &Path) -> Result<LibraryCache> {
             .exports
             .into_iter()
             .map(|re_export| re_export.decode(&header.names))
+            .collect::<Result<_>>()?,
+        return_types: header
+            .return_types
+            .into_iter()
+            .map(|(function, class)| {
+                Ok(CachedReturnType {
+                    function: decode_name(&header.names, function)?,
+                    class: decode_name(&header.names, class)?,
+                })
+            })
             .collect::<Result<_>>()?,
     };
     let class_bases = header

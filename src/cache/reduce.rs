@@ -254,6 +254,32 @@ impl<'a> ResolutionContext<'a> {
     }
 }
 
+/// The class a call to `receiver` returns, following re-export aliases until a
+/// recorded return type is found.
+///
+/// Bounded rather than run to a fixpoint: a malformed cache could describe a
+/// re-export cycle, and this runs per candidate over every module in the build.
+/// A chain longer than the bound goes unresolved, which is what happened to
+/// every chain before aliases were followed at all.
+fn resolve_return_class(
+    receiver: ModuleName,
+    return_classes: &AHashMap<ModuleName, ModuleName>,
+    reexport_targets: &AHashMap<ModuleName, ModuleName>,
+) -> Option<ModuleName> {
+    const MAX_REEXPORT_HOPS: usize = 8;
+    let mut name = receiver;
+    for _ in 0..MAX_REEXPORT_HOPS {
+        if let Some(class) = return_classes.get(&name) {
+            return Some(*class);
+        }
+        match reexport_targets.get(&name) {
+            Some(next) if *next != name => name = *next,
+            _ => return None,
+        }
+    }
+    None
+}
+
 fn is_resolved_error_verified_safe(
     caller: ModuleName,
     error: &SafetyError,
@@ -375,6 +401,28 @@ impl LibraryCache {
         if class_properties.is_empty() {
             return;
         }
+        let return_classes: AHashMap<ModuleName, ModuleName> = self
+            .exports
+            .return_types
+            .iter()
+            .map(|rt| (rt.function, rt.class))
+            .collect();
+        // A candidate's receiver names whatever the caller imported, which may be
+        // a re-export: `facade.make` where the return type was recorded against
+        // `factory.make`. Looking up the alias alone misses, the candidate is
+        // dropped, and dropping one is a false-safe -- no error is emitted for a
+        // getter that is unsafe.
+        let reexport_targets: AHashMap<ModuleName, ModuleName> = self
+            .exports
+            .re_exports
+            .iter()
+            .map(|re| {
+                (
+                    re.exported_module.append_str(&re.exported_attr),
+                    re.imported_module.append_str(&re.imported_attr),
+                )
+            })
+            .collect();
         let resolver = SafetyResolver::with_safe_index(
             module_names,
             func_safety_by_module,
@@ -387,23 +435,29 @@ impl LibraryCache {
                 return;
             };
             for candidate in candidates {
-                let Some((class_fqn, attr)) = candidate.attribute.split_attr() else {
+                let Some((receiver, attr)) = candidate.attribute.split_attr() else {
                     continue;
                 };
+                let class_fqn =
+                    match resolve_return_class(receiver, &return_classes, &reexport_targets) {
+                        Some(class) => class,
+                        None => receiver,
+                    };
                 if !class_properties
                     .get(&class_fqn)
                     .is_some_and(|properties| properties.contains(attr.as_str()))
                 {
                     continue;
                 }
+                let attribute = class_fqn.append_str(attr.as_str());
                 let getter_unsafe = resolver
-                    .split_at_module(candidate.attribute.as_str())
+                    .split_at_module(attribute.as_str())
                     .and_then(|(module, local)| resolver.own_verdict(&module, local))
                     .is_some_and(|verdict| !verdict.is_safe());
                 if getter_unsafe {
                     safety.errors.push(SafetyError::new(
                         ErrorKind::UnsafeMethodCall,
-                        candidate.attribute.as_str().to_owned(),
+                        attribute.as_str().to_owned(),
                         candidate.range,
                     ));
                 }
@@ -592,6 +646,7 @@ mod tests {
             modules: Vec::new(),
             exports: CachedExports {
                 re_exports: Vec::new(),
+                return_types: Vec::new(),
             },
             ..Default::default()
         };
@@ -617,6 +672,7 @@ mod tests {
                 modules: vec![cached_module],
                 exports: CachedExports {
                     re_exports: Vec::new(),
+                    return_types: Vec::new(),
                 },
                 ..Default::default()
             }
@@ -817,6 +873,7 @@ mod tests {
             ],
             exports: CachedExports {
                 re_exports: Vec::new(),
+                return_types: Vec::new(),
             },
             ..Default::default()
         };
@@ -881,6 +938,7 @@ mod tests {
             modules: vec![caller, dependency],
             exports: CachedExports {
                 re_exports: Vec::new(),
+                return_types: Vec::new(),
             },
             ..Default::default()
         };
@@ -937,6 +995,7 @@ mod tests {
             modules: vec![caller],
             exports: CachedExports {
                 re_exports: Vec::new(),
+                return_types: Vec::new(),
             },
             ..Default::default()
         };
@@ -987,6 +1046,7 @@ mod tests {
             modules: vec![caller, dependency],
             exports: CachedExports {
                 re_exports: Vec::new(),
+                return_types: Vec::new(),
             },
             ..Default::default()
         };

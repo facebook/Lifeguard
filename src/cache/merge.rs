@@ -157,6 +157,7 @@ impl LibraryCache {
             fold_fqn_lists(&mut merged.class_bases, dep.class_bases);
             fold_constructor_callees(&mut merged.constructor_callees, dep.constructor_callees);
             self.class_properties.extend(dep.class_properties);
+            self.exports.return_types.extend(dep.exports.return_types);
         }
 
         // A module's re-exports recur across many caches, far outnumbering the

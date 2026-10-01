@@ -15,6 +15,7 @@ mod tests {
     use lifeguard::cache::CachedModule;
     use lifeguard::cache::CachedModuleSafety;
     use lifeguard::cache::CachedReExport;
+    use lifeguard::cache::CachedReturnType;
     use lifeguard::cache::CachedSafety;
     use lifeguard::cache::ConstructorCallees;
     use lifeguard::cache::LibraryCache;
@@ -116,6 +117,7 @@ mod tests {
     fn empty_exports() -> CachedExports {
         CachedExports {
             re_exports: Vec::new(),
+            return_types: Vec::new(),
         }
     }
 
@@ -302,7 +304,7 @@ mod tests {
     #[cfg(target_pointer_width = "64")]
     fn test_cached_struct_sizes() {
         // Wire fields only: the reduce-side accumulators live on `ReduceWorkspace`.
-        assert_eq!(std::mem::size_of::<LibraryCache>(), 120);
+        assert_eq!(std::mem::size_of::<LibraryCache>(), 144);
         assert_eq!(
             std::mem::size_of::<lifeguard::cache::ConstructorCallees>(),
             40,
@@ -311,7 +313,8 @@ mod tests {
         assert_eq!(std::mem::size_of::<CachedSafety>(), 72);
         assert_eq!(std::mem::size_of::<CachedModuleSafety>(), 72);
         assert_eq!(std::mem::size_of::<lifeguard::errors::SafetyError>(), 24);
-        assert_eq!(std::mem::size_of::<CachedExports>(), 24);
+        assert_eq!(std::mem::size_of::<CachedExports>(), 48);
+        assert_eq!(std::mem::size_of::<CachedReturnType>(), 16);
         assert_eq!(std::mem::size_of::<CachedReExport>(), 64);
     }
 
@@ -389,6 +392,7 @@ mod tests {
                     imported_module: mn("implementation"),
                     imported_attr: "private_name".to_owned(),
                 }],
+                return_types: Vec::new(),
             },
             class_bases: vec![(mn("package.Derived"), vec![mn("package.Base")])],
             constructor_callees: vec![(
@@ -465,6 +469,7 @@ mod tests {
             ],
             exports: CachedExports {
                 re_exports: Vec::new(),
+                return_types: Vec::new(),
             },
             ..Default::default()
         };
@@ -498,6 +503,7 @@ mod tests {
             modules: vec![safe_cached_module("m", &["dep"], &[])],
             exports: CachedExports {
                 re_exports: Vec::new(),
+                return_types: Vec::new(),
             },
             ..Default::default()
         };

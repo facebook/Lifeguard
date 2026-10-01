@@ -559,10 +559,11 @@ mod tests {
         );
     }
 
-    /// KNOWN GAP (T288192028) -- a stub-declared return class is not preserved
-    /// across a shard boundary.
+    /// The reduce uses the stub-only `make() -> C` annotation to recover the
+    /// unsafe property across shards. The paths now disagree only on whether
+    /// `factory.make` is an unsafe or unknown call.
     #[test]
-    fn stub_declared_factory_return_is_a_known_gap() {
+    fn stub_declared_factory_return_differs_only_in_the_call_kind() {
         let impl_mod = r#"
             class C(set):
                 mapping = {}
@@ -603,25 +604,70 @@ mod tests {
                 difference.starts_with("aggregated errors:"),
                 "{count} shards: expected an error-set difference, got: {difference}",
             );
-            // The property error is the one that goes missing. Located by
-            // content and relative position rather than by matching the
-            // rendered label, so that reformatting the message cannot turn
-            // this into an assertion that quietly checks nothing.
-            //
-            // Both halves are load-bearing: `first == last` proves the error
-            // appears once, and `first < incremental` proves that occurrence is
-            // the whole-program one. Uniqueness alone would also hold if the
-            // divergence flipped and only the incremental side reported it.
-            let first = difference.find(r#"UnsafeMethodCall impl_mod.C.p"#);
-            let last = difference.rfind(r#"UnsafeMethodCall impl_mod.C.p"#);
-            let incremental = difference.find("incremental:");
+            // The property error must appear on both sides: its absence was the
+            // false-safe this fixture was written for.
+            assert_eq!(
+                difference.matches("UnsafeMethodCall impl_mod.C.p").count(),
+                2,
+                "{count} shards: both paths must report the property, got: {difference}",
+            );
             assert!(
-                matches!(
-                    (first, last, incremental),
-                    (Some(f), Some(l), Some(i)) if f == l && f < i
-                ),
-                "{count} shards: expected the property error on the whole-program side only, \
+                difference.contains("UnsafeFunctionCall factory.make")
+                    && difference.contains("UnknownFunctionCall factory.make"),
+                "{count} shards: expected the call kind to be the only difference, \
                  got: {difference}",
+            );
+        }
+    }
+
+    /// The same recovery has to survive a re-export between the caller and the
+    /// factory. The map records the return type against `factory.make`, but the
+    /// candidate's receiver names the alias `facade.make`.
+    #[test]
+    fn a_reexported_factory_still_recovers_the_property() {
+        let impl_mod = r#"
+            class C(set):
+                mapping = {}
+
+                def update_mapping(self):
+                    self.mapping = dict([(f.name, f) for f in iter(self)])
+
+                @property
+                def p(self):
+                    self.update_mapping()
+                    return 1
+        "#;
+        let factory = r#"
+            from impl_mod import C
+
+            def make() -> C: ...
+        "#;
+        let facade = r#"
+            from factory import make
+        "#;
+        let app = r#"
+            from facade import make
+
+            obj = make()
+            value = obj.p
+        "#;
+        let modules = vec![
+            ("impl_mod", impl_mod),
+            ("factory", factory),
+            ("facade", facade),
+            ("app", app),
+        ];
+        let differences = path_differences(
+            ParityFixture::new(&modules).with_stubs(&["factory"]),
+            &[1, 2, 3],
+        );
+
+        for (count, difference) in &differences {
+            assert_eq!(
+                difference.matches("UnsafeMethodCall impl_mod.C.p").count(),
+                2,
+                "{count} shards: both paths must report the property through the \
+                 re-export, got: {difference}",
             );
         }
     }
