@@ -557,7 +557,8 @@ impl LibraryCache {
                 if let CachedSafety::Ok(ref mut safety) = module.safety {
                     let resolver = SafetyResolver::new(&resolved_modules, &func_safety_by_module)
                         .with_class_bases(&class_bases)
-                        .with_constructor_callees(&constructor_callees);
+                        .with_constructor_callees(&constructor_callees)
+                        .with_mro_modules(&module_names);
                     // A recorded constructor callee outranks the class's
                     // aggregate verdict here too, or the error is gone before
                     // `finalize_resolution` ever sees it.
