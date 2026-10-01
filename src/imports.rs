@@ -341,8 +341,11 @@ impl<'a> ModuleImportCollector<'a> {
         match s {
             Stmt::Import(x) => self.import(x),
             Stmt::ImportFrom(x) => self.import_from(x),
+            // `if` is separate because its branches may be pruned
             Stmt::If(x) => self.if_(x),
-            Stmt::Try(_) => s.recurse(&mut |stmt| self.stmt(stmt)),
+            Stmt::Try(_) | Stmt::With(_) | Stmt::For(_) | Stmt::While(_) | Stmt::Match(_) => {
+                s.recurse(&mut |stmt| self.stmt(stmt))
+            }
             Stmt::Expr(x) => self.expr(&x.value),
             Stmt::Assign(x) => self.assign(x),
             Stmt::FunctionDef(x) => self.stmts(&x.body),

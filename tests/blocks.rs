@@ -257,6 +257,8 @@ with open("f") as x:
         );
     }
 
+    /// `foo.bar` appears for the same reason it does at module scope: with `foo`
+    /// unknown, `bar` is taken to be a submodule.
     #[test]
     fn test_with_block_from_import_marked_as_called() {
         let code = r#"
@@ -268,8 +270,8 @@ with open("f") as x:
         let out = run_module_analysis(code, &parsed_module);
         check_imports(
             out,
-            vec![("test", vec!["foo"])],
-            vec![("test", vec!["foo"])],
+            vec![("test", vec!["foo", "foo.bar"])],
+            vec![("test", vec!["foo", "foo.bar"])],
         );
     }
 
@@ -286,8 +288,8 @@ with open("f") as x:
         let out = run_module_analysis(code, &parsed_module);
         check_imports(
             out,
-            vec![("test", vec!["bar", "baz", "foo"])],
-            vec![("test", vec!["bar", "baz", "foo"])],
+            vec![("test", vec!["bar", "baz", "baz.quux", "foo"])],
+            vec![("test", vec!["bar", "baz", "baz.quux", "foo"])],
         );
     }
 

@@ -149,6 +149,38 @@ else:
         assert_deps(&g, "d", vec!["a", "b", "c"]);
     }
 
+    /// A `with`, `for`, `while` or `match` body at module scope runs at import
+    /// time, so an import inside one is an ordinary dependency.
+    #[test]
+    fn test_import_inside_module_scope_block() {
+        let a = "def f(): ...";
+        let b = "def g(): ...";
+        let c = "def h(): ...";
+        let d = "def i(): ...";
+        let importer = r#"
+with open("f") as fh:
+    import a
+
+for _ in range(1):
+    import b
+
+while __random__:
+    import c
+
+match __random__:
+    case 1:
+        import d
+"#;
+        let g = build_import_graph(&vec![
+            ("a", a),
+            ("b", b),
+            ("c", c),
+            ("d", d),
+            ("importer", importer),
+        ]);
+        assert_deps(&g, "importer", vec!["a", "b", "c", "d"]);
+    }
+
     #[test]
     fn test_import_module() {
         let a = "def f(): ...";
