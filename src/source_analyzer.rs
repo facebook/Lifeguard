@@ -298,6 +298,7 @@ pub struct SourceAnalyzer<'a> {
     cursor: Cursor,
     /// Module names probed as `sys.modules` keys within this module.
     sys_modules_probed_keys: OnceCell<AHashSet<ModuleName>>,
+    fresh_receivers: Option<AHashSet<(ModuleName, Name)>>,
 }
 
 impl<'a> SourceAnalyzer<'a> {
@@ -423,10 +424,12 @@ impl<'a> SourceAnalyzer<'a> {
     ) -> ModuleEffects {
         // Run the function body.
         let mut out = ModuleEffects::new();
+        let fresh_receivers = self.fresh_receivers.replace(AHashSet::new());
         self.cursor.enter_function_scope(func_def);
         self.check_function_body_for_imports(func_def, output);
         self.stmts(&func_def.body, &mut out);
         self.cursor.exit_scope();
+        self.fresh_receivers = fresh_receivers;
         out
     }
 
@@ -1315,7 +1318,7 @@ impl<'a> SourceAnalyzer<'a> {
         }
     }
 
-    fn assign(&self, x: &StmtAssign, output: &mut ModuleEffects) {
+    fn assign(&mut self, x: &StmtAssign, output: &mut ModuleEffects) {
         for target in &x.targets {
             // if the value is an import_module call don't treat it as a regular assign
             if !self.check_assign_to_import_module(target, &x.value, output) {
@@ -1331,16 +1334,88 @@ impl<'a> SourceAnalyzer<'a> {
         }
 
         self.expr(&x.value, output);
+        let fresh = self.is_fresh_receiver(&x.value);
+        for target in &x.targets {
+            self.bind_receiver(target, fresh);
+        }
     }
 
-    fn ann_assign(&self, x: &StmtAnnAssign, output: &mut ModuleEffects) {
+    fn ann_assign(&mut self, x: &StmtAnnAssign, output: &mut ModuleEffects) {
         // We don't check the annotation since it is unlikely it can cause unsafe behaviour, and
         // checking for corner cases like `x: T[S]` triggering a custom `__getitem__` runs a higher
         // risk of false positives with low chance of actual benefits.
         self.check_assign_target(&x.target, output);
         if let Some(val) = &x.value {
             self.expr(val, output);
+            self.bind_receiver(&x.target, self.is_fresh_receiver(val));
         }
+    }
+
+    fn is_fresh_receiver(&self, value: &Expr) -> bool {
+        let Some(receivers) = &self.fresh_receivers else {
+            return false;
+        };
+        match value {
+            Expr::Name(_) => self
+                .info
+                .resolve(&self.cursor, value)
+                .is_some_and(|res| receivers.contains(&(res.scope, res.name.clone()))),
+            Expr::Call(call) => {
+                matches!(&*call.func, Expr::Name(name) if name.id == "type")
+                    && self
+                        .info
+                        .resolve(&self.cursor, &call.func)
+                        .is_some_and(|res| res.scope == ModuleName::builtins())
+                    && call.arguments.keywords.is_empty()
+                    && matches!(call.arguments.args.as_ref(), [Expr::StringLiteral(_), Expr::Tuple(bases), Expr::Dict(namespace)] if bases.elts.is_empty() && namespace.items.is_empty())
+            }
+            _ => false,
+        }
+    }
+
+    fn bind_receiver(&mut self, target: &Expr, fresh: bool) {
+        let Some(receivers) = &mut self.fresh_receivers else {
+            return;
+        };
+        match target {
+            Expr::Name(name) => {
+                let key = (self.cursor.scope(), name.id.clone());
+                if fresh {
+                    receivers.insert(key);
+                } else {
+                    receivers.remove(&key);
+                }
+            }
+            Expr::Tuple(_) | Expr::List(_) | Expr::Starred(_) => receivers.clear(),
+            _ => {}
+        }
+    }
+
+    fn receiver_rebinding_hazard(&self, expr: &Expr) -> bool {
+        let safe = match expr {
+            Expr::Call(_) => return !self.is_fresh_receiver(expr),
+            Expr::Attribute(attr) => {
+                attr.ctx == ExprContext::Store && self.is_fresh_receiver(&attr.value)
+            }
+            Expr::Tuple(tuple) => tuple.ctx == ExprContext::Load,
+            Expr::List(list) => list.ctx == ExprContext::Load,
+            Expr::Dict(dict) => dict.items.is_empty(),
+            Expr::Set(set) => set.elts.is_empty(),
+            Expr::Name(_)
+            | Expr::StringLiteral(_)
+            | Expr::BytesLiteral(_)
+            | Expr::NumberLiteral(_)
+            | Expr::BooleanLiteral(_)
+            | Expr::NoneLiteral(_)
+            | Expr::EllipsisLiteral(_) => true,
+            _ => false,
+        };
+        if !safe {
+            return true;
+        }
+        let mut hazard = false;
+        expr.recurse(&mut |child| hazard |= self.receiver_rebinding_hazard(child));
+        hazard
     }
 
     fn aug_assign(&self, x: &StmtAugAssign, output: &mut ModuleEffects) {
@@ -1824,6 +1899,32 @@ impl<'a> SourceAnalyzer<'a> {
     }
 
     fn stmt(&mut self, x: &Stmt, output: &mut ModuleEffects) {
+        let mut invalidate_receivers = matches!(
+            x,
+            Stmt::If(_)
+                | Stmt::For(_)
+                | Stmt::While(_)
+                | Stmt::Try(_)
+                | Stmt::With(_)
+                | Stmt::Match(_)
+                | Stmt::Import(_)
+                | Stmt::ImportFrom(_)
+                | Stmt::FunctionDef(_)
+                | Stmt::ClassDef(_)
+                | Stmt::AugAssign(_)
+                | Stmt::Delete(_)
+                | Stmt::Assert(_)
+        );
+        if self.fresh_receivers.is_some() {
+            x.visit(&mut |expr: &Expr| {
+                invalidate_receivers |= self.receiver_rebinding_hazard(expr);
+            });
+        }
+        let track_receivers = self.fresh_receivers.is_some();
+        if invalidate_receivers {
+            // Blocks and calls may rebind captured names, including before assignment targets.
+            self.fresh_receivers = None;
+        }
         match x {
             Stmt::Assign(a) => self.assign(a, output),
             Stmt::AnnAssign(a) => self.ann_assign(a, output),
@@ -1864,6 +1965,9 @@ impl<'a> SourceAnalyzer<'a> {
         if matches!(x, Stmt::For(_) | Stmt::While(_) | Stmt::Match(_)) {
             x.recurse(&mut |s| self.stmt(s, output))
         }
+        if invalidate_receivers {
+            self.fresh_receivers = track_receivers.then(AHashSet::new);
+        }
     }
 
     fn stmts(&mut self, xs: &[Stmt], output: &mut ModuleEffects) {
@@ -1903,6 +2007,13 @@ impl<'a> SourceAnalyzer<'a> {
     /// If `res` ultimately resolves to a parameter, return that parameter's defining scope and
     /// name.
     fn receiver_param(&self, res: &ResolvedName) -> Option<(ModuleName, Name)> {
+        if self
+            .fresh_receivers
+            .as_ref()
+            .is_some_and(|receivers| receivers.contains(&(res.scope, res.name.clone())))
+        {
+            return None;
+        }
         if res.definition.is_param() {
             return Some((res.scope, res.name.clone()));
         }
@@ -2006,6 +2117,7 @@ impl<'a> Analyzer<'a> for SourceAnalyzer<'a> {
             import_graph,
             cursor: Cursor::new(),
             sys_modules_probed_keys: OnceCell::new(),
+            fresh_receivers: None,
         }
     }
 

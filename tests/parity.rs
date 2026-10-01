@@ -1001,4 +1001,73 @@ mod tests {
             vec!["origin", "app"],
         );
     }
+
+    #[test]
+    fn fresh_classmethod_receiver_rebinding_agrees() {
+        for body in [
+            "cls = type(\"Fresh\", (), {})\n  cls.settings = 1",
+            "cls: object = type(\"Fresh\", (), {})\n  cls.settings = 1",
+            "cls = type(\"Fresh\", (), {})\n  alias = cls\n  alias.settings = 1",
+            "cls = type(\"Fresh\", (), {})\n  alias = cls\n  second = alias\n  second.settings = 1",
+            "original = cls\n  cls = type(\"Fresh\", (), {})\n  alias = cls\n  cls = original\n  alias.settings = 1",
+            "cls = alias = type(\"Fresh\", (), {})\n  alias.settings = 1",
+        ] {
+            let origin = format!("class C:\n @classmethod\n def configure(cls):\n  {body}\n");
+            for source in ["origin", "facade"] {
+                let app = format!("from {source} import C\nC.configure()\n");
+                let modules = vec![
+                    ("origin", origin.as_str()),
+                    ("facade", "from origin import C\n"),
+                    ("app", app.as_str()),
+                ];
+                assert_passing(
+                    &run_lifeguard_analysis(&modules),
+                    vec!["origin", "facade", "app"],
+                );
+                let shards: &[usize] = if source == "origin" { &[1, 2, 3] } else { &[1] };
+                let differences = path_differences(&modules, shards);
+                assert!(differences.is_empty(), "{source}: {body}: {differences:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn uncertain_classmethod_receiver_rebinding_stays_unsafe() {
+        for body in [
+            "cls.settings = 1\n  cls = type(\"Fresh\", (), {})",
+            "original = cls\n  cls = type(\"Fresh\", (), {})\n  original.settings = 1",
+            "original = cls\n  cls = type(\"Fresh\", (), {})\n  cls = original\n  cls.settings = 1",
+            "if flag:\n   cls = type(\"Fresh\", (), {})\n  cls.settings = 1",
+            "original = cls\n  cls = type(\"Fresh\", (), {})\n  if flag:\n   cls = original\n  cls.settings = 1",
+            "original = cls\n  cls = type(\"Fresh\", (), {})\n  (cls := original)\n  cls.settings = 1",
+            "original = cls\n  def reset():\n   nonlocal cls\n   cls = original\n  cls = type(\"Fresh\", (), {})\n  reset()\n  cls.settings = 1",
+            "original = cls\n  def reset():\n   nonlocal cls\n   cls = original\n   return 1\n  cls = type(\"Fresh\", (), {})\n  cls.settings = reset()",
+            "original = cls\n  def reset():\n   nonlocal cls\n   cls = original\n   return 1\n  cls = type(\"Fresh\", (), {})\n  cls.settings = (reset(), 1)[1]",
+            "original = cls\n  def reset():\n   nonlocal cls\n   cls = original\n   return 1\n  cls = type(\"Fresh\", (), {})\n  cls.settings = reset() or 1",
+            "original = cls\n  def reset():\n   nonlocal cls\n   cls = original\n  cls = type(\"Fresh\", (), {})\n  cls.settings = [reset()]",
+            "original = cls\n  def reset():\n   nonlocal cls\n   cls = original\n  cls = type(\"Fresh\", (), {})\n  callback = lambda value=reset(): None\n  cls.settings = 1",
+            "original = cls\n  cls = type(\"Fresh\", (), {})\n  callback = lambda value=(cls := original): None\n  cls.settings = 1",
+            "original = cls\n  class Holder:\n   @property\n   def value(self):\n    nonlocal cls\n    cls = original\n    return 1\n  holder = Holder()\n  cls = type(\"Fresh\", (), {})\n  cls.settings = holder.value",
+            "original = cls\n  class Holder:\n   def __setattr__(self, name, value):\n    nonlocal cls\n    cls = original\n  holder = Holder()\n  cls = type(\"Fresh\", (), {})\n  holder.value = 1\n  cls.settings = 1",
+            "original = cls\n  class Holder:\n   def __bool__(self):\n    nonlocal cls\n    cls = original\n    return True\n  holder = Holder()\n  cls = type(\"Fresh\", (), {})\n  assert holder\n  cls.settings = 1",
+            "original = cls\n  cls = type(\"Fresh\", (), {})\n  cls.settings = ((cls := original), 1)[1]",
+            "cls = type(cls)\n  cls.settings = 1",
+            "type = lambda *args: cls\n  cls = type(\"Fresh\", (), {})\n  cls.settings = 1",
+        ] {
+            let origin =
+                format!("class C:\n @classmethod\n def configure(cls, flag=True):\n  {body}\n");
+            let modules = vec![
+                ("origin", origin.as_str()),
+                ("facade", "from origin import C\n"),
+                ("app", "from facade import C\nC.configure()\n"),
+            ];
+            assert_failing(&run_lifeguard_analysis(&modules), vec!["app"]);
+            for (count, difference) in path_differences(&modules, &[1, 2, 3]) {
+                assert!(
+                    difference.starts_with("aggregated errors:"),
+                    "{body}: {count} shards: {difference}"
+                );
+            }
+        }
+    }
 }
