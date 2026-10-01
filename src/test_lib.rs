@@ -22,7 +22,6 @@ use rayon::prelude::*;
 use tempfile::TempDir;
 
 use crate::analyzer::analyze;
-use crate::cache::CachedError;
 use crate::cache::CachedModuleSafety;
 use crate::cache::CachedSafety;
 use crate::cache::LibraryCache;
@@ -962,13 +961,13 @@ impl ErrorLists for ModuleSafety {
 }
 
 impl ErrorLists for CachedModuleSafety {
-    type Error = CachedError;
+    type Error = SafetyError;
 
-    fn errors(&self) -> &[CachedError] {
+    fn errors(&self) -> &[SafetyError] {
         &self.errors
     }
 
-    fn overrides(&self) -> &[CachedError] {
+    fn overrides(&self) -> &[SafetyError] {
         &self.force_imports_eager_overrides
     }
 }
@@ -984,14 +983,37 @@ fn module_errors_entry<S: ErrorLists>(
         .then(|| (name.as_str().to_owned(), errors, overrides))
 }
 
+/// Render an error for comparison: the fields a cache carries, and only those.
+///
+/// The source range is absent because it does not survive a cache, so comparing
+/// it would make a serialized run differ from an in-memory one on a field
+/// neither path can act on.
+///
+/// `parameterized_decorator` in particular routes reduce-time verification
+/// through `is_decorator_call_verified_safe`, which additionally requires the
+/// factory's immediate nested functions to be safe -- so a path that lost the
+/// flag would verify differently while rendering the same.
+fn render_error(error: &SafetyError) -> String {
+    let parameterized = if error.parameterized_decorator {
+        " parameterized"
+    } else {
+        ""
+    };
+    format!(
+        "{:?} {}{}",
+        error.kind,
+        error.metadata.as_str(),
+        parameterized
+    )
+}
+
 /// Per-module errors from the whole-program safety map.
 fn whole_program_module_errors(safety_map: &SafetyMap) -> ModuleErrors {
     let mut errors: ModuleErrors = safety_map
         .iter()
         .filter_map(|entry| {
             let safety = entry.value().as_safety()?;
-            let render =
-                |error: &SafetyError| format!("{:?} {}", error.kind, error.metadata.as_str());
+            let render = render_error;
             module_errors_entry(entry.key(), safety, render)
         })
         .collect();
@@ -1009,7 +1031,7 @@ fn cached_module_errors(cache: &LibraryCache) -> ModuleErrors {
             let CachedSafety::Ok(safety) = &module.safety else {
                 return None;
             };
-            let render = |error: &CachedError| format!("{:?} {}", error.kind, error.metadata);
+            let render = render_error;
             module_errors_entry(&module.name, safety, render)
         })
         .collect();
@@ -1070,11 +1092,9 @@ pub fn run_incremental_analysis(
 
 /// The parts of an analysis the two paths are required to agree on.
 ///
-/// Source ranges are the one contract field missing: `CachedError` drops them,
-/// so the incremental path cannot report them at all and comparing locations
-/// would be comparing nothing. Everything else an analysis can express is here,
-/// including per-module error attribution -- aggregate counts alone would let an
-/// error move between two already-failing modules unnoticed.
+/// Everything an analysis can express, including per-module error attribution:
+/// aggregate counts alone would let an error move between two already-failing
+/// modules unnoticed.
 #[derive(Debug, PartialEq, Eq)]
 struct ParityFacts {
     passing: Vec<String>,
@@ -1307,6 +1327,66 @@ pub fn reduce_workspace_from_merged(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The parity comparison has to see `parameterized_decorator`. It selects a
+    /// stricter reduce-time check -- the decorator factory *and* each of its
+    /// immediate nested functions must be safe -- so a path that dropped the flag
+    /// would clear errors the other path keeps. Without this, the two would
+    /// render identically and every parity check would stay green.
+    #[test]
+    fn module_errors_distinguish_a_parameterized_decorator() {
+        let module = ModuleName::from_str("m");
+        let errors_with = |parameterized: bool| {
+            let safety_map = SafetyMap::new();
+            let mut safety = ModuleSafety::new();
+            let mut error = SafetyError::new(
+                crate::errors::ErrorKind::UnsafeDecoratorCall,
+                "deco".to_owned(),
+                ruff_text_size::TextRange::default(),
+            );
+            error.parameterized_decorator = parameterized;
+            safety.add_error(error);
+            safety_map.insert(module, SafetyResult::Ok(safety));
+            whole_program_module_errors(&safety_map)
+        };
+
+        assert_ne!(
+            errors_with(true),
+            errors_with(false),
+            "a parameterized decorator error must not compare equal to a bare one",
+        );
+    }
+
+    /// The same field, on the cached side: the two extractors have to render
+    /// identically or parity would report a difference for every decorator error.
+    #[test]
+    fn cached_and_whole_program_errors_render_alike() {
+        let module = ModuleName::from_str("m");
+        let mut error = SafetyError::new(
+            crate::errors::ErrorKind::UnsafeDecoratorCall,
+            "deco".to_owned(),
+            ruff_text_size::TextRange::default(),
+        );
+        error.parameterized_decorator = true;
+
+        let safety_map = SafetyMap::new();
+        let mut safety = ModuleSafety::new();
+        safety.add_error(error);
+        safety_map.insert(module, SafetyResult::Ok(safety));
+
+        let mut cache = LibraryCache::empty();
+        let mut cached_module = crate::cache::CachedModule::empty(module);
+        if let crate::cache::CachedSafety::Ok(ref mut cached) = cached_module.safety {
+            cached.errors.push(error);
+        }
+        cache.modules.push(cached_module);
+
+        assert_eq!(
+            whole_program_module_errors(&safety_map),
+            cached_module_errors(&cache),
+            "the two paths' error extractors must render the same record the same way",
+        );
+    }
 
     #[test]
     fn test_dedent_cases() {

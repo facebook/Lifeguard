@@ -11,7 +11,6 @@ mod tests {
     use std::time::SystemTime;
     use std::time::UNIX_EPOCH;
 
-    use lifeguard::cache::CachedError;
     use lifeguard::cache::CachedExports;
     use lifeguard::cache::CachedModule;
     use lifeguard::cache::CachedModuleSafety;
@@ -48,6 +47,7 @@ mod tests {
     use lifeguard::safety_resolver::is_call_verified_safe;
     use lifeguard::test_lib::TestSources;
     use lifeguard::test_lib::reduce_workspace_from_merged;
+    use ruff_text_size::TextRange;
 
     /// A record whose only callee is the class's own `__init__`.
     fn own_init() -> ConstructorCallees {
@@ -115,16 +115,12 @@ mod tests {
         }
     }
 
-    fn cached_error(kind: ErrorKind, metadata: &str) -> CachedError {
-        CachedError {
-            kind,
-            metadata: metadata.to_owned(),
-            parameterized_decorator: false,
-        }
+    fn cached_error(kind: ErrorKind, metadata: &str) -> SafetyError {
+        SafetyError::new(kind, metadata.to_owned(), TextRange::default())
     }
 
-    fn parameterized_decorator_error(metadata: &str) -> CachedError {
-        CachedError {
+    fn parameterized_decorator_error(metadata: &str) -> SafetyError {
+        SafetyError {
             parameterized_decorator: true,
             ..cached_error(ErrorKind::UnsafeDecoratorCall, metadata)
         }
@@ -133,7 +129,7 @@ mod tests {
     struct CachedModuleBuilder(CachedModule);
 
     impl CachedModuleBuilder {
-        fn errors(mut self, errors: Vec<CachedError>) -> Self {
+        fn errors(mut self, errors: Vec<SafetyError>) -> Self {
             let CachedSafety::Ok(safety) = &mut self.0.safety else {
                 unreachable!("test builder always creates cached safety")
             };
@@ -294,7 +290,7 @@ mod tests {
         assert_eq!(std::mem::size_of::<CachedModule>(), 264);
         assert_eq!(std::mem::size_of::<CachedSafety>(), 72);
         assert_eq!(std::mem::size_of::<CachedModuleSafety>(), 72);
-        assert_eq!(std::mem::size_of::<lifeguard::cache::CachedError>(), 32);
+        assert_eq!(std::mem::size_of::<lifeguard::errors::SafetyError>(), 24);
         assert_eq!(std::mem::size_of::<CachedExports>(), 24);
         assert_eq!(std::mem::size_of::<CachedReExport>(), 64);
     }
@@ -335,7 +331,7 @@ mod tests {
             CachedSafety::Ok(s) => {
                 assert_eq!(s.errors.len(), 1);
                 assert_eq!(s.errors[0].kind, ErrorKind::UnsafeFunctionCall);
-                assert_eq!(s.errors[0].metadata, "bad_func()");
+                assert_eq!(s.errors[0].metadata.as_str(), "bad_func()");
             }
             _ => panic!("Expected Ok safety"),
         }
@@ -426,6 +422,7 @@ mod tests {
                 has_unsafe_kwargs_expansion: true,
                 unsafe_args_expansion_min: Some(4),
             },
+            range: TextRange::default(),
         };
 
         let cache = LibraryCache {
@@ -671,6 +668,7 @@ mod tests {
                 unsafe_arg_indices: 1,
                 ..Default::default()
             },
+            range: TextRange::default(),
         };
 
         // Copy A of `dup` carries no mutation candidate.
@@ -712,6 +710,7 @@ mod tests {
             site: MutationCandidateSite::Function { name: mn("f") },
             arg_offset: 0,
             imported_args: ImportedArgs::default(),
+            range: TextRange::default(),
         };
         let distinct_candidate = MutationCandidate {
             callee: mn("dep.validate"),
@@ -2098,11 +2097,10 @@ mod tests {
         let mut cache = LibraryCache {
             modules: vec![
                 cached_module("app")
-                    .errors(vec![CachedError {
-                        kind: ErrorKind::UnsafeMethodCall,
-                        metadata: "dep.Widget.configure".to_owned(),
-                        parameterized_decorator: false,
-                    }])
+                    .errors(vec![cached_error(
+                        ErrorKind::UnsafeMethodCall,
+                        "dep.Widget.configure",
+                    )])
                     .function_safety([unsafe_missing_dep("wrapper", "dep.safe")])
                     .build(),
                 cached_module("dep")
@@ -2121,7 +2119,8 @@ mod tests {
         };
         assert!(
             safety.errors.iter().any(|e| {
-                e.kind == ErrorKind::UnsafeMethodCall && e.metadata == "dep.Widget.configure"
+                e.kind == ErrorKind::UnsafeMethodCall
+                    && e.metadata.as_str() == "dep.Widget.configure"
             }),
             "an exact unsafe method verdict must not be cleared by the safe class-level verdict",
         );
@@ -2137,11 +2136,10 @@ mod tests {
         let mut cache = LibraryCache {
             modules: vec![
                 cached_module("app")
-                    .errors(vec![CachedError {
-                        kind: ErrorKind::UnknownFunctionCall,
-                        metadata: "dep.Widget.configure".to_owned(),
-                        parameterized_decorator: false,
-                    }])
+                    .errors(vec![cached_error(
+                        ErrorKind::UnknownFunctionCall,
+                        "dep.Widget.configure",
+                    )])
                     .function_safety([unsafe_missing_dep("wrapper", "dep.safe")])
                     .build(),
                 cached_module("dep")
@@ -2160,7 +2158,8 @@ mod tests {
         };
         assert!(
             safety.errors.iter().any(|e| {
-                e.kind == ErrorKind::UnknownFunctionCall && e.metadata == "dep.Widget.configure"
+                e.kind == ErrorKind::UnknownFunctionCall
+                    && e.metadata.as_str() == "dep.Widget.configure"
             }),
             "an unknown method call needs an exact method verdict; class-level safety is insufficient",
         );
@@ -2197,7 +2196,7 @@ mod tests {
             safety
                 .errors
                 .iter()
-                .any(|e| e.kind == ErrorKind::UnknownDecoratorCall && e.metadata == "deco"),
+                .any(|e| e.kind == ErrorKind::UnknownDecoratorCall && e.metadata.as_str() == "deco"),
             "an unbound decorator name must not clear on a same-named safe function \
              in an unrelated module",
         );
@@ -2208,11 +2207,7 @@ mod tests {
         let mut cache = LibraryCache {
             modules: vec![
                 cached_module("app")
-                    .errors(vec![CachedError {
-                        kind: ErrorKind::UnknownFunctionCall,
-                        metadata: "b()".to_owned(),
-                        parameterized_decorator: false,
-                    }])
+                    .errors(vec![cached_error(ErrorKind::UnknownFunctionCall, "b()")])
                     .missing_imports(&["dep"])
                     .build(),
                 cached_module("dep").function_safety([safe("b")]).build(),
@@ -2231,7 +2226,7 @@ mod tests {
             safety
                 .errors
                 .iter()
-                .any(|e| e.kind == ErrorKind::UnknownFunctionCall && e.metadata == "b()"),
+                .any(|e| e.kind == ErrorKind::UnknownFunctionCall && e.metadata.as_str() == "b()"),
             "an unqualified unknown call must not clear just because a resolved module has that function name",
         );
     }
@@ -2241,11 +2236,7 @@ mod tests {
         let mut cache = LibraryCache {
             modules: vec![
                 cached_module("app")
-                    .errors(vec![CachedError {
-                        kind: ErrorKind::UnknownFunctionCall,
-                        metadata: "b()".to_owned(),
-                        parameterized_decorator: false,
-                    }])
+                    .errors(vec![cached_error(ErrorKind::UnknownFunctionCall, "b()")])
                     .function_safety([unsafe_missing_dep("wrapper", "dep.safe")])
                     .build(),
                 cached_module("dep")
@@ -2266,7 +2257,7 @@ mod tests {
             safety
                 .errors
                 .iter()
-                .any(|e| e.kind == ErrorKind::UnknownFunctionCall && e.metadata == "b()"),
+                .any(|e| e.kind == ErrorKind::UnknownFunctionCall && e.metadata.as_str() == "b()"),
             "an unqualified unknown call must not clear just because another module has a safe function with the same short name",
         );
         assert_eq!(
@@ -2300,11 +2291,11 @@ mod tests {
     fn test_reduce_indexes_unqualified_error_name_on_demand() {
         let mut app = safe_cached_module("app", &[], &[]);
         app.safety = CachedSafety::Ok(CachedModuleSafety {
-            errors: vec![CachedError {
-                kind: ErrorKind::UnsafeFunctionCall,
-                metadata: "needed()".to_owned(),
-                parameterized_decorator: false,
-            }],
+            errors: vec![SafetyError::new(
+                ErrorKind::UnsafeFunctionCall,
+                "needed()".to_owned(),
+                TextRange::default(),
+            )],
             ..Default::default()
         });
         app.function_safety = fsmap([unsafe_missing_dep("wrapper", "dep.safe")]);
@@ -2332,11 +2323,11 @@ mod tests {
     fn test_reduce_strips_repeated_call_suffixes_from_error_metadata() {
         let mut app = safe_cached_module("app", &[], &[]);
         app.safety = CachedSafety::Ok(CachedModuleSafety {
-            errors: vec![CachedError {
-                kind: ErrorKind::UnsafeFunctionCall,
-                metadata: "needed()()".to_owned(),
-                parameterized_decorator: false,
-            }],
+            errors: vec![SafetyError::new(
+                ErrorKind::UnsafeFunctionCall,
+                "needed()()".to_owned(),
+                TextRange::default(),
+            )],
             ..Default::default()
         });
         app.function_safety = fsmap([unsafe_missing_dep("wrapper", "dep.safe")]);
@@ -2428,11 +2419,7 @@ mod tests {
         let mut cache = LibraryCache {
             modules: vec![
                 cached_module("app")
-                    .errors(vec![CachedError {
-                        kind: ErrorKind::UnsafeDecoratorCall,
-                        metadata: "app.deco".to_owned(),
-                        parameterized_decorator: true,
-                    }])
+                    .errors(vec![parameterized_decorator_error("app.deco")])
                     .function_safety([
                         safe("deco"),
                         unsafe_if_imported("deco.builder"),
@@ -2455,7 +2442,8 @@ mod tests {
             safety
                 .errors
                 .iter()
-                .any(|e| e.kind == ErrorKind::UnsafeDecoratorCall && e.metadata == "app.deco"),
+                .any(|e| e.kind == ErrorKind::UnsafeDecoratorCall
+                    && e.metadata.as_str() == "app.deco"),
             "decorator errors need the call-site nested-function check, so a safe function verdict must not clear them",
         );
         assert_eq!(
@@ -2498,11 +2486,7 @@ mod tests {
         let mut cache = LibraryCache {
             modules: vec![
                 cached_module("app")
-                    .errors(vec![CachedError {
-                        kind: ErrorKind::UnsafeDecoratorCall,
-                        metadata: "app.deco".to_owned(),
-                        parameterized_decorator: true,
-                    }])
+                    .errors(vec![parameterized_decorator_error("app.deco")])
                     .function_safety([
                         safe("deco"),
                         safe("deco.builder"),

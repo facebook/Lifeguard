@@ -7,6 +7,7 @@
 
 use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
+use ruff_text_size::TextRange;
 
 use crate::cache::CONSTRUCTOR_METHODS;
 use crate::hasher::AHashMap;
@@ -45,17 +46,17 @@ pub(crate) fn resolve_program<'a>(
     function_safety: &mut AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
     candidates: impl Iterator<Item = (ModuleName, &'a [MutationCandidate])>,
     mut needed_unqualified: AHashSet<String>,
-    mut module_scope_error: impl FnMut(ModuleName, String),
+    mut module_scope_error: impl FnMut(ModuleName, String, TextRange),
 ) -> ResolutionOutcome {
     apply_mutation_candidates(
         candidates,
         module_names,
         function_safety,
-        |module, metadata| {
+        |module, metadata, range| {
             if let Some(name) = unqualified_index_key(&metadata) {
                 needed_unqualified.insert(name.to_owned());
             }
-            module_scope_error(module, metadata);
+            module_scope_error(module, metadata, range);
         },
     );
     let (promoted, globally_safe) =
@@ -102,11 +103,11 @@ fn apply_confirmed_candidate(
     module: ModuleName,
     candidate: &MutationCandidate,
     function_safety: &mut AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
-    module_scope_error: &mut impl FnMut(ModuleName, String),
+    module_scope_error: &mut impl FnMut(ModuleName, String, TextRange),
 ) {
     match &candidate.site {
         MutationCandidateSite::ModuleScope { call } => {
-            module_scope_error(module, call.as_str().to_owned());
+            module_scope_error(module, call.as_str().to_owned(), candidate.range);
         }
         MutationCandidateSite::Function { name } => {
             if let Some(info) = get_function_safety_mut(function_safety, &module, name.as_str()) {
@@ -153,7 +154,7 @@ fn apply_mutation_candidates<'a>(
     modules: impl Iterator<Item = (ModuleName, &'a [MutationCandidate])>,
     module_names: &AHashSet<ModuleName>,
     function_safety: &mut AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
-    mut module_scope_error: impl FnMut(ModuleName, String),
+    mut module_scope_error: impl FnMut(ModuleName, String, TextRange),
 ) {
     let pairs: Vec<(ModuleName, &MutationCandidate)> = modules
         .flat_map(|(module, candidates)| {
@@ -539,6 +540,7 @@ mod tests {
                 unsafe_arg_indices: 1,
                 ..Default::default()
             },
+            range: TextRange::default(),
         };
         let mut errors = Vec::new();
 
@@ -547,7 +549,7 @@ mod tests {
             &mut function_safety,
             std::iter::once((caller, std::slice::from_ref(&candidate))),
             AHashSet::new(),
-            |module, metadata| errors.push((module, metadata)),
+            |module, metadata, _range| errors.push((module, metadata)),
         );
 
         assert_eq!(errors, vec![(caller, "helper".to_owned())]);
@@ -585,6 +587,7 @@ mod tests {
                 unsafe_arg_indices: 1,
                 ..Default::default()
             },
+            range: TextRange::default(),
         };
         // Passes its imported object at index 1, which misses the parameter
         // `dependency.mutate` mutates, so this candidate is not confirmed. The
@@ -600,6 +603,7 @@ mod tests {
                 unsafe_arg_indices: 0b10,
                 ..Default::default()
             },
+            range: TextRange::default(),
         };
 
         // `elsewhere.sink` mutates its argument, which is what confirms the first
@@ -644,7 +648,7 @@ mod tests {
                 &mut function_safety,
                 modules.into_iter(),
                 AHashSet::new(),
-                |_, _| {},
+                |_, _, _| {},
             );
             function_safety[&caller]["helper"].clone()
         };

@@ -25,9 +25,9 @@ use dashmap::DashMap;
 use pyrefly_python::module_name::ModuleName;
 
 use crate::cache::CONSTRUCTOR_METHODS;
-use crate::cache::CachedError;
 use crate::cache::ConstructorCallees;
 use crate::errors::ErrorKind;
+use crate::errors::SafetyError;
 use crate::hasher::AHashMap;
 use crate::hasher::AHashSet;
 use crate::hasher::FixedState;
@@ -337,9 +337,9 @@ impl<'a> SafetyResolver<'a> {
     /// Dispatch a cached error to the right verified-safe check, on the two
     /// properties that pick it: whether the call form also runs a returned
     /// wrapper, and whether the callee was bound to anything.
-    pub(crate) fn is_error_verified_safe(&self, error: &CachedError) -> bool {
+    pub(crate) fn is_error_verified_safe(&self, error: &SafetyError) -> bool {
         // The callee `metadata` may render with trailing `()` suffixes.
-        let func_name = error.metadata.trim_end_matches("()");
+        let func_name = error.metadata.as_str().trim_end_matches("()");
         // Both fields, to guard against a stale artifact pairing them wrongly:
         // the kind and the flag travel separately through the cache.
         let parameterized_decorator = error.parameterized_decorator && error.is_decorator_call();
@@ -375,14 +375,14 @@ impl<'a> SafetyResolver<'a> {
     pub(crate) fn recorded_constructor_clears(
         &self,
         caller: ModuleName,
-        error: &CachedError,
+        error: &SafetyError,
     ) -> Option<bool> {
         match error.kind {
             ErrorKind::UnsafeFunctionCall
             | ErrorKind::UnknownFunctionCall
             | ErrorKind::UnsafeDecoratorCall
             | ErrorKind::UnknownDecoratorCall => {
-                let func_name = error.metadata.trim_end_matches("()");
+                let func_name = error.metadata.as_str().trim_end_matches("()");
                 let fqn = ModuleName::from_str(func_name);
                 let verdict = self.recorded_constructor_verdict(&fqn)?;
                 Some(self.constructor_verdict_clears(verdict, &caller, &fqn))
@@ -462,11 +462,12 @@ mod tests {
         let modules: AHashSet<ModuleName> = AHashSet::from_iter([other]);
         let resolver = SafetyResolver::new(&modules, &by_module);
 
-        let corrupt = CachedError {
-            kind: ErrorKind::UnknownFunctionCall,
-            metadata: "f".to_owned(),
-            parameterized_decorator: true,
-        };
+        let mut corrupt = SafetyError::new(
+            ErrorKind::UnknownFunctionCall,
+            "f".to_owned(),
+            ruff_text_size::TextRange::default(),
+        );
+        corrupt.parameterized_decorator = true;
         assert!(
             !resolver.is_error_verified_safe(&corrupt),
             "an unbound call must stay on the no-unqualified path; taking the \
@@ -493,11 +494,11 @@ mod tests {
         let modules: AHashSet<ModuleName> = AHashSet::from_iter([other]);
         let resolver = SafetyResolver::new(&modules, &by_module);
 
-        let unbound = CachedError {
-            kind: ErrorKind::UnknownDecoratorCall,
-            metadata: "deco".to_owned(),
-            parameterized_decorator: false,
-        };
+        let unbound = SafetyError::new(
+            ErrorKind::UnknownDecoratorCall,
+            "deco".to_owned(),
+            ruff_text_size::TextRange::default(),
+        );
         assert!(
             !resolver.is_error_verified_safe(&unbound),
             "`deco` was never bound to a callee; a same-named safe function in \
@@ -505,11 +506,11 @@ mod tests {
         );
 
         // The qualified form names a callee, so it still clears.
-        let bound = CachedError {
-            kind: ErrorKind::UnknownDecoratorCall,
-            metadata: "unrelated.deco".to_owned(),
-            parameterized_decorator: false,
-        };
+        let bound = SafetyError::new(
+            ErrorKind::UnknownDecoratorCall,
+            "unrelated.deco".to_owned(),
+            ruff_text_size::TextRange::default(),
+        );
         assert!(resolver.is_error_verified_safe(&bound));
     }
 
@@ -530,11 +531,12 @@ mod tests {
         let modules: AHashSet<ModuleName> = AHashSet::from_iter([other]);
         let resolver = SafetyResolver::new(&modules, &by_module);
 
-        let unbound = CachedError {
-            kind: ErrorKind::UnknownDecoratorCall,
-            metadata: "deco".to_owned(),
-            parameterized_decorator: true,
-        };
+        let mut unbound = SafetyError::new(
+            ErrorKind::UnknownDecoratorCall,
+            "deco".to_owned(),
+            ruff_text_size::TextRange::default(),
+        );
+        unbound.parameterized_decorator = true;
         assert!(
             !resolver.is_error_verified_safe(&unbound),
             "`deco` was never bound to a callee; a same-named safe function in \
@@ -542,11 +544,12 @@ mod tests {
         );
 
         // The qualified form names a callee, so it still clears.
-        let bound = CachedError {
-            kind: ErrorKind::UnknownDecoratorCall,
-            metadata: "unrelated.deco".to_owned(),
-            parameterized_decorator: true,
-        };
+        let mut bound = SafetyError::new(
+            ErrorKind::UnknownDecoratorCall,
+            "unrelated.deco".to_owned(),
+            ruff_text_size::TextRange::default(),
+        );
+        bound.parameterized_decorator = true;
         assert!(resolver.is_error_verified_safe(&bound));
     }
 }

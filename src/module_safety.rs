@@ -6,6 +6,7 @@
  */
 
 use pyrefly_python::module_name::ModuleName;
+use ruff_text_size::TextRange;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -197,6 +198,8 @@ pub struct MutationCandidate {
     pub arg_offset: usize,
     /// The imported arguments passed at the call.
     pub imported_args: ImportedArgs,
+    /// The call site.
+    pub range: TextRange,
 }
 
 #[derive(Debug)]

@@ -20,9 +20,9 @@ use std::collections::HashMap;
 
 use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
+use ruff_text_size::TextRange;
 use tracing::debug;
 
-use crate::cache::artifact::CachedError;
 #[cfg(test)]
 use crate::cache::artifact::CachedExports;
 use crate::cache::artifact::CachedModule;
@@ -37,6 +37,7 @@ use crate::cache::merge::fold_constructor_callees;
 use crate::cache::merge::fold_fqn_lists;
 use crate::cache::merge::retain_unverified_errors;
 use crate::errors::ErrorKind;
+use crate::errors::SafetyError;
 use crate::hasher::AHashMap;
 use crate::hasher::AHashSet;
 #[cfg(test)]
@@ -231,7 +232,7 @@ impl<'a> ResolutionContext<'a> {
 
 fn is_resolved_error_verified_safe(
     caller: ModuleName,
-    error: &CachedError,
+    error: &SafetyError,
     whole_program: &SafetyResolver,
     scoped: Option<&SafetyResolver>,
     promoted: &AHashSet<(ModuleName, String)>,
@@ -242,7 +243,7 @@ fn is_resolved_error_verified_safe(
     if let Some(cleared) = whole_program.recorded_constructor_clears(caller, error) {
         return cleared;
     }
-    let qualified = unqualified_index_key(&error.metadata).is_none();
+    let qualified = unqualified_index_key(error.metadata.as_str()).is_none();
     if error.kind == ErrorKind::UnsafeDecoratorCall || !qualified {
         return whole_program.is_error_verified_safe(error);
     }
@@ -346,7 +347,7 @@ impl LibraryCache {
             })
             .fold(AHashSet::new, |mut names, safety| {
                 for error in &safety.errors {
-                    let Some(name) = unqualified_index_key(&error.metadata) else {
+                    let Some(name) = unqualified_index_key(error.metadata.as_str()) else {
                         continue;
                     };
                     if !names.contains(name) {
@@ -442,7 +443,7 @@ impl LibraryCache {
             .collect();
 
         let needed_unqualified = self.unqualified_error_names();
-        let mut module_errors: HashMap<ModuleName, Vec<String>> = HashMap::new();
+        let mut module_errors: HashMap<ModuleName, Vec<(String, TextRange)>> = HashMap::new();
         let outcome = resolve_program(
             &module_names,
             &mut func_safety_by_module,
@@ -450,8 +451,11 @@ impl LibraryCache {
                 .iter()
                 .map(|module| (module.name, module.mutation_candidates.as_slice())),
             needed_unqualified,
-            |module_name, metadata| {
-                module_errors.entry(module_name).or_default().push(metadata);
+            |module_name, metadata, range| {
+                module_errors
+                    .entry(module_name)
+                    .or_default()
+                    .push((metadata, range));
             },
         );
         for module in &mut self.modules {
@@ -459,13 +463,9 @@ impl LibraryCache {
                 continue;
             };
             if let CachedSafety::Ok(ref mut safety) = module.safety {
-                safety
-                    .errors
-                    .extend(errors.iter().map(|metadata| CachedError {
-                        kind: ErrorKind::ImportedVarArgument,
-                        metadata: metadata.clone(),
-                        parameterized_decorator: false,
-                    }));
+                safety.errors.extend(errors.iter().map(|(metadata, range)| {
+                    SafetyError::new(ErrorKind::ImportedVarArgument, metadata.clone(), *range)
+                }));
             }
         }
 
@@ -528,6 +528,7 @@ mod tests {
                 },
                 arg_offset: 0,
                 imported_args: ImportedArgs::default(),
+                range: TextRange::default(),
             });
             LibraryCache {
                 modules: vec![cached_module],
@@ -704,11 +705,11 @@ mod tests {
 
         let caller = |name: ModuleName, dep: ModuleName| CachedModule {
             safety: CachedSafety::Ok(CachedModuleSafety {
-                errors: vec![CachedError {
-                    kind: ErrorKind::UnknownFunctionCall,
-                    metadata: format!("{}.helper()", dep.as_str()),
-                    parameterized_decorator: false,
-                }],
+                errors: vec![SafetyError::new(
+                    ErrorKind::UnknownFunctionCall,
+                    format!("{}.helper()", dep.as_str()),
+                    TextRange::default(),
+                )],
                 ..Default::default()
             }),
             missing_imports: [dep].into_iter().collect(),
@@ -762,16 +763,16 @@ mod tests {
         let caller = CachedModule {
             safety: CachedSafety::Ok(CachedModuleSafety {
                 errors: vec![
-                    CachedError {
-                        kind: ErrorKind::UnsafeFunctionCall,
-                        metadata: format!("{}.helper()", module_m.as_str()),
-                        parameterized_decorator: false,
-                    },
-                    CachedError {
-                        kind: ErrorKind::UnsafeFunctionCall,
-                        metadata: format!("{}.helper()", external.as_str()),
-                        parameterized_decorator: false,
-                    },
+                    SafetyError::new(
+                        ErrorKind::UnsafeFunctionCall,
+                        format!("{}.helper()", module_m.as_str()),
+                        TextRange::default(),
+                    ),
+                    SafetyError::new(
+                        ErrorKind::UnsafeFunctionCall,
+                        format!("{}.helper()", external.as_str()),
+                        TextRange::default(),
+                    ),
                 ],
                 ..Default::default()
             }),
@@ -812,7 +813,7 @@ mod tests {
                     safety
                         .errors
                         .iter()
-                        .map(|e| e.metadata.clone())
+                        .map(|e| e.metadata.as_str().to_owned())
                         .collect::<Vec<_>>(),
                 ),
                 _ => None,
@@ -833,11 +834,11 @@ mod tests {
 
         let caller = CachedModule {
             safety: CachedSafety::Ok(CachedModuleSafety {
-                errors: vec![CachedError {
-                    kind: ErrorKind::UnknownFunctionCall,
-                    metadata: format!("{}.helper()", module_m.as_str()),
-                    parameterized_decorator: false,
-                }],
+                errors: vec![SafetyError::new(
+                    ErrorKind::UnknownFunctionCall,
+                    format!("{}.helper()", module_m.as_str()),
+                    TextRange::default(),
+                )],
                 ..Default::default()
             }),
             function_safety: [(
@@ -874,11 +875,11 @@ mod tests {
 
         let caller = CachedModule {
             safety: CachedSafety::Ok(CachedModuleSafety {
-                errors: vec![CachedError {
-                    kind: ErrorKind::UnsafeFunctionCall,
-                    metadata: format!("{}.helper()", module_m.as_str()),
-                    parameterized_decorator: false,
-                }],
+                errors: vec![SafetyError::new(
+                    ErrorKind::UnsafeFunctionCall,
+                    format!("{}.helper()", module_m.as_str()),
+                    TextRange::default(),
+                )],
                 ..Default::default()
             }),
             function_safety: [(

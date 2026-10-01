@@ -15,10 +15,10 @@ use anyhow::Result;
 use anyhow::ensure;
 use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
+use ruff_text_size::TextRange;
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::cache::CachedError;
 use crate::cache::CachedExports;
 use crate::cache::CachedModule;
 use crate::cache::CachedModuleSafety;
@@ -27,6 +27,7 @@ use crate::cache::CachedSafety;
 use crate::cache::ConstructorCallees;
 use crate::cache::LibraryCache;
 use crate::effects::ImportedArgs;
+use crate::errors::SafetyError;
 use crate::hasher::AHashMap;
 use crate::hasher::AHashSet;
 use crate::hasher::HashSetExt;
@@ -69,8 +70,8 @@ struct WireModule {
 #[derive(Serialize, Deserialize)]
 enum WireSafety {
     Ok {
-        errors: Vec<CachedError>,
-        force_imports_eager_overrides: Vec<CachedError>,
+        errors: Vec<SafetyError>,
+        force_imports_eager_overrides: Vec<SafetyError>,
         implicit_imports: Vec<NameId>,
     },
     AnalysisError {
@@ -534,6 +535,9 @@ impl WireMutationCandidate {
             callee: decode_name(names, self.callee)?,
             site,
             arg_offset: self.arg_offset,
+            // Not carried: a cached offset would tie the bytes to where in the
+            // file the call sits.
+            range: TextRange::default(),
             imported_args: ImportedArgs {
                 unsafe_arg_indices: self.imported_args.unsafe_arg_indices,
                 unsafe_keyword_names: decode_names(names, self.imported_args.unsafe_keyword_names)?,

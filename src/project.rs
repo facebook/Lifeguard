@@ -1424,7 +1424,7 @@ impl ProjectInfo {
             // be empty: `resolve_program` only indexes a name when a module-scope
             // candidate is *confirmed*, and none can be here. Asserted rather than
             // gated so that the assumption fails loudly if it stops holding.
-            |module, metadata| {
+            |module, metadata, _range| {
                 debug_assert!(
                     false,
                     "whole-program pass confirmed a module-scope mutation ({}.{}), but no \
@@ -1509,6 +1509,7 @@ impl ProjectInfo {
                                 site,
                                 arg_offset,
                                 imported_args: call_data.imported_args().clone(),
+                                range: eff.range,
                             },
                         ));
                     }

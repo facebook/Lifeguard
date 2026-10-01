@@ -23,7 +23,6 @@ mod merge;
 mod reduce;
 
 pub(crate) use crate::cache::artifact::CONSTRUCTOR_METHODS;
-pub use crate::cache::artifact::CachedError;
 pub use crate::cache::artifact::CachedExports;
 pub use crate::cache::artifact::CachedModule;
 pub use crate::cache::artifact::CachedModuleSafety;

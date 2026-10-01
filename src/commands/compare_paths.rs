@@ -528,12 +528,14 @@ pub fn run(args: ComparePathsArgs) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use ruff_text_size::TextRange;
+
     use super::*;
-    use crate::cache::CachedError;
     use crate::cache::CachedExports;
     use crate::cache::CachedModule;
     use crate::cache::CachedModuleSafety;
     use crate::errors::ErrorKind;
+    use crate::errors::SafetyError;
     use crate::hasher::AHashMap;
     use crate::hasher::AHashSet;
     use crate::hasher::HashMapExt;
@@ -600,11 +602,11 @@ mod tests {
                 CachedModule {
                     name: caller,
                     safety: CachedSafety::Ok(CachedModuleSafety {
-                        errors: vec![CachedError {
-                            kind: ErrorKind::UnsafeFunctionCall,
-                            metadata: "pkg.dependency.safe_func()".to_owned(),
-                            parameterized_decorator: false,
-                        }],
+                        errors: vec![SafetyError::new(
+                            ErrorKind::UnsafeFunctionCall,
+                            "pkg.dependency.safe_func()".to_owned(),
+                            TextRange::default(),
+                        )],
                         force_imports_eager_overrides: Vec::new(),
                         implicit_imports: Vec::new(),
                     }),

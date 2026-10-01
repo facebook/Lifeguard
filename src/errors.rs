@@ -186,10 +186,14 @@ impl fmt::Display for ErrorMetadata {
     }
 }
 
+/// A safety error, in both its in-process and its cached form.
 #[derive(Debug, Clone, Copy)]
 pub struct SafetyError {
     pub kind: ErrorKind,
     pub metadata: ErrorMetadata,
+    /// Where the error is, for the verbose output to resolve against the source.
+    /// In process only: a cache carries no positions, so a decoded error has the
+    /// default range.
     pub range: TextRange,
     /// True when this error is from a parameterized decorator (`@deco(...)`),
     /// whose returned wrapper also runs at decoration time.
@@ -197,6 +201,14 @@ pub struct SafetyError {
 }
 
 impl SafetyError {
+    /// Whether the callee is applied as a decorator, either bound or not.
+    pub(crate) fn is_decorator_call(&self) -> bool {
+        matches!(
+            self.kind,
+            ErrorKind::UnsafeDecoratorCall | ErrorKind::UnknownDecoratorCall
+        )
+    }
+
     pub fn new(kind: ErrorKind, metadata: String, range: TextRange) -> Self {
         Self {
             kind,
@@ -267,15 +279,65 @@ pub(crate) fn is_parameterized_decorator_effect(eff: &Effect) -> bool {
     ) && matches!(eff.data, EffectData::Call(_))
 }
 
+/// Wire form for [`SafetyError`]: the fields a cache carries. The range is not
+/// one of them, and the interned metadata has to round-trip through a plain
+/// string.
+#[derive(Deserialize)]
+struct SerializedSafetyError {
+    kind: ErrorKind,
+    metadata: String,
+    parameterized_decorator: bool,
+}
+
+/// The same shape, borrowed, for the write path. The metadata is interned, so
+/// the owned form would allocate a `String` per error every time a cache is
+/// written; `&str` and `String` serialize identically, so the bytes are the
+/// same. Field order must stay in step with [`SerializedSafetyError`]: the wire
+/// format is not self-describing.
+#[derive(Serialize)]
+struct SerializedSafetyErrorRef<'a> {
+    kind: ErrorKind,
+    metadata: &'a str,
+    parameterized_decorator: bool,
+}
+
+impl Serialize for SafetyError {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        SerializedSafetyErrorRef {
+            kind: self.kind,
+            metadata: self.metadata.as_str(),
+            parameterized_decorator: self.parameterized_decorator,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for SafetyError {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = SerializedSafetyError::deserialize(deserializer)?;
+        Ok(Self {
+            kind: wire.kind,
+            metadata: ErrorMetadata::from(wire.metadata.as_str()),
+            // Not carried: a cached offset would tie the bytes to where in the
+            // file the error sits, and nothing downstream of a cache reads one.
+            range: TextRange::default(),
+            parameterized_decorator: wire.parameterized_decorator,
+        })
+    }
+}
+
 impl Ord for SafetyError {
     fn cmp(&self, other: &Self) -> Ordering {
-        // Order errors by file location first, then by what kind of error they are.
-        self.range
-            .start()
-            .cmp(&other.range.start())
-            .then_with(|| self.range.end().cmp(&other.range.end()))
-            .then_with(|| self.kind.cmp(&other.kind))
+        // Over the fields a cache carries, and only those: the range is not one
+        // of them, so ordering by it would sort a list into an order the wire
+        // cannot reproduce. Records that tie here are identical on the wire.
+        self.kind
+            .cmp(&other.kind)
             .then_with(|| self.metadata.cmp(&other.metadata))
+            .then_with(|| {
+                self.parameterized_decorator
+                    .cmp(&other.parameterized_decorator)
+            })
     }
 }
 
@@ -303,27 +365,28 @@ mod tests {
         assert_eq!(out, "unsafe-function-call");
     }
 
+    /// The order is over the fields a cache carries, and position is not one of
+    /// them: two errors that differ only in where they occur encode to the same
+    /// bytes, so an order that separated them could not be reproduced.
     #[test]
-    fn test_safety_error_ordering_and_equality() {
+    fn test_safety_error_ordering_is_over_cached_fields_only() {
         use std::cmp::Ordering;
 
         let range1 = TextRange::new(0u32.into(), 5u32.into());
         let range2 = TextRange::new(10u32.into(), 15u32.into());
 
-        let err1 = SafetyError::new(ErrorKind::UnsafeFunctionCall, "foo".to_string(), range1);
-        let err2 = SafetyError::new(ErrorKind::UnsafeFunctionCall, "foo".to_string(), range2);
-        let err3 = SafetyError::new(ErrorKind::UnsafeFunctionCall, "foo".to_string(), range1);
+        let err = SafetyError::new(ErrorKind::UnsafeFunctionCall, "foo".to_string(), range1);
+        let elsewhere = SafetyError::new(ErrorKind::UnsafeFunctionCall, "foo".to_string(), range2);
 
-        assert_eq!(err1, err3);
-        assert_eq!(err1.partial_cmp(&err3), Some(Ordering::Equal));
+        assert_eq!(err, elsewhere, "position is not part of the identity");
+        assert_eq!(err.partial_cmp(&elsewhere), Some(Ordering::Equal));
 
-        assert!(err1 < err2);
-        assert_eq!(err1.partial_cmp(&err2), Some(Ordering::Less));
-
-        let err4 = SafetyError::new(ErrorKind::ExecCall, "foo".to_string(), range1);
+        let other_kind = SafetyError::new(ErrorKind::ExecCall, "foo".to_string(), range1);
+        assert_ne!(err, other_kind, "the kind is");
         assert_ne!(
-            err1, err4,
-            "different ErrorKind at same range should differ"
+            err.partial_cmp(&other_kind),
+            Some(Ordering::Equal),
+            "and it orders, so the encoder has a total order over cached fields",
         );
     }
 

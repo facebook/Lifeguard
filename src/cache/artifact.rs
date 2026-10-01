@@ -16,11 +16,9 @@ use std::path::Path;
 
 use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
-use ruff_text_size::TextRange;
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::errors::ErrorKind;
 use crate::errors::SafetyError;
 use crate::exports::Exports;
 use crate::hasher::AHashMap;
@@ -243,17 +241,9 @@ pub enum CachedSafety {
 /// Detailed safety information for a module.
 #[derive(Default, Serialize, Deserialize)]
 pub struct CachedModuleSafety {
-    pub errors: Vec<CachedError>,
-    pub force_imports_eager_overrides: Vec<CachedError>,
+    pub errors: Vec<SafetyError>,
+    pub force_imports_eager_overrides: Vec<SafetyError>,
     pub implicit_imports: Vec<ModuleName>,
-}
-
-/// A serializable safety error (without source location).
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
-pub struct CachedError {
-    pub kind: ErrorKind,
-    pub metadata: String,
-    pub parameterized_decorator: bool,
 }
 
 /// Cached re-export information for a library. Only re-exports are consumed by
@@ -397,37 +387,13 @@ impl CachedModuleSafety {
     }
 }
 
-impl CachedError {
-    /// Whether the callee is applied as a decorator, either bound or not.
-    pub(crate) fn is_decorator_call(&self) -> bool {
-        matches!(
-            self.kind,
-            ErrorKind::UnsafeDecoratorCall | ErrorKind::UnknownDecoratorCall
-        )
-    }
-
-    pub(crate) fn from_safety_error(error: &SafetyError) -> Self {
-        CachedError {
-            kind: error.kind,
-            metadata: error.metadata.as_str().to_string(),
-            parameterized_decorator: error.parameterized_decorator,
-        }
-    }
-
-    pub(crate) fn to_safety_error(&self) -> SafetyError {
-        let mut error = SafetyError::new(self.kind, self.metadata.clone(), TextRange::default());
-        error.parameterized_decorator = self.parameterized_decorator;
-        error
-    }
-}
-
 impl CachedExports {
     /// Build the cached re-exports for a library, keeping only those exported by
     /// one of the library's own modules. `get_re_exports()` also yields the bundled
     /// stubs' re-exports, identical across every cache; dropping them is safe because
     /// each re-export is owned by exactly one module's cache and the reduce rebuilds
     /// stub chains from the bundled stub graph.
-    pub(crate) fn from_exports(exports: &Exports, own_modules: &AHashSet<ModuleName>) -> Self {
+    fn from_exports(exports: &Exports, own_modules: &AHashSet<ModuleName>) -> Self {
         let re_exports: Vec<CachedReExport> = exports
             .get_re_exports()
             .filter(|(module, _, _)| own_modules.contains(module))
