@@ -435,6 +435,8 @@ mod tests {
     fn test_cache_round_trip_function_safety_and_mutations() {
         let mut info = FunctionSafetyInfo::new(FunctionSafety::UnsafeMissingDep);
         info.missing_dep_callees = [mn("dep.callee")].into_iter().collect();
+        info.missing_dep_decorators = [mn("dep.callee")].into_iter().collect();
+        info.returns_identity_decorator = true;
         info.mutated_params = vec![MutatedParam {
             name: mn("pkg.param"),
             position: ParamPosition::Positional(2),
@@ -500,6 +502,64 @@ mod tests {
             vec![candidate],
             "mutation candidates (incl. imported_args details) should round-trip",
         );
+    }
+
+    #[test]
+    fn test_cache_identity_decorator_fact_is_optional_and_conservative() {
+        for identity in [false, true] {
+            for verdict in [FunctionSafety::Safe, FunctionSafety::Unsafe] {
+                let mut factory = FunctionSafetyInfo::new(verdict);
+                factory.returns_identity_decorator = identity;
+                let cache = LibraryCache {
+                    modules: vec![
+                        cached_module("app")
+                            .errors(vec![parameterized_decorator_error("dep.factory")])
+                            .build(),
+                        cached_module("dep")
+                            .function_safety([
+                                ("factory".to_owned(), factory.clone()),
+                                unsafe_("factory.unused"),
+                            ])
+                            .build(),
+                    ],
+                    ..Default::default()
+                };
+                let loaded = round_trip(&cache);
+                assert_eq!(module(&loaded, "dep").function_safety["factory"], factory);
+                let resolved = resolve(loaded);
+                let CachedSafety::Ok(safety) = &resolved_module(&resolved, "app").safety else {
+                    panic!("app should have cached module safety");
+                };
+                assert_eq!(safety.errors.is_empty(), identity && verdict.is_safe());
+                if identity {
+                    assert!(factory.merge(FunctionSafetyInfo::new(verdict)));
+                    assert!(!factory.returns_identity_decorator);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_cache_identity_return_keeps_definition_effects_and_unsafe_returns() {
+        for body in [
+            " def unused(value=registry.append(1)): pass\n return lambda f: f\n",
+            " class Unused:\n  registry.append(1)\n return lambda f: f\n",
+            " @registry.append\n def unused(): pass\n return lambda f: f\n",
+            " def unsafe(f):\n  registry.append(f)\n  return f\n return unsafe\n",
+            " def unsafe(f):\n  registry.append(f)\n  return f\n return lambda f: unsafe(f)\n",
+        ] {
+            let origin = format!("registry = []\ndef deco():\n{body}");
+            let own_cache = build_cache(&TestSources::new(&[(
+                "app",
+                "from dep import deco\n@deco()\ndef f(): pass\n",
+            )]));
+            let dep_cache = build_cache(&TestSources::new(&[("dep", &origin)]));
+            let resolved = merge_and_resolve(own_cache, dep_cache);
+            let CachedSafety::Ok(safety) = &resolved_module(&resolved, "app").safety else {
+                panic!("app should have cached module safety");
+            };
+            assert!(!safety.errors.is_empty(), "{origin}");
+        }
     }
 
     #[test]
@@ -1244,6 +1304,45 @@ mod tests {
         assert!(
             !main.is_safe(),
             "main mutates the imported `settings` via cross-library `configure` at import time",
+        );
+    }
+
+    #[test]
+    fn test_cross_library_mutation_through_reexport_is_unsafe() {
+        // `facade` re-exports the cross-library `configure`, so calls through it
+        // must still be deferred to the reduce step under the name they import.
+        let own_cache = build_cache(&TestSources::new(&[
+            ("config", "settings = 1\n"),
+            ("facade", "from setup import configure\n"),
+            (
+                "m",
+                "from facade import configure\n\
+                     from config import settings\n\
+                     def f():\n\
+                     \x20   configure(settings)\n",
+            ),
+            ("app", "from m import f\nf()\n"),
+            (
+                "main",
+                "from facade import configure\n\
+                     from config import settings\n\
+                     configure(settings)\n",
+            ),
+        ]));
+        let dep_cache = build_cache(&TestSources::new(&[(
+            "setup",
+            "def configure(x):\n\
+                 \x20   x.enabled = True\n",
+        )]));
+        let resolved = merge_and_resolve(own_cache, dep_cache);
+
+        assert!(
+            !resolved.find_module(mn("app")).unwrap().is_safe(),
+            "app calls f, which mutates the imported `settings` through the re-export",
+        );
+        assert!(
+            !resolved.find_module(mn("main")).unwrap().is_safe(),
+            "main mutates the imported `settings` through the re-export at import time",
         );
     }
 
