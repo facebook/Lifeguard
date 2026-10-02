@@ -143,10 +143,10 @@ fn callee_is_unresolved(
 // decorator calls, check_call_body separately checks nested function effects since
 // decorator application calls the returned function.
 fn merge_all_effects(analysis_map: &AnalysisMap) -> EffectTable {
-    // Pre-allocate DashMap with estimated capacity (roughly 2 scopes per module)
+    // One entry per scope with effects (~10 scopes/module).
     let num_modules = analysis_map.len();
     let concurrent_table: DashMap<ModuleName, Vec<Effect>> =
-        DashMap::with_capacity(num_modules * 2);
+        DashMap::with_capacity(num_modules * 10);
 
     // Process analysis_map in parallel
     analysis_map.par_iter().for_each(|(_, v)| {
@@ -1188,10 +1188,12 @@ fn compute_mutated_params(
     // Merge into `mutated` (seeds the fixpoint) and `dependents`, the reverse
     // index: (owner `g`, parameter `q`) -> callers whose parameter becomes mutated
     // once `q` is known mutated.
+    // One entry per mutated scope (~3 seeds/scope)
     let mut mutated: AHashMap<ModuleName, AHashSet<ModuleName>> =
-        AHashMap::with_capacity(all_seeds.len());
+        AHashMap::with_capacity(all_seeds.len() / 3);
+    // One entry per mutated (owner, param) (~2 edges/key).
     let mut dependents: AHashMap<(ModuleName, ModuleName), Vec<SeedMutation>> =
-        AHashMap::with_capacity(all_edges.len());
+        AHashMap::with_capacity(all_edges.len() / 2);
     let mut worklist: Vec<SeedMutation> = Vec::new();
     for (scope, param) in all_seeds {
         if mutated.entry(scope).or_default().insert(param) {

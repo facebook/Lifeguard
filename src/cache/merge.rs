@@ -61,8 +61,10 @@ impl LibraryCache {
         let re_exports = std::mem::take(&mut self.exports.re_exports);
 
         // Maps a source `(module, attr)` to the edges that read from it.
+        //
+        // One entry per distinct source symbol (~4.8 edges/source).
         let mut dependents: AHashMap<(ModuleName, &str), Vec<u32>> =
-            AHashMap::with_capacity(re_exports.len());
+            AHashMap::with_capacity(re_exports.len() / 4);
         for (i, re) in re_exports.iter().enumerate() {
             dependents
                 .entry((re.imported_module, re.imported_attr.as_str()))
@@ -393,6 +395,7 @@ pub(super) fn fold_fqn_lists(
     merged: &mut HashMap<ModuleName, Vec<ModuleName>>,
     entries: Vec<(ModuleName, Vec<ModuleName>)>,
 ) {
+    merged.reserve(entries.len());
     for (class_fqn, bases) in entries {
         let existing = merged.entry(class_fqn).or_default();
         for base in bases {
