@@ -1248,6 +1248,45 @@ mod tests {
     }
 
     #[test]
+    fn test_cross_library_mutation_through_reexport_is_unsafe() {
+        // `facade` re-exports the cross-library `configure`, so calls through it
+        // must still be deferred to the reduce step under the name they import.
+        let own_cache = build_cache(&TestSources::new(&[
+            ("config", "settings = 1\n"),
+            ("facade", "from setup import configure\n"),
+            (
+                "m",
+                "from facade import configure\n\
+                     from config import settings\n\
+                     def f():\n\
+                     \x20   configure(settings)\n",
+            ),
+            ("app", "from m import f\nf()\n"),
+            (
+                "main",
+                "from facade import configure\n\
+                     from config import settings\n\
+                     configure(settings)\n",
+            ),
+        ]));
+        let dep_cache = build_cache(&TestSources::new(&[(
+            "setup",
+            "def configure(x):\n\
+                 \x20   x.enabled = True\n",
+        )]));
+        let resolved = merge_and_resolve(own_cache, dep_cache);
+
+        assert!(
+            !resolved.find_module(mn("app")).unwrap().is_safe(),
+            "app calls f, which mutates the imported `settings` through the re-export",
+        );
+        assert!(
+            !resolved.find_module(mn("main")).unwrap().is_safe(),
+            "main mutates the imported `settings` through the re-export at import time",
+        );
+    }
+
+    #[test]
     fn test_class_promotion_follows_its_constructor_methods() {
         // `Model` is blocked on `Model.__init__`, not on what it calls, so the
         // blocking callee resolving safe must not promote the unsafe constructor.

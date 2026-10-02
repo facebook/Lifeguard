@@ -254,19 +254,35 @@ fn merge_all_functions_and_methods(
     )
 }
 
-fn collect_re_exports(exports: &Exports, effect_table: &EffectTable) -> AHashSet<ModuleName> {
+/// Map each re-exported name to the end of its re-export chain.
+fn collect_re_exports(
+    exports: &Exports,
+    effect_table: &EffectTable,
+    functions: &AHashMap<ModuleName, ModuleName>,
+    classes: &ClassTable,
+) -> AHashMap<ModuleName, ModuleName> {
     // Re-export names are interned via as_module_name(), which is the expensive
-    // part on large projects; do it in parallel, then build the set.
-    let names: Vec<ModuleName> = exports
+    // part on large projects; do it in parallel, then build the map.
+    let names: Vec<(ModuleName, ModuleName)> = exports
         .par_re_exports()
-        .map(|(module, attr, _)| module.append_str(attr.as_str()))
+        .filter_map(|(module, attr, (imported, _))| {
+            let name = module.append_str(attr.as_str());
+            if functions.contains_key(&name) || classes.contains(&name) {
+                return None;
+            }
+            let source = exports.resolve_transitive(imported)?;
+            Some((name, source.as_module_name()))
+        })
         .collect();
-    let mut re_exports: AHashSet<ModuleName> = names.into_iter().collect();
+    let mut re_exports: AHashMap<ModuleName, ModuleName> = names.into_iter().collect();
     remove_unsafe_re_exports(effect_table, &mut re_exports);
     re_exports
 }
 
-fn remove_unsafe_re_exports(effect_table: &EffectTable, re_exports: &mut AHashSet<ModuleName>) {
+fn remove_unsafe_re_exports(
+    effect_table: &EffectTable,
+    re_exports: &mut AHashMap<ModuleName, ModuleName>,
+) {
     let unsafe_re_exports = effect_table
         .values()
         .flatten()
@@ -354,6 +370,13 @@ impl GlobalAnalysisState {
                 if let Some(mut safety_entry) = safety_map.get_mut(&module) {
                     if let SafetyResult::Ok(module_safety) = safety_entry.value_mut() {
                         if let Some(mutated) = project.resolve_cached_mutated_params_for(&fqn) {
+                            if method_receiver_offset(&fqn, &project.classes, false) == Some(1)
+                                && mutated
+                                    .iter()
+                                    .any(|param| param.position == ParamPosition::Positional(0))
+                            {
+                                info.verdict.insert(FunctionSafety::UnsafeIfImported);
+                            }
                             info.mutated_params = mutated;
                         }
                         module_safety
@@ -1039,46 +1062,107 @@ fn method_receiver_offset(method: &ModuleName, classes: &ClassTable, bound: bool
     })
 }
 
+/// Rewrite `name`, or the class owning it, through re-exports: `facade.C.m` -> `origin.C.m`.
+fn resolve_re_export(
+    name: &ModuleName,
+    functions: &AHashMap<ModuleName, ModuleName>,
+    classes: &ClassTable,
+    re_exports: &AHashMap<ModuleName, ModuleName>,
+) -> ModuleName {
+    if let Some(target) = re_exports.get(name) {
+        return *target;
+    }
+    if functions.contains_key(name) || classes.contains(name) {
+        return *name;
+    }
+    name.iter_parents()
+        .find_map(|(owner, dot)| match re_exports.get(&owner) {
+            Some(target) => Some(target.append_str(&name.as_str()[dot + 1..])),
+            None => (functions.contains_key(&owner) || classes.contains(&owner)).then_some(*name),
+        })
+        .unwrap_or(*name)
+}
+
+/// The definition `name` resolves to through re-exports and the class MRO.
+fn resolve_definition(
+    name: &ModuleName,
+    functions: &AHashMap<ModuleName, ModuleName>,
+    classes: &ClassTable,
+    re_exports: &AHashMap<ModuleName, ModuleName>,
+    class_bases: &HashMap<ModuleName, Vec<ModuleName>>,
+) -> Option<ModuleName> {
+    let is_defined = |name: &ModuleName| {
+        functions.contains_key(name)
+            || classes.contains(name)
+            || name.split_attr().is_some_and(|(class, field)| {
+                classes
+                    .lookup(&class)
+                    .is_some_and(|class| class.get_field(&field).is_some())
+            })
+    };
+    let name = resolve_re_export(name, functions, classes, re_exports);
+    if is_defined(&name) {
+        return Some(name);
+    }
+    let (class, method) = name
+        .split_attr()
+        .filter(|(class, _)| classes.contains(class))?;
+    c3_linearize(class_bases, &class)
+        .into_iter()
+        .skip(1)
+        .map(|base| base.append_str(method.as_str()))
+        .find(is_defined)
+}
+
 /// Yield each `(callee, arg_offset)` a call binds to: the function(s) whose
 /// parameters the call's explicit arguments map to, paired with the number of
-/// implicit leading parameters (the receiver) to skip.
+/// implicit leading parameters (the receiver) to skip. Callees not defined in
+/// this library keep their imported name, which cross-library checks match.
 fn iter_callees<'a>(
     eff: &'a Effect,
+    functions: &AHashMap<ModuleName, ModuleName>,
     classes: &'a ClassTable,
+    re_exports: &AHashMap<ModuleName, ModuleName>,
+    class_bases: &HashMap<ModuleName, Vec<ModuleName>>,
 ) -> impl Iterator<Item = (ModuleName, usize)> + 'a {
     let is_method = matches!(
         eff.kind,
         EffectKind::MethodCall | EffectKind::UnboundMethodCall
     );
-    let is_constructor = !is_method && classes.contains(&eff.name);
+    let name = resolve_definition(&eff.name, functions, classes, re_exports, class_bases)
+        .unwrap_or(eff.name);
+    let is_constructor = !is_method && classes.contains(&name);
 
     // Constructor calls dispatch to each constructor method (offset 1); empty
     // for non-constructor calls.
     let constructors = is_constructor
-        .then(|| constructor_method_names(eff.name, classes))
+        .then(|| constructor_method_names(name, classes))
         .into_iter()
         .flatten()
         .map(|method| (method, 1));
 
-    // Method / plain function calls resolve to a single callee (`eff.name`) at
+    // Method / plain function calls resolve to a single callee (`name`) at
     // one or two offsets; empty for constructor calls.
     let (offset, extra_offset) = match eff.kind {
         _ if is_constructor => (None, None),
-        EffectKind::MethodCall => match method_receiver_offset(&eff.name, classes, true) {
+        EffectKind::MethodCall => match method_receiver_offset(&name, classes, true) {
             Some(offset) => (Some(offset), None),
             // Unknown kind (e.g. a builtin / third-party class): assume an
             // implicit receiver, as bound calls usually have one.
             None => (Some(1), None),
         },
-        EffectKind::UnboundMethodCall => match method_receiver_offset(&eff.name, classes, false) {
+        EffectKind::UnboundMethodCall => match method_receiver_offset(&name, classes, false) {
             Some(offset) => (Some(offset), None),
             // Unknown kind: the receiver may be explicit (0) or implicit (1), so
             // consider both to avoid missing a mutated parameter.
             None => (Some(0), Some(1)),
         },
-        _ => (Some(0), None),
+        // `C.m(...)` binds like an unbound method call.
+        _ => (
+            Some(method_receiver_offset(&name, classes, false).unwrap_or(0)),
+            None,
+        ),
     };
-    let name = eff.name;
     let single = offset
         .into_iter()
         .chain(extra_offset)
@@ -1100,6 +1184,8 @@ fn compute_mutated_params(
     effect_table: &EffectTable,
     functions: &AHashMap<ModuleName, ModuleName>,
     classes: &ClassTable,
+    re_exports: &AHashMap<ModuleName, ModuleName>,
+    class_bases: &HashMap<ModuleName, Vec<ModuleName>>,
     analysis_map: &AnalysisMap,
 ) -> AHashMap<ModuleName, AHashSet<ModuleName>> {
     // Compute a fixpoint over the call graph. The "seed" is the base set of functions that directly
@@ -1133,7 +1219,9 @@ fn compute_mutated_params(
                     }
                     // A call may bind to several callees (a constructor's
                     // __init__/__new__); resolve each owner's parameter names once.
-                    for (owner, arg_offset) in iter_callees(eff, classes) {
+                    for (owner, arg_offset) in
+                        iter_callees(eff, functions, classes, re_exports, class_bases)
+                    {
                         let owner_param_names = functions
                             .get(&owner)
                             .and_then(|module| analysis_map.get(module))
@@ -1239,7 +1327,8 @@ struct ProjectInfo {
     class_bases: HashMap<ModuleName, Vec<ModuleName>>,
     // Mappings of functions to the containing module
     functions: AHashMap<ModuleName, ModuleName>,
-    re_exports: AHashSet<ModuleName>,
+    // Mapping of re-exported names to the name their re-export chain ends at
+    re_exports: AHashMap<ModuleName, ModuleName>,
     // Mapping of all methods called on imported objects
     methods: AHashMap<ModuleName, ModuleName>,
     // Reverse mapping: parent function → nested function scopes.
@@ -1263,21 +1352,38 @@ impl ProjectInfo {
         let classes = time("    Merging all classes", || {
             merge_all_classes(&mut analysis_map)
         });
-        let class_bases = time("    Indexing class bases", || {
-            classes.base_edges().into_iter().collect()
+        let re_exports = time("    Getting re-exports", || {
+            collect_re_exports(exports, &effect_table, &functions, &classes)
         });
-        let ((re_exports, nested_functions), mutated_params) = rayon::join(
+        let class_bases = time("    Indexing class bases", || {
+            classes
+                .base_edges()
+                .into_iter()
+                .map(|(class, bases)| {
+                    let bases = bases
+                        .into_iter()
+                        .map(|base| re_exports.get(&base).copied().unwrap_or(base))
+                        .collect();
+                    (class, bases)
+                })
+                .collect()
+        });
+        let (nested_functions, mutated_params) = rayon::join(
             || {
-                time("    Getting re-exports + nested fns", || {
-                    rayon::join(
-                        || collect_re_exports(exports, &effect_table),
-                        || build_nested_functions_map(&analysis_map),
-                    )
+                time("    Getting nested fns", || {
+                    build_nested_functions_map(&analysis_map)
                 })
             },
             || {
                 time("    Computing mutated params", || {
-                    compute_mutated_params(&effect_table, &functions, &classes, &analysis_map)
+                    compute_mutated_params(
+                        &effect_table,
+                        &functions,
+                        &classes,
+                        &re_exports,
+                        &class_bases,
+                        &analysis_map,
+                    )
                 })
             },
         );
@@ -1294,34 +1400,42 @@ impl ProjectInfo {
         }
     }
 
+    fn is_defined(&self, name: &ModuleName) -> bool {
+        self.functions.contains_key(name) || self.classes.contains(name)
+    }
+
+    fn defining_name(&self, name: &ModuleName) -> ModuleName {
+        if self.is_defined(name) {
+            return *name;
+        }
+        let name = self.methods.get(name).copied().unwrap_or(*name);
+        resolve_re_export(&name, &self.functions, &self.classes, &self.re_exports)
+    }
+
     pub fn contains_callable(&self, name: &ModuleName) -> bool {
-        if self.functions.contains_key(name) || self.classes.contains(name) {
-            return true;
-        }
-        let call_name = self.methods.get(name).copied().unwrap_or(*name);
-        if self.functions.contains_key(&call_name) || self.classes.contains(&call_name) {
-            true
-        } else {
-            self.re_exports.contains(&call_name)
-        }
+        self.is_defined(&self.defining_name(name))
     }
 
     fn resolve_callable(&self, name: &ModuleName) -> Option<ModuleName> {
-        if self.functions.contains_key(name) || self.classes.contains(name) {
-            return Some(*name);
-        }
-        if self.contains_callable(name) {
-            return Some(self.methods.get(name).copied().unwrap_or(*name));
-        }
-        let (class, method) = name.split_attr()?;
-        if !self.classes.contains(&class) {
-            return None;
-        }
-        c3_linearize(&self.class_bases, &class)
-            .into_iter()
-            .skip(1)
-            .map(|base| base.append_str(method.as_str()))
-            .find(|candidate| self.contains_callable(candidate))
+        let defining = self.defining_name(name);
+        resolve_definition(
+            &defining,
+            &self.functions,
+            &self.classes,
+            &self.re_exports,
+            &self.class_bases,
+        )
+        .or_else(|| (defining != *name).then_some(defining))
+    }
+
+    fn callees<'a>(&'a self, eff: &'a Effect) -> impl Iterator<Item = (ModuleName, usize)> + 'a {
+        iter_callees(
+            eff,
+            &self.functions,
+            &self.classes,
+            &self.re_exports,
+            &self.class_bases,
+        )
     }
 
     pub fn collect_errors_from_project(
@@ -1500,7 +1614,7 @@ impl ProjectInfo {
                     if !call_data.has_unsafe_args() {
                         continue;
                     }
-                    for (callee, arg_offset) in iter_callees(eff, &self.classes) {
+                    for (callee, arg_offset) in self.callees(eff) {
                         // Resolvable in this library -> already handled by the map step.
                         if self.functions.contains_key(&callee)
                             || self.mutated_params.contains_key(&callee)
@@ -1682,7 +1796,10 @@ impl ProjectInfo {
                         // happen and cannot invent a cycle through a factory whose
                         // child never runs.
                         let nested = is_parameterized_decorator_effect(e)
-                            .then(|| self.nested_functions.get(&e.name))
+                            .then(|| {
+                                let factory = self.resolve_callable(&e.name).unwrap_or(e.name);
+                                self.nested_functions.get(&factory)
+                            })
                             .flatten()
                             .into_iter()
                             .flatten()
@@ -1907,23 +2024,20 @@ impl ProjectInfo {
                 self.check_call_safety(&mut call, state, true)?;
             } else if eff.kind == EffectKind::ImportedTypeAttr {
                 // Check if this is a property access
-                if let Some((typ, attr)) = eff.name.split_attr() {
-                    if let Some(field) = self
-                        .classes
-                        .lookup(&typ)
-                        .and_then(|cls| cls.get_field(&attr))
-                    {
-                        if field.kind == FieldKind::Property {
-                            let mut call = Call {
-                                caller_module: mod_name,
-                                effect: eff,
-                                func: eff.name,
-                                stack: CallStack::new(*scope),
-                                is_module_scope: true,
-                            };
-                            self.check_call_safety(&mut call, state, true)?;
-                        }
-                    }
+                let is_property = self
+                    .resolve_callable(&eff.name)
+                    .and_then(|name| name.split_attr())
+                    .and_then(|(typ, attr)| self.classes.lookup(&typ)?.get_field(&attr))
+                    .is_some_and(|field| field.kind == FieldKind::Property);
+                if is_property {
+                    let mut call = Call {
+                        caller_module: mod_name,
+                        effect: eff,
+                        func: eff.name,
+                        stack: CallStack::new(*scope),
+                        is_module_scope: true,
+                    };
+                    self.check_call_safety(&mut call, state, true)?;
                 }
             } else if eff.kind == EffectKind::UnconfirmedTypeAttr {
                 // The map phase cannot tell if this access runs a property getter,
@@ -2194,7 +2308,7 @@ impl ProjectInfo {
         if !call_data.has_unsafe_args() {
             return false;
         }
-        iter_callees(call_effect, &self.classes)
+        self.callees(call_effect)
             .any(|(callee, offset)| self.callee_mutates_imported_arg(call_data, &callee, offset))
     }
 
@@ -2208,10 +2322,52 @@ impl ProjectInfo {
     }
 
     fn check_call_params(&self, call: &Call, state: &GlobalAnalysisState) {
-        if self.call_mutates_imported_arg(call.effect) {
+        if self.call_mutates_imported_arg(call.effect)
+            || self
+                .class_receiver_mutation_module(call.effect)
+                .is_some_and(|module| module != *call.caller_module)
+        {
             let err = SafetyError::new_from_effect(ErrorKind::ImportedVarArgument, call.effect);
             state.add_error_to_module(call.caller_module, err);
         }
+    }
+
+    fn class_receiver_mutation_module(&self, effect: &Effect) -> Option<ModuleName> {
+        let defining = self.defining_name(&effect.name);
+        let (receiver, _) = defining.split_attr()?;
+        let class = self.classes.lookup(&receiver)?;
+        let callee = resolve_definition(
+            &defining,
+            &self.functions,
+            &self.classes,
+            &self.re_exports,
+            &self.class_bases,
+        )?;
+        if method_receiver_offset(&callee, &self.classes, false) != Some(1) {
+            return None;
+        }
+        let module = self.functions.get(&callee)?;
+        let first = self
+            .analysis_map
+            .get(module)?
+            .definitions
+            .param_names
+            .get(&callee)?
+            .first()?;
+        if !self
+            .mutated_params
+            .get(&callee)?
+            .contains(&ModuleName::from_name(first))
+        {
+            return None;
+        }
+        let (scope, _) = receiver.split_attr()?;
+        self.analysis_map
+            .get(&class.module)?
+            .definitions
+            .eager_scopes
+            .contains(&scope)
+            .then_some(class.module)
     }
 
     fn check_call_body(&self, call: &mut Call, state: &GlobalAnalysisState) -> Result<bool> {
@@ -2252,6 +2408,15 @@ impl ProjectInfo {
                     state.mark_unsafe(&func);
                     ret = false;
                 } else if eff.kind.is_runnable() {
+                    if let Some(receiver_module) = self.class_receiver_mutation_module(eff) {
+                        if receiver_module == *call_module {
+                            state.mark_unsafe_if_imported(&func);
+                            ret &= !is_cross_module_call;
+                        } else {
+                            state.mark_unsafe(&func);
+                            ret = false;
+                        }
+                    }
                     // If we pass an imported variable to a function that mutates it
                     // (directly or transitively), mark the current function as unsafe.
                     if self.call_mutates_imported_arg(eff) {
@@ -2262,7 +2427,7 @@ impl ProjectInfo {
                         // unresolved in this library may mutate it, but we can't tell here.
                         // This propagates a recoverable error that the reduce phase resolves.
                         if self.defers_cross_library_mutation(eff) {
-                            for (callee, _) in iter_callees(eff, &self.classes) {
+                            for (callee, _) in self.callees(eff) {
                                 if !self.functions.contains_key(&callee)
                                     && !self.mutated_params.contains_key(&callee)
                                 {
@@ -2451,6 +2616,35 @@ mod tests {
         "#;
 
         assert_leveled_before(module, "m.Base.static_method", "m.caller");
+    }
+
+    #[test]
+    fn inherited_decorator_nested_functions_are_leveled_before_their_reader() {
+        let module = r#"
+            def deepest():
+                pass
+
+            def deep():
+                deepest()
+
+            class Base:
+                @staticmethod
+                def deco(arg):
+                    def wrapper(fn):
+                        deep()
+                        return fn
+                    return wrapper
+
+            class Sub(Base):
+                pass
+
+            def caller():
+                @Sub.deco(1)
+                def inner():
+                    pass
+        "#;
+
+        assert_leveled_before(module, "m.Base.deco.wrapper", "m.caller");
     }
 
     /// `check_constructor_call` resolves each constructor method through the MRO,

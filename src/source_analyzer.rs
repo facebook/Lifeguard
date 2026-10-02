@@ -819,7 +819,7 @@ impl<'a> SourceAnalyzer<'a> {
         data: &EffectData,
         output: &mut ModuleEffects,
     ) -> bool {
-        let Expr::Attribute(ExprAttribute { attr, .. }) = func else {
+        let Expr::Attribute(ExprAttribute { attr, value, .. }) = func else {
             return false;
         };
 
@@ -842,7 +842,9 @@ impl<'a> SourceAnalyzer<'a> {
 
         // A receiver that refers to a parameter, directly or through a local
         // alias (`y = x`), is treated as a parameter mutation.
-        let receiver_param = self.receiver_param(res);
+        let receiver_param = self
+            .receiver_param(res)
+            .filter(|param| !value.is_name_expr() || !self.is_class_receiver(param));
 
         // For param receivers with unknown type, check if the method is
         // known-safe across all builtin types (e.g. copy, get, index).
@@ -1916,6 +1918,23 @@ impl<'a> SourceAnalyzer<'a> {
             }
             _ => None,
         }
+    }
+
+    /// Whether `param` is a classmethod's `cls`, whose method calls do not mutate it.
+    fn is_class_receiver(&self, (scope, name): &(ModuleName, Name)) -> bool {
+        scope.split_attr().is_some_and(|(class, method)| {
+            self.info
+                .classes
+                .lookup(&class)
+                .and_then(|class| class.get_field(&method))
+                .is_some_and(|field| field.kind == FieldKind::ClassMethod)
+        }) && self
+            .info
+            .definitions
+            .param_names
+            .get(scope)
+            .and_then(|params| params.first())
+            == Some(name)
     }
 
     /// Record a `ParamMethodCall` effect for a mutation of `param` (scope, name)
