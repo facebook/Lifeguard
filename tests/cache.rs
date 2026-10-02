@@ -318,7 +318,7 @@ mod tests {
         assert_eq!(std::mem::size_of::<lifeguard::errors::SafetyError>(), 24);
         assert_eq!(std::mem::size_of::<CachedExports>(), 48);
         assert_eq!(std::mem::size_of::<CachedReturnType>(), 16);
-        assert_eq!(std::mem::size_of::<CachedReExport>(), 64);
+        assert_eq!(std::mem::size_of::<CachedReExport>(), 48);
     }
 
     #[test]
@@ -391,9 +391,9 @@ mod tests {
             exports: CachedExports {
                 re_exports: vec![CachedReExport {
                     exported_module: mn("package"),
-                    exported_attr: "public_name".to_owned(),
+                    exported_attr: "public_name".into(),
                     imported_module: mn("implementation"),
-                    imported_attr: "private_name".to_owned(),
+                    imported_attr: "private_name".into(),
                 }],
                 return_types: Vec::new(),
             },
@@ -1515,9 +1515,9 @@ mod tests {
 
         cache.exports.re_exports.push(CachedReExport {
             exported_module: mn("b"),
-            exported_attr: "foo".to_string(),
+            exported_attr: "foo".into(),
             imported_module: mn("c"),
-            imported_attr: "foo".to_string(),
+            imported_attr: "foo".into(),
         });
 
         cache.propagate_re_export_safety();

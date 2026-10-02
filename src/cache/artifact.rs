@@ -16,6 +16,7 @@ use std::path::Path;
 
 use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
+use ruff_python_ast::name::Name;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -286,9 +287,30 @@ pub struct CachedReturnType {
 #[derive(Serialize, Deserialize)]
 pub struct CachedReExport {
     pub exported_module: ModuleName,
-    pub exported_attr: String,
+    #[serde(with = "name_as_str")]
+    pub exported_attr: Name,
     pub imported_module: ModuleName,
-    pub imported_attr: String,
+    #[serde(with = "name_as_str")]
+    pub imported_attr: Name,
+}
+
+/// A `Name` on the wire is just its string. Spelled out because the crate's own
+/// impl sits behind a feature the open-source build does not enable.
+mod name_as_str {
+    use ruff_python_ast::name::Name;
+    use serde::Deserialize;
+    use serde::Deserializer;
+    use serde::Serializer;
+
+    pub(super) fn serialize<S: Serializer>(name: &Name, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(name.as_str())
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Name, D::Error> {
+        Ok(Name::new(String::deserialize(deserializer)?))
+    }
 }
 
 impl LibraryCache {
@@ -454,9 +476,9 @@ impl CachedExports {
                 .filter(|(module, _, _)| own_modules.contains(module))
                 .map(|(module, attr, (imported, _range))| CachedReExport {
                     exported_module: module,
-                    exported_attr: attr.to_string(),
+                    exported_attr: attr.clone(),
                     imported_module: imported.module,
-                    imported_attr: imported.attr.to_string(),
+                    imported_attr: imported.attr.clone(),
                 })
                 .collect()
         });

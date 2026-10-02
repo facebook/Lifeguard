@@ -15,6 +15,7 @@ use anyhow::Result;
 use anyhow::ensure;
 use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
+use ruff_python_ast::name::Name;
 use ruff_text_size::TextRange;
 use serde::Deserialize;
 use serde::Serialize;
@@ -657,18 +658,18 @@ impl WireReExport {
         };
         Self {
             exported_module: id(re_export.exported_module),
-            exported_attr: re_export.exported_attr.clone(),
+            exported_attr: re_export.exported_attr.to_string(),
             imported_module: id(re_export.imported_module),
-            imported_attr: re_export.imported_attr.clone(),
+            imported_attr: re_export.imported_attr.to_string(),
         }
     }
 
     fn decode(self, names: &[ModuleName]) -> Result<CachedReExport> {
         Ok(CachedReExport {
             exported_module: decode_name(names, self.exported_module)?,
-            exported_attr: self.exported_attr,
+            exported_attr: Name::new(self.exported_attr),
             imported_module: decode_name(names, self.imported_module)?,
-            imported_attr: self.imported_attr,
+            imported_attr: Name::new(self.imported_attr),
         })
     }
 }

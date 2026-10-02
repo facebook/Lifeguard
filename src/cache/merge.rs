@@ -17,6 +17,7 @@ use std::collections::hash_map::Entry;
 
 use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
+use ruff_python_ast::name::Name;
 
 use crate::cache::CachedModule;
 use crate::cache::CachedModuleSafety;
@@ -37,7 +38,7 @@ use crate::module_safety::SafetyResult;
 
 /// Working map used to dedup re-exports during the reduce, keyed by the exported
 /// `(module, attr)`; the value is one representative record per unique key.
-type ReExportDedupMap = AHashMap<ModuleName, AHashMap<String, CachedReExport>>;
+type ReExportDedupMap = AHashMap<ModuleName, AHashMap<Name, CachedReExport>>;
 
 impl LibraryCache {
     /// Propagate function_safety entries through re-exports.

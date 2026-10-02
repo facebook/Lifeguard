@@ -680,6 +680,7 @@ fn add_cycle_deps(all_cycles: &[Vec<ModuleName>], ctx: &CycleDepsContext) {
 
 #[cfg(test)]
 mod tests {
+    use ruff_python_ast::name::Name;
     use ruff_text_size::TextRange;
     use ruff_text_size::TextSize;
 
@@ -1010,21 +1011,21 @@ mod tests {
         let re_exports = vec![
             CachedReExport {
                 exported_module: mn("a"),
-                exported_attr: "Foo".to_string(),
+                exported_attr: Name::new_static("Foo"),
                 imported_module: mn("b"),
-                imported_attr: "Foo".to_string(),
+                imported_attr: Name::new_static("Foo"),
             },
             CachedReExport {
                 exported_module: mn("b"),
-                exported_attr: "Foo".to_string(),
+                exported_attr: Name::new_static("Foo"),
                 imported_module: mn("c"),
-                imported_attr: "Foo".to_string(),
+                imported_attr: Name::new_static("Foo"),
             },
             CachedReExport {
                 exported_module: mn("c"),
-                exported_attr: "Foo".to_string(),
+                exported_attr: Name::new_static("Foo"),
                 imported_module: mn("d"),
-                imported_attr: "Foo".to_string(),
+                imported_attr: Name::new_static("Foo"),
             },
         ];
 
@@ -1042,15 +1043,15 @@ mod tests {
         let re_exports = vec![
             CachedReExport {
                 exported_module: mn("a"),
-                exported_attr: "Foo".to_string(),
+                exported_attr: Name::new_static("Foo"),
                 imported_module: mn("b"),
-                imported_attr: "Foo".to_string(),
+                imported_attr: Name::new_static("Foo"),
             },
             CachedReExport {
                 exported_module: mn("b"),
-                exported_attr: "Foo".to_string(),
+                exported_attr: Name::new_static("Foo"),
                 imported_module: mn("a"),
-                imported_attr: "Foo".to_string(),
+                imported_attr: Name::new_static("Foo"),
             },
         ];
 
