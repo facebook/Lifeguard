@@ -254,19 +254,35 @@ fn merge_all_functions_and_methods(
     )
 }
 
-fn collect_re_exports(exports: &Exports, effect_table: &EffectTable) -> AHashSet<ModuleName> {
+fn collect_re_exports(
+    exports: &Exports,
+    effect_table: &EffectTable,
+    functions: &AHashMap<ModuleName, ModuleName>,
+    classes: &ClassTable,
+) -> AHashMap<ModuleName, ModuleName> {
     // Re-export names are interned via as_module_name(), which is the expensive
-    // part on large projects; do it in parallel, then build the set.
-    let names: Vec<ModuleName> = exports
+    // part on large projects; do it in parallel, then build the map.
+    let entries: Vec<(ModuleName, ModuleName)> = exports
         .par_re_exports()
-        .map(|(module, attr, _)| module.append_str(attr.as_str()))
+        .map(|(module, attr, (imported, _))| {
+            let name = module.append_str(attr.as_str());
+            let target = exports
+                .resolve_transitive(imported)
+                .map(|source| source.as_module_name())
+                .filter(|source| functions.contains_key(source) || classes.contains(source))
+                .unwrap_or(name);
+            (name, target)
+        })
         .collect();
-    let mut re_exports: AHashSet<ModuleName> = names.into_iter().collect();
+    let mut re_exports: AHashMap<ModuleName, ModuleName> = entries.into_iter().collect();
     remove_unsafe_re_exports(effect_table, &mut re_exports);
     re_exports
 }
 
-fn remove_unsafe_re_exports(effect_table: &EffectTable, re_exports: &mut AHashSet<ModuleName>) {
+fn remove_unsafe_re_exports(
+    effect_table: &EffectTable,
+    re_exports: &mut AHashMap<ModuleName, ModuleName>,
+) {
     let unsafe_re_exports = effect_table
         .values()
         .flatten()
@@ -1239,7 +1255,9 @@ struct ProjectInfo {
     class_bases: HashMap<ModuleName, Vec<ModuleName>>,
     // Mappings of functions to the containing module
     functions: AHashMap<ModuleName, ModuleName>,
-    re_exports: AHashSet<ModuleName>,
+    // Re-exported name -> the function or class it resolves to, or the name itself
+    // when this analysis has no such definition.
+    re_exports: AHashMap<ModuleName, ModuleName>,
     // Mapping of all methods called on imported objects
     methods: AHashMap<ModuleName, ModuleName>,
     // Reverse mapping: parent function → nested function scopes.
@@ -1270,7 +1288,7 @@ impl ProjectInfo {
             || {
                 time("    Getting re-exports + nested fns", || {
                     rayon::join(
-                        || collect_re_exports(exports, &effect_table),
+                        || collect_re_exports(exports, &effect_table, &functions, &classes),
                         || build_nested_functions_map(&analysis_map),
                     )
                 })
@@ -1302,7 +1320,7 @@ impl ProjectInfo {
         if self.functions.contains_key(&call_name) || self.classes.contains(&call_name) {
             true
         } else {
-            self.re_exports.contains(&call_name)
+            self.re_exports.contains_key(&call_name)
         }
     }
 
@@ -1310,8 +1328,13 @@ impl ProjectInfo {
         if self.functions.contains_key(name) || self.classes.contains(name) {
             return Some(*name);
         }
-        if self.contains_callable(name) {
-            return Some(self.methods.get(name).copied().unwrap_or(*name));
+        let call_name = self.methods.get(name).copied().unwrap_or(*name);
+        if self.functions.contains_key(&call_name) || self.classes.contains(&call_name) {
+            return Some(call_name);
+        }
+        if let Some(target) = self.re_exports.get(&call_name) {
+            // A re-exported name has no effects of its own; its definition does.
+            return Some(*target);
         }
         let (class, method) = name.split_attr()?;
         if !self.classes.contains(&class) {
@@ -1654,23 +1677,22 @@ impl ProjectInfo {
                     .flatten()
                     .filter(|e| e.kind.is_runnable())
                     .flat_map(move |e| {
-                        let callee = indexes.get(&e.name).map(|&to| (from, to));
                         // `check_call_safety` resolves the callee through the MRO
-                        // before reading its verdict, so the edge has to name the
-                        // same target. `Sub.static_method` is not itself a node:
-                        // without this the caller can level before
+                        // or a re-export before reading its verdict, so the edge has
+                        // to name the same target. `Sub.static_method` is not itself
+                        // a node: without this the caller can level before
                         // `Base.static_method` and race the verdict it reads.
                         //
                         // Only consulted when the direct lookup missed, which is
-                        // the only case MRO resolution can help.
-                        let inherited = callee
-                            .is_none()
-                            .then(|| {
-                                self.resolve_callable(&e.name)
-                                    .and_then(|target| indexes.get(&target).copied())
-                                    .map(|to| (from, to))
-                            })
-                            .flatten();
+                        // the only case resolution can help.
+                        let target = if indexes.contains_key(&e.name) {
+                            Some(e.name)
+                        } else {
+                            self.resolve_callable(&e.name)
+                        };
+                        let callee = target
+                            .and_then(|target| indexes.get(&target))
+                            .map(|&to| (from, to));
                         // A parameterized decorator call also runs the factory's
                         // immediate nested functions, and
                         // `check_decorator_nested_functions` reads their verdicts
@@ -1682,12 +1704,12 @@ impl ProjectInfo {
                         // happen and cannot invent a cycle through a factory whose
                         // child never runs.
                         let nested = is_parameterized_decorator_effect(e)
-                            .then(|| self.nested_functions.get(&e.name))
+                            .then(|| target.and_then(|target| self.nested_functions.get(&target)))
                             .flatten()
                             .into_iter()
                             .flatten()
                             .filter_map(move |child| indexes.get(child).map(|&to| (from, to)));
-                        callee.into_iter().chain(inherited).chain(nested)
+                        callee.into_iter().chain(nested)
                     })
             })
             .collect();
@@ -2024,6 +2046,7 @@ impl ProjectInfo {
         state: &GlobalAnalysisState,
         publish_safety_error: bool,
     ) -> Result<bool> {
+        let written = call.func;
         if let Some(resolved) = self.resolve_callable(&call.func) {
             call.func = resolved;
         }
@@ -2037,7 +2060,12 @@ impl ProjectInfo {
 
         if !self.check_call(call, state)? {
             if publish_safety_error {
-                let err = SafetyError::from_unsafe_call(call.effect)?;
+                let mut err = SafetyError::from_unsafe_call(call.effect)?;
+                // The reduce step re-verifies errors by name, and a re-export's
+                // entry there lacks the definition's nested functions.
+                if self.re_exports.contains_key(&written) {
+                    err.metadata = call.func.as_str().into();
+                }
                 state.add_error_to_module(call.caller_module, err);
             }
             return Ok(false);

@@ -24,6 +24,7 @@ mod tests {
     use lifeguard::test_lib::PathRun;
     use lifeguard::test_lib::Shards;
     use lifeguard::test_lib::assert_passing;
+    use lifeguard::test_lib::assert_paths_agree;
     use lifeguard::test_lib::assert_paths_agree_sharded;
     use lifeguard::test_lib::assert_paths_agree_sharded_with_options;
     use lifeguard::test_lib::partition_modules;
@@ -448,6 +449,57 @@ mod tests {
             ("hop_two", hop_two),
             ("app", app),
         ]);
+    }
+
+    #[test]
+    fn helper_calling_re_exported_mutator_agrees() {
+        let hooks_impl = r#"
+            HOOKS = []
+
+            def register(hook):
+                HOOKS.append(hook)
+        "#;
+        let hooks = r#"
+            from hooks_impl import register
+        "#;
+        let app = r#"
+            import hooks
+
+            def register_later(hook):
+                hooks.register(hook)
+
+            register_later(print)
+        "#;
+        assert_paths_agree_sharded(&[("hooks_impl", hooks_impl), ("hooks", hooks), ("app", app)]);
+    }
+
+    #[test]
+    fn re_exported_parameterized_decorator_agrees_in_one_library() {
+        // Split across libraries, the reduce still verifies the decorator through the
+        // re-export's copied verdict, which lacks the nested `wrap`.
+        let deco_impl = r#"
+            REGISTRY = []
+
+            def register(name):
+                def wrap(f):
+                    REGISTRY.append(f)
+                    return f
+                return wrap
+        "#;
+        let deco = r#"
+            from deco_impl import register
+        "#;
+        let app = r#"
+            from deco import register
+
+            @register("f")
+            def f():
+                pass
+        "#;
+        assert_paths_agree(
+            &[("deco_impl", deco_impl), ("deco", deco), ("app", app)],
+            &[1],
+        );
     }
 
     #[test]

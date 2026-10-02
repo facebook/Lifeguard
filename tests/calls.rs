@@ -50,6 +50,112 @@ f(x, y)  # E: unsafe-function-call
     }
 
     #[test]
+    fn test_top_level_call_through_package_re_export() {
+        let implementation = r#"
+REGISTRY = []
+def register(x):
+    REGISTRY.append(x)
+class Registered:
+    def __init__(self):
+        REGISTRY.append(self)
+"#;
+        let package = r#"
+from pkg.impl import register, Registered
+"#;
+        let consumer = r#"
+import pkg
+from pkg import register
+pkg.register(1)  # E: unsafe-function-call
+register(1)  # E: unsafe-function-call
+pkg.Registered()  # E: unsafe-function-call
+"#;
+        check_all(vec![
+            ("pkg.impl", implementation),
+            ("pkg", package),
+            ("consumer", consumer),
+        ]);
+    }
+
+    #[test]
+    fn test_safe_call_through_package_re_export() {
+        let implementation = r#"
+def pure(x):
+    return x + 1
+class Plain:
+    def __init__(self):
+        self.x = 1
+"#;
+        let package = r#"
+from pkg.impl import pure, Plain
+"#;
+        let consumer = r#"
+import pkg
+from pkg import pure
+pkg.pure(1)
+pure(1)
+pkg.Plain()
+"#;
+        check_all(vec![
+            ("pkg.impl", implementation),
+            ("pkg", package),
+            ("consumer", consumer),
+        ]);
+    }
+
+    #[test]
+    fn test_parameterized_decorator_through_package_re_export() {
+        let implementation = r#"
+REGISTRY = []
+def register(name):
+    def wrap(f):
+        REGISTRY.append(f)
+        return f
+    return wrap
+"#;
+        let package = r#"
+from pkg.impl import register
+"#;
+        let consumer = r#"
+from pkg import register
+@register("f")  # E: unsafe-decorator-call
+def f():
+    pass
+"#;
+        check_all(vec![
+            ("pkg.impl", implementation),
+            ("pkg", package),
+            ("consumer", consumer),
+        ]);
+    }
+
+    #[test]
+    fn test_helper_calling_package_re_export() {
+        let implementation = r#"
+REGISTRY = []
+def register(x):
+    REGISTRY.append(x)
+"#;
+        let package = r#"
+from pkg.impl import register
+"#;
+        let helper = r#"
+import pkg
+def register_later(x):
+    pkg.register(x)
+"#;
+        let consumer = r#"
+from helper import register_later
+register_later(1)  # E: unsafe-function-call
+"#;
+        check_all(vec![
+            ("pkg.impl", implementation),
+            ("pkg", package),
+            ("helper", helper),
+            ("consumer", consumer),
+        ]);
+    }
+
+    #[test]
     fn test_top_level_function_call_from_import_effects() {
         let code = r#"
 from os import path
@@ -476,8 +582,7 @@ import importlib
 from importlib import import_module
 
 a = importlib.import_module("sys")
-# This depends on a chain of import aliases which we don't handle well
-b = importlib.__import__("math") # TODO: unsafe-function-call
+b = importlib.__import__("math") # E: unsafe-function-call
 
 import_module("bar")
 "#;
