@@ -12,7 +12,6 @@ use ruff_text_size::TextRange;
 use crate::cache::CONSTRUCTOR_METHODS;
 use crate::hasher::AHashMap;
 use crate::hasher::AHashSet;
-use crate::hasher::HashMapExt;
 use crate::hasher::HashSetExt;
 use crate::hasher::union_larger;
 use crate::module_safety::FunctionSafety;
@@ -381,51 +380,22 @@ fn promote_fixpoint(
         );
     drop(module_functions);
 
-    // Reverse indices let each round revisit only dependents of the preceding
-    // round's promotions rather than rescanning every candidate.
-    let mut qualified_dependents: AHashMap<ModuleName, AHashMap<String, Vec<u32>>> =
-        AHashMap::new();
-    let mut unqualified_dependents: AHashMap<String, Vec<u32>> = AHashMap::new();
-    fn watch(dependents: &mut AHashMap<String, Vec<u32>>, key: &str, index: u32) {
-        match dependents.get_mut(key) {
-            Some(watchers) => watchers.push(index),
-            None => {
-                dependents.insert(key.to_owned(), vec![index]);
-            }
-        }
-    }
-    for (index, candidate) in candidates.iter().enumerate() {
-        for callee in &candidate.callees {
-            match callee {
-                ResolvedCallee::Qualified { module, local } => watch(
-                    qualified_dependents.entry(*module).or_default(),
-                    local,
-                    index as u32,
-                ),
-                ResolvedCallee::Unqualified { name } => {
-                    watch(&mut unqualified_dependents, name, index as u32)
-                }
-            }
-        }
-    }
-
     // Each round reads a frozen start-of-round state in parallel, then commits
     // all promotions together. This matches a full synchronized rescan.
+    //
+    // NOTE: Every round rescans every candidate that has not been promoted,
+    // rather than tracking which ones the previous round could have unblocked.
+    // The scan is parallel and promotion chains are shallow; constructing a
+    // reverse index to narrow the scan turned out to be ~40x more expensive
+    // than the scan itself.
     let mut promoted = Vec::new();
     let mut promoted_flags = vec![false; candidates.len()];
-    let mut queued = vec![true; candidates.len()];
-    let mut dirty: Vec<u32> = (0..candidates.len() as u32).collect();
-    while !dirty.is_empty() {
-        let current = std::mem::take(&mut dirty);
-        for &index in &current {
-            queued[index as usize] = false;
-        }
-
+    loop {
         // Frozen phase: no promotion in this round observes another from the same round.
         let frozen: &AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>> = function_safety;
-        let to_promote: Vec<(u32, FunctionSafety)> = current
-            .par_iter()
-            .filter_map(|&index| {
+        let to_promote: Vec<(u32, FunctionSafety)> = (0..candidates.len() as u32)
+            .into_par_iter()
+            .filter_map(|index| {
                 if promoted_flags[index as usize] {
                     return None;
                 }
@@ -464,26 +434,6 @@ fn promote_fixpoint(
                     }
                 }
                 promoted.push((candidate.module, candidate.name.clone()));
-            }
-        }
-
-        // Enqueue only dependents of functions promoted in this round.
-        let mut enqueue = |index: u32| {
-            if !promoted_flags[index as usize] && !queued[index as usize] {
-                queued[index as usize] = true;
-                dirty.push(index);
-            }
-        };
-        for &(index, _) in &to_promote {
-            let candidate = &candidates[index as usize];
-            if let Some(dependents) = qualified_dependents
-                .get(&candidate.module)
-                .and_then(|by_name| by_name.get(candidate.name.as_str()))
-            {
-                dependents.iter().for_each(|&dependent| enqueue(dependent));
-            }
-            if let Some(dependents) = unqualified_dependents.get(candidate.name.as_str()) {
-                dependents.iter().for_each(|&dependent| enqueue(dependent));
             }
         }
     }
