@@ -33,6 +33,7 @@ use crate::module_safety::PropertyCandidate;
 use crate::module_safety::SafetyResult;
 use crate::project::SafetyMap;
 use crate::project::SideEffectMap;
+use crate::tracing::time;
 use crate::traits::ModuleNameExt;
 
 /// A module's import edges from the graph, partitioned by resolution status.
@@ -354,10 +355,14 @@ impl LibraryCache {
             })
             .collect();
 
-        modules.sort_by_key(|m| m.name);
+        time("  Sorting cached modules", || {
+            modules.par_sort_unstable_by_key(|m| m.name)
+        });
 
         let own_modules: AHashSet<ModuleName> = modules.iter().map(|m| m.name).collect();
-        let exports = CachedExports::from_exports(exports, &own_modules, import_graph);
+        let exports = time("  Building cached exports", || {
+            CachedExports::from_exports(exports, &own_modules, import_graph)
+        });
 
         LibraryCache {
             modules,
@@ -442,16 +447,19 @@ impl CachedExports {
         own_modules: &AHashSet<ModuleName>,
         import_graph: &ImportGraph,
     ) -> Self {
-        let re_exports: Vec<CachedReExport> = exports
-            .get_re_exports()
-            .filter(|(module, _, _)| own_modules.contains(module))
-            .map(|(module, attr, (imported, _range))| CachedReExport {
-                exported_module: module,
-                exported_attr: attr.to_string(),
-                imported_module: imported.module,
-                imported_attr: imported.attr.to_string(),
-            })
-            .collect();
+        // Without the parallel loop the attr string allocation is a bottleneck
+        let re_exports: Vec<CachedReExport> = time("    Collecting owned re-exports", || {
+            exports
+                .par_re_exports()
+                .filter(|(module, _, _)| own_modules.contains(module))
+                .map(|(module, attr, (imported, _range))| CachedReExport {
+                    exported_module: module,
+                    exported_attr: attr.to_string(),
+                    imported_module: imported.module,
+                    imported_attr: imported.attr.to_string(),
+                })
+                .collect()
+        });
 
         // A return type should be in the cache for the library owning the
         // function's own module, resolved as the longest enclosing module
