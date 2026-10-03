@@ -334,7 +334,7 @@ def get_ident() -> int:
     be relied upon, and the number should be seen purely as a magic cookie.
     A thread's identity may be reused for another thread after it exits.
     """
-    no_effects()
+    unsafe()
 def stack_size(size: int = 0, /) -> int:
     """
     stack_size([size]) -> size
@@ -368,7 +368,7 @@ def get_native_id() -> int:
     by the OS (kernel). This may be used to uniquely identify a
     particular thread within a system.
     """
-    no_effects()
+    unsafe()
 @final
 class _ExceptHookArgs(structseq[Any], tuple[type[BaseException], BaseException | None, TracebackType | None, Thread | None]):
     """

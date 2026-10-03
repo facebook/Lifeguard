@@ -20,9 +20,7 @@ from _decimal import (
     ExtendedContext as ExtendedContext,
     __libmpdec_version__ as __libmpdec_version__,
     __version__ as __version__,
-    getcontext as getcontext,
     localcontext as localcontext,
-    setcontext as setcontext,
 )
 from collections.abc import Container, Sequence
 from types import TracebackType
@@ -36,6 +34,10 @@ _Decimal: TypeAlias = Decimal | int
 _DecimalNew: TypeAlias = Decimal | float | str | tuple[int, Sequence[int], int]
 _ComparableNum: TypeAlias = Decimal | float | numbers.Rational
 _TrapType: TypeAlias = type[DecimalException]
+
+# The context belongs to the calling thread or task, which a deferred import does not preserve.
+def getcontext() -> Context: unsafe()
+def setcontext(context: Context, /) -> None: unsafe()
 
 # At runtime, these classes are implemented in C as part of "_decimal".
 # However, they consider themselves to live in "decimal", so we'll put them here.
