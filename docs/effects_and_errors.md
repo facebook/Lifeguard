@@ -31,7 +31,7 @@ arguments by positional index and keyword name, uncertainty from `*args` and
 
 - **`is_runnable()`** — Returns true for call effects where the analyzer can recurse into the called function body: `FunctionCall`, `ImportedFunctionCall`, `DecoratorCall`, `ImportedDecoratorCall`, `MethodCall`, `UnboundMethodCall`. These trigger call graph traversal in `project.rs`.
 
-- **`requires_eager_loading_imports()`** — Returns true for `CustomFinalizer`, `ExecCall`, `SysModulesAccess`, `SubclassesAccess`, `BuiltinsImportOverride`. These cause the module to be added to the `load_imports_eagerly` set regardless of scope.
+- **`requires_eager_loading_imports()`** — On `ErrorKind`; true for the errors of `CustomFinalizer`, `ExecCall`, `SysModulesAccess`, `SubclassesAccess`, `BuiltinsImportOverride`, and for `NamesOnlyInStub`, which no effect produces. These cause the module to be added to the `load_imports_eagerly` set regardless of scope.
 
 - **`is_unsafe_stub_effect()`** — Returns true for `UnknownEffects`, `Unsafe`, `Mutation`. Used for stub file analysis.
 
@@ -105,6 +105,7 @@ pub struct SafetyError {
 | `SysModulesAccess` | `sys.modules` access |
 | `SubclassesAccess` | `__subclasses__()` call |
 | `BuiltinsImportOverride` | Storing to or deleting `builtins.__import__` |
+| `NamesOnlyInStub` | The module's `.pyi` declares public names, none of which its `.py` binds |
 | `ImportedModuleAssignment` | Assigning to an imported module's attribute |
 | `ImportedVarArgument` | Passing imported var to a function that mutates params |
 | `UnknownEffects` | Stub declares unknown effects |
@@ -126,7 +127,7 @@ pub struct ModuleSafety {
 
 - A module `is_safe()` when `errors` is empty.
 - A module `should_load_imports_eagerly()` when `force_imports_eager_overrides` is non-empty (only `CustomFinalizer`, `ExecCall`, `SysModulesAccess`, `SubclassesAccess`,
-  `BuiltinsImportOverride`).
+  `BuiltinsImportOverride`, `NamesOnlyInStub`).
 - `function_safety` and `mutation_candidates` carry per-function safety and
   unresolved-callee mutation candidates for `resolve_program` to settle. This matters most
   incrementally, where a library analyzed on its own cannot see into its dependencies, but
@@ -177,6 +178,7 @@ call-site handling for the returned wrapper's effects.
    - `ImportedTypeAttr` → checked for property access, treated as a call
    - Imported arguments matched to directly or transitively mutated parameters → `ImportedVarArgument` error
    - Effects with `requires_eager_loading_imports()` → added to `force_imports_eager_overrides`
+   - A module whose companion `.pyi` declares public names, none of which its source binds → `NamesOnlyInStub`, added to `force_imports_eager_overrides` only; it is recorded by the analyzer rather than as an effect
 
 ### Not All Effects Become Errors
 

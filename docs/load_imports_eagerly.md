@@ -6,7 +6,7 @@ The LOAD_IMPORTS_EAGERLY set is distinct from the LAZY_ELIGIBLE dict:
 - **LOAD_IMPORTS_EAGERLY set**: Disables lazy imports entirely within a module. A module can both be safe to load lazily and in the LOAD_IMPORTS_EAGERLY set.
 
 ## The LOAD_IMPORTS_EAGERLY Cases
-A module is added to the LOAD_IMPORTS_EAGERLY set when any of these five cases are detected anywhere in the module, regardless of scope or reachability from top-level code.
+A module is added to the LOAD_IMPORTS_EAGERLY set when any of the first five cases are detected anywhere in the module, regardless of scope or reachability from top-level code, or when its stub matches the sixth.
 
 ### 1. Custom Finalizers
 **Trigger**: A class defines a `__del__` method.
@@ -124,4 +124,22 @@ def _hook(name, *args, **kwargs):
 
 def install():
     builtins.__import__ = _hook
+```
+
+### 6. Names Only in the Stub
+
+**Trigger**: The source DB ships a `.pyi` next to the module's `.py`, the stub declares public functions, classes or variables, and the `.py` binds none of them but imports something. A star import or a module-level `__getattr__` in the `.py` rules the module out, since either could bind any name.
+
+The `.pyi` is only read for its declared names; the `.py` is still what gets analyzed. The module itself stays lazily importable, and only its own imports go eager.
+
+**Why this may be unsafe**: A `.py` that binds none of the names its stub declares is a loader: something it imports fills or replaces the module at import time, usually native code the analyzer cannot see. Under lazy imports those imports are deferred, and nothing in the module reads their bindings, so they never run and the module stays empty.
+
+**Python example**:
+
+```python
+# antlir's `antlir_rust_extension` shim, installed as `antlir/artifacts_dir.py`.
+# Importing `antlir.rust` loads a native extension that replaces this module in
+# `sys.modules` with the Rust one declared by `artifacts_dir.pyi`
+# (`find_repo_root`, `SigilNotFound`).
+import antlir.rust  # noqa
 ```
