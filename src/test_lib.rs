@@ -38,6 +38,7 @@ use crate::hasher::HashSetExt;
 use crate::imports::ImportGraph;
 use crate::module_effects::ModuleEffects;
 use crate::module_parser::ParsedModule;
+use crate::module_parser::declared_stub_names;
 use crate::module_parser::parse_pyi_with_version;
 use crate::module_parser::parse_source_with_version;
 use crate::module_safety::ModuleSafety;
@@ -184,6 +185,7 @@ fn reachable_stubs(
 pub struct TestSources {
     modules: HashMap<ModuleName, String, ahash::RandomState>,
     stub_modules: AHashSet<ModuleName>,
+    companion_stubs: HashMap<ModuleName, String, ahash::RandomState>,
     parse_errors: AHashSet<ModuleName>,
     names: Vec<ModuleName>,
     python_version: PythonVersion,
@@ -222,6 +224,7 @@ impl TestSources {
         let mut sources = Self {
             modules: module_map,
             stub_modules,
+            companion_stubs: HashMap::default(),
             parse_errors: AHashSet::new(),
             names,
             python_version,
@@ -255,6 +258,15 @@ impl TestSources {
                 self.names.push(mod_name);
             }
             self.parse_errors.insert(mod_name);
+        }
+        self
+    }
+
+    /// Ship each stub as the `.pyi` next to the named module's `.py`.
+    pub fn with_companion_stubs(mut self, stubs: &[(&str, &str)]) -> Self {
+        for (name, code) in stubs {
+            self.companion_stubs
+                .insert(ModuleName::from_str(name), dedent(code));
         }
         self
     }
@@ -298,7 +310,11 @@ impl ModuleProvider for TestSources {
                 .names
                 .iter()
                 .any(|n| n.as_str().starts_with(&name_prefix));
-            let parsed = parse_source_with_version(code, *name, is_init, self.python_version);
+            let mut parsed = parse_source_with_version(code, *name, is_init, self.python_version);
+            parsed.companion_stub_names = self
+                .companion_stubs
+                .get(name)
+                .map(|stub| declared_stub_names(stub, *name, is_init, self.python_version));
             // Ruff recovers from syntax errors and the production read path
             // treats a broken file as missing, so a malformed snippet would
             // otherwise be analyzed as a best-effort AST and quietly assert

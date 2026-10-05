@@ -381,7 +381,8 @@ mod tests {
         safety.add_force_import_override(make_error(ErrorKind::SysModulesAccess));
         safety.add_force_import_override(make_error(ErrorKind::SubclassesAccess));
         safety.add_force_import_override(make_error(ErrorKind::BuiltinsImportOverride));
-        assert_eq!(safety.force_imports_eager_overrides.len(), 5);
+        safety.add_force_import_override(make_error(ErrorKind::NamesOnlyInStub));
+        assert_eq!(safety.force_imports_eager_overrides.len(), 6);
     }
 
     #[test]

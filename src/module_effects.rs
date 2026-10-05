@@ -6,6 +6,7 @@
  */
 
 use pyrefly_python::module_name::ModuleName;
+use ruff_python_ast::name::Name;
 use ruff_text_size::TextRange;
 
 use crate::effects::Effect;
@@ -54,6 +55,10 @@ pub struct ModuleEffects {
     // Modules imported without use of the `lazy` keyword. Used to distinguish
     // side-effect imports from explicit lazy imports that have no effect when unused.
     pub eager_imports: AHashSet<ModuleName>,
+
+    // The public names the module's own `.pyi` declares when its source binds none of them,
+    // and where to report them.
+    pub names_only_in_stub: Option<(Vec<Name>, TextRange)>,
 }
 
 impl ModuleEffects {
@@ -69,6 +74,7 @@ impl ModuleEffects {
             called_functions: AHashSet::new(),
             indirectly_called_methods: AHashMap::new(),
             eager_imports: AHashSet::new(),
+            names_only_in_stub: None,
         }
     }
 

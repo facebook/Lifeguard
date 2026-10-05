@@ -10,12 +10,14 @@ use std::ffi::OsStr;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::LazyLock;
+use std::sync::OnceLock;
 
 use anyhow::Result;
 use anyhow::anyhow;
 // Re-exported because ModuleName is part of the public SourceMap type
 pub use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
+use ruff_python_ast::name::Name;
 use serde::Deserialize;
 use tracing::warn;
 
@@ -23,6 +25,7 @@ use crate::debug::report_memory;
 use crate::hasher::AHashSet;
 use crate::hasher::HashSetExt;
 use crate::module_parser::ParsedModule;
+use crate::module_parser::declared_stub_names;
 use crate::module_parser::parse_pyi_with_version;
 use crate::module_parser::read_and_parse_source_with_version;
 use crate::pyrefly::sys_info::PythonVersion;
@@ -35,6 +38,14 @@ use crate::tracing::time;
 struct SourceInfo {
     pub is_init: bool,
     pub backing: SourceBacking,
+    pub companion_stub: Option<Box<CompanionStub>>,
+}
+
+/// The `.pyi` shipped next to a file-backed module, relative to the root directory. Several
+/// passes parse each module, so the names it declares are read once.
+struct CompanionStub {
+    path: PathBuf,
+    names: OnceLock<Option<Vec<Name>>>,
 }
 
 enum SourceBacking {
@@ -67,8 +78,13 @@ impl AstResult {
     }
 }
 
-// Type aliases
-pub type SourceMap = HashMap<ModuleName, PathBuf, ahash::RandomState>;
+/// Module → the file that provides it. A `.pyi` never provides a module; one shipped next
+/// to a module's `.py` is kept as that module's companion stub.
+#[derive(Clone, Default)]
+pub struct SourceMap {
+    pub modules: HashMap<ModuleName, PathBuf, ahash::RandomState>,
+    pub companion_stubs: HashMap<ModuleName, PathBuf, ahash::RandomState>,
+}
 
 // Raw deserialized source DB (string paths) before module name resolution.
 pub(crate) type RawSourceMap = HashMap<String, PathBuf, ahash::RandomState>;
@@ -86,8 +102,7 @@ struct DbgSourceDb {
     dependencies: RawSourceMap,
 }
 
-// TODO: We are not including pyi files from the source db for now; we will consider external stubs
-// once we get the internal stubs fully working.
+// Only `.py` files provide modules; see `SourceMap` for what happens to a `.pyi`.
 static PYTHON_EXTENSIONS: LazyLock<AHashSet<&'static OsStr>> =
     LazyLock::new(|| [OsStr::new("py")].into_iter().collect());
 
@@ -159,7 +174,7 @@ pub(crate) fn resolve_source_map(raw: RawSourceMap) -> SourceMap {
     let entries: Vec<(ModuleName, u8, PathBuf)> = raw
         .into_par_iter()
         .filter_map(|(module_path, full_path)| {
-            if !is_python_file(&full_path) {
+            if !is_python_file(&full_path) && !is_stub_file(&full_path) {
                 return None;
             }
             let mod_name = match ModuleName::from_relative_path(module_path.as_ref()) {
@@ -188,14 +203,42 @@ pub(crate) fn resolve_source_map(raw: RawSourceMap) -> SourceMap {
 
     let mut result = SourceMap::default();
     let mut priorities: HashMap<ModuleName, u8, ahash::RandomState> = HashMap::default();
+    let mut stubs = Vec::new();
     for (mod_name, priority, full_path) in entries {
+        if is_stub_file(&full_path) {
+            stubs.push((mod_name, full_path));
+            continue;
+        }
         let dominated = priorities.get(&mod_name).is_some_and(|&p| p <= priority);
         if !dominated {
             priorities.insert(mod_name, priority);
-            result.insert(mod_name, full_path);
+            result.modules.insert(mod_name, full_path);
+        }
+    }
+    for (mod_name, path) in stubs {
+        let Some(module_path) = result.modules.get(&mod_name) else {
+            continue;
+        };
+        // Two stubs can name one module (`m.pyi`, `m/__init__.pyi`): prefer the one shaped
+        // like the `.py`, then the smaller path, so the choice is deterministic.
+        let mismatch = |stub: &Path| is_init_file(stub) != is_init_file(module_path);
+        match result.companion_stubs.get_mut(&mod_name) {
+            Some(kept) if (mismatch(&path), &path) < (mismatch(kept), &*kept) => *kept = path,
+            Some(_) => {}
+            None => {
+                result.companion_stubs.insert(mod_name, path);
+            }
         }
     }
     result
+}
+
+fn is_stub_file(path: &Path) -> bool {
+    path.extension() == Some(OsStr::new("pyi"))
+}
+
+fn is_init_file(path: &Path) -> bool {
+    path.file_stem() == Some(OsStr::new("__init__"))
 }
 
 /// Returns priority value for Python extensions (lower number = higher priority).
@@ -223,19 +266,29 @@ fn make_source_info_map(
     source_map: SourceMap,
     stubs: &Stubs,
 ) -> (SourceInfoMap, AHashSet<ModuleName>) {
+    let SourceMap {
+        modules,
+        mut companion_stubs,
+    } = source_map;
     let mut info_map =
-        SourceInfoMap::with_capacity_and_hasher(source_map.len(), ahash::RandomState::default());
+        SourceInfoMap::with_capacity_and_hasher(modules.len(), ahash::RandomState::default());
     let mut overridden = AHashSet::new();
 
     // Add entries from the source map (real .py files). Move PathBufs out — the
     // caller no longer needs the SourceMap after this call.
-    for (name, path) in source_map {
+    for (name, path) in modules {
         let is_init = path.file_name().is_some_and(|f| f == "__init__.py");
         info_map.insert(
             name,
             SourceInfo {
                 is_init,
                 backing: SourceBacking::File(path),
+                companion_stub: companion_stubs.remove(&name).map(|path| {
+                    Box::new(CompanionStub {
+                        path,
+                        names: OnceLock::new(),
+                    })
+                }),
             },
         );
     }
@@ -250,6 +303,7 @@ fn make_source_info_map(
             SourceInfo {
                 is_init: stubs.is_init(mod_name),
                 backing: SourceBacking::Stub,
+                companion_stub: None,
             },
         );
     }
@@ -309,6 +363,26 @@ impl Sources {
             python_version,
         }
     }
+
+    /// Names declared by a module's companion stub; an unreadable stub declares none.
+    fn companion_stub_names(
+        &self,
+        stub: &CompanionStub,
+        name: ModuleName,
+        is_init: bool,
+    ) -> Option<Vec<Name>> {
+        stub.names
+            .get_or_init(|| {
+                let source = std::fs::read_to_string(self.root_dir.join(&stub.path)).ok()?;
+                Some(declared_stub_names(
+                    &source,
+                    name,
+                    is_init,
+                    self.python_version,
+                ))
+            })
+            .clone()
+    }
 }
 
 /// A [`Sources`] over the bundled stubs alone. With no source DB every module
@@ -345,7 +419,13 @@ impl ModuleProvider for Sources {
                     info.is_init,
                     self.python_version,
                 ) {
-                    Ok(parsed) => AstResult::Ok(parsed),
+                    Ok(mut parsed) => {
+                        parsed.companion_stub_names = info
+                            .companion_stub
+                            .as_deref()
+                            .and_then(|stub| self.companion_stub_names(stub, name, info.is_init));
+                        AstResult::Ok(parsed)
+                    }
                     Err(e) => AstResult::ParserError(e),
                 };
                 Some(result)
@@ -395,7 +475,7 @@ mod tests {
             raw.insert(key.to_string(), PathBuf::from(path));
         }
 
-        let result = resolve_source_map(raw);
+        let result = resolve_source_map(raw).modules;
         assert_eq!(result.len(), expected_count);
         for expected in expected_modules {
             let mod_name = ModuleName::from_str(expected);
@@ -413,7 +493,7 @@ mod tests {
             raw.insert(key.to_string(), PathBuf::from(path));
         }
 
-        let result = resolve_source_map(raw);
+        let result = resolve_source_map(raw).modules;
         assert_eq!(result.len(), expected.len());
         for (mod_str, expected_path) in expected {
             let mod_name = ModuleName::from_str(mod_str);
@@ -467,6 +547,51 @@ mod tests {
             ],
             vec![("foo.bar", "foo/bar/__init__.py")],
         );
+    }
+
+    #[test]
+    fn test_pyi_next_to_a_py_is_its_companion_stub() {
+        let dir = crate::test_lib::populate_temp_dir(&[
+            ("shim.py", "import native\n"),
+            ("shim.pyi", "def find_root() -> None: ...\n"),
+            ("orphan.pyi", "def other() -> None: ...\n"),
+        ]);
+        let raw: RawSourceMap = ["shim.py", "shim.pyi", "orphan.pyi"]
+            .into_iter()
+            .map(|path| (path.to_owned(), PathBuf::from(path)))
+            .collect();
+        let source_map = resolve_source_map(raw);
+        assert_eq!(
+            source_map.modules.len(),
+            1,
+            "a `.pyi` never provides a module"
+        );
+
+        let sources = Sources::new(source_map, dir.path().to_path_buf());
+        let shim = sources.parse(&ModuleName::from_str("shim")).unwrap();
+        assert_eq!(
+            shim.as_parsed().unwrap().companion_stub_names,
+            Some(vec![Name::new("find_root")])
+        );
+    }
+
+    #[test]
+    fn test_companion_stub_matches_package_shape() {
+        let raw: RawSourceMap = [
+            ("pkg/__init__.py", "pkg/__init__.py"),
+            ("pkg.pyi", "pkg.pyi"),
+            ("pkg/__init__.pyi", "pkg/__init__.pyi"),
+            ("mod.py", "mod.py"),
+            ("mod.pyi", "mod.pyi"),
+            ("mod/__init__.pyi", "mod/__init__.pyi"),
+        ]
+        .into_iter()
+        .map(|(key, path)| (key.to_owned(), PathBuf::from(path)))
+        .collect();
+        let source_map = resolve_source_map(raw);
+        let stub = |name| source_map.companion_stubs[&ModuleName::from_str(name)].clone();
+        assert_eq!(stub("pkg"), PathBuf::from("pkg/__init__.pyi"));
+        assert_eq!(stub("mod"), PathBuf::from("mod.pyi"));
     }
 
     #[test]

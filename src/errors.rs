@@ -111,6 +111,10 @@ pub enum ErrorKind {
     /// `builtins.__import__` is replaced or removed. The loader calls it for every
     /// deferred import, so this module's own imports must resolve before it is installed.
     BuiltinsImportOverride,
+
+    /// The module's own `.pyi` declares public names and its source binds none of them: the
+    /// module is a loader whose imports fill it at import time, so those imports must run.
+    NamesOnlyInStub,
 }
 
 impl ErrorKind {
@@ -123,6 +127,7 @@ impl ErrorKind {
                 | Self::SysModulesAccess
                 | Self::SubclassesAccess
                 | Self::BuiltinsImportOverride
+                | Self::NamesOnlyInStub
         )
     }
 

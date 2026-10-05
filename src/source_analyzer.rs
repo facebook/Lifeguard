@@ -7,6 +7,7 @@
 
 use std::cell::OnceCell;
 
+use pyrefly_python::dunder;
 use pyrefly_python::module_name::ModuleName;
 use pyrefly_util::visit::Visit;
 use ruff_python_ast::Arguments;
@@ -1889,6 +1890,42 @@ impl<'a> SourceAnalyzer<'a> {
         }
     }
 
+    /// Record a module whose own `.pyi` declares public names, none bound by its source, so its
+    /// imports fill it. A star import or `__getattr__` could bind anything, so either rules it out.
+    fn check_names_only_in_stub(&self, output: &mut ModuleEffects) {
+        let Some(stub_names) = &self.parsed_module.companion_stub_names else {
+            return;
+        };
+        if stub_names.is_empty() || output.eager_imports.is_empty() {
+            return;
+        }
+        let Some(defined) = self
+            .info
+            .definitions
+            .definitions
+            .get(&self.info.module_name)
+        else {
+            return;
+        };
+        let dynamic =
+            !defined.import_all.is_empty() || defined.definitions.contains_key(&dunder::GETATTR);
+        if dynamic
+            || stub_names
+                .iter()
+                .any(|name| defined.definitions.contains_key(name))
+        {
+            return;
+        }
+        let range = self
+            .parsed_module
+            .ast
+            .body
+            .first()
+            .map(Ranged::range)
+            .unwrap_or_default();
+        output.names_only_in_stub = Some((stub_names.clone(), range));
+    }
+
     fn add_effect(&self, eff: Effect, output: &mut ModuleEffects) {
         let eff = if eff.kind.is_runnable() && self.cursor.in_try_body() {
             eff.with_try_handlers(self.cursor.try_handlers())
@@ -1994,6 +2031,7 @@ impl<'a> Analyzer<'a> for SourceAnalyzer<'a> {
         let mut output = ModuleEffects::new();
         self.cursor.enter_module_scope(&self.info.module_name);
         self.stmts(&self.parsed_module.ast.body, &mut output);
+        self.check_names_only_in_stub(&mut output);
         mark_called_imports(&mut output);
         AnalyzedModule {
             module_effects: output,

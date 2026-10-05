@@ -93,7 +93,9 @@ pub fn run(args: AnalyzeArgs) -> Result<()> {
         python_version,
     };
 
-    check_main_module(options.main_module, |name| src_map.contains_key(&name))?;
+    check_main_module(options.main_module, |name| {
+        src_map.modules.contains_key(&name)
+    })?;
 
     let lifeguard_output = process_source_map(src_map, &root_dir, &options)?;
 

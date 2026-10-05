@@ -404,7 +404,9 @@ pub fn run(args: ComparePathsArgs) -> Result<()> {
 
     let compute_errors = args.explain.is_some();
     let src_map = source_map::load_source_map(&args.db_path)?;
-    check_main_module(options.main_module, |name| src_map.contains_key(&name))?;
+    check_main_module(options.main_module, |name| {
+        src_map.modules.contains_key(&name)
+    })?;
     let single_pass = run_single_pass(src_map.clone(), &root_dir, &options, compute_errors)?;
     let incremental = run_incremental(src_map, &root_dir, &options, compute_errors)?;
 

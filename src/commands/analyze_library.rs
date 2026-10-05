@@ -53,6 +53,7 @@ fn detect_root_dir(src_map: &SourceMap) -> Result<PathBuf> {
     let cwd = std::env::current_dir()?;
 
     let samples: Vec<&Path> = src_map
+        .modules
         .values()
         .map(PathBuf::as_path)
         .take(MAX_SAMPLES)
@@ -140,7 +141,7 @@ pub fn run(args: AnalyzeLibraryArgs) -> Result<()> {
         python_version,
     };
 
-    let cache = if src_map.is_empty() {
+    let cache = if src_map.modules.is_empty() {
         info!("Source map is empty, producing empty cache");
         LibraryCache::empty()
     } else {

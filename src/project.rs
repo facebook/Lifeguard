@@ -17,6 +17,7 @@ use std::sync::mpsc::Sender;
 use anyhow::Result;
 use anyhow::anyhow;
 use dashmap::DashMap;
+use itertools::Itertools;
 use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
 use ruff_text_size::TextRange;
@@ -1891,6 +1892,11 @@ impl ProjectInfo {
                 let err = SafetyError::new_from_effect(kind, e);
                 state.add_force_imports_eager_override_to_module(mod_name, err);
             }
+        }
+        if let Some((names, range)) = &result.module_effects.names_only_in_stub {
+            let names = names.iter().join(", ");
+            let err = SafetyError::new(ErrorKind::NamesOnlyInStub, names, *range);
+            state.add_force_imports_eager_override_to_module(mod_name, err);
         }
     }
 

@@ -25,6 +25,7 @@ mod tests {
     use lifeguard::test_lib::has_lazy_eligible_dep;
     use lifeguard::test_lib::run_analysis_on;
     use lifeguard::test_lib::run_lifeguard_analysis;
+    use lifeguard::test_lib::run_lifeguard_analysis_on;
     use lifeguard::test_lib::run_lifeguard_analysis_with;
     use lifeguard::test_lib::test_options;
     use lifeguard::test_lib::verbose_test_options;
@@ -432,6 +433,93 @@ mod tests {
         });
         let actual_output = serde_json::to_value(&result.output).unwrap();
         assert_eq!(actual_output, expected_output);
+    }
+
+    #[test]
+    fn test_names_only_in_stub_loads_imports_eagerly() {
+        // mirrors antlir's `antlir_rust_extension`: the stub describes the native module, which
+        // only replaces `pkg.shim` once importing `pkg.rust` has run
+        let shim = r#"
+            import pkg.rust  # noqa
+        "#;
+        let shim_stub = r#"
+            from typing import Optional
+
+            def find_repo_root(path_in_repo: Optional[str] = None) -> str: ...
+
+            class SigilNotFound(Exception): ...
+        "#;
+        let rust = r#"
+            from pkg.rust.native_impl import *  # noqa
+        "#;
+        let consumer = r#"
+            from pkg.shim import find_repo_root
+        "#;
+        let modules = [
+            ("pkg.shim", shim),
+            ("pkg.rust", rust),
+            ("consumer", consumer),
+        ];
+        let sources = TestSources::new(&modules).with_companion_stubs(&[("pkg.shim", shim_stub)]);
+
+        let result = run_lifeguard_analysis_on(&sources, &test_options());
+
+        // `pkg.shim` stays lazy-eligible; only its own imports go eager
+        let expected_output = serde_json::json!({
+            "LOAD_IMPORTS_EAGERLY": ["pkg.shim"],
+            "LAZY_ELIGIBLE": {
+                "consumer": ["pkg.shim"],
+                "pkg.rust": [],
+                "pkg.shim": ["pkg"]
+            }
+        });
+        let actual_output = serde_json::to_value(&result.output).unwrap();
+        assert_eq!(actual_output, expected_output);
+    }
+
+    #[test]
+    fn test_names_only_in_stub_exemptions() {
+        let modules = [
+            ("plugin", "VALUE = 1"),
+            ("defines", "import plugin\ndef f(): return plugin.VALUE"),
+            (
+                "partly_defined",
+                "import plugin\ndef f(): return plugin.VALUE",
+            ),
+            ("star", "from plugin import *"),
+            (
+                "lazy_attr",
+                "import plugin\ndef __getattr__(name): return getattr(plugin, name)",
+            ),
+            ("private_only", "import plugin"),
+            ("imports_only", "import plugin"),
+            ("conditional", "import plugin\ndef g(): return plugin.VALUE"),
+            ("no_imports", "X = 1"),
+        ];
+        let stubs = [
+            ("defines", "def f() -> int: ..."),
+            // typing-only names in a stub are common; one name the source binds is enough
+            ("partly_defined", "def f() -> int: ...\ndef g() -> int: ..."),
+            ("star", "VALUE: int"),
+            ("lazy_attr", "VALUE: int"),
+            ("private_only", "def _helper() -> None: ..."),
+            ("imports_only", "from typing import Any"),
+            (
+                "conditional",
+                "import sys\ndef f() -> int: ...\nif sys.version_info >= (3, 8):\n    def g() -> int: ...",
+            ),
+            // no imports, so nothing could fill it
+            ("no_imports", "def f() -> int: ..."),
+        ];
+        let sources = TestSources::new(&modules).with_companion_stubs(&stubs);
+
+        let result = run_lifeguard_analysis_on(&sources, &test_options());
+
+        assert!(
+            result.output.load_imports_eagerly.is_empty(),
+            "{:?}",
+            result.output.load_imports_eagerly
+        );
     }
 
     #[test]

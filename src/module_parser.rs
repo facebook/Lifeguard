@@ -13,8 +13,12 @@ use pyrefly_python::module_name::ModuleName;
 use ruff_python_ast::Mod;
 use ruff_python_ast::ModModule;
 use ruff_python_ast::PySourceType;
+use ruff_python_ast::name::Name;
 use ruff_python_parser::ParseOptions;
 
+use crate::config::AnalysisConfig;
+use crate::pyrefly::definitions::DefinitionStyle;
+use crate::pyrefly::definitions::Definitions;
 use crate::pyrefly::sys_info::PythonVersion;
 use crate::runner::default_python_version;
 use crate::runner::to_ruff_version;
@@ -34,6 +38,8 @@ pub struct ParsedModule {
     /// of `THRIFT_GENERATED_SUFFIXES` and it carries the generator's header marker.
     /// These modules are treated as safe (all effects removed) during analysis.
     pub is_thrift_generated: bool,
+    /// Public names declared by the `.pyi` the source DB ships next to this `.py`, if any.
+    pub companion_stub_names: Option<Vec<Name>>,
     /// The first syntax error ruff reported while (error-recoveringly) parsing,
     /// if any. The AST is still populated best-effort; the real-file read boundary
     /// surfaces this (treating a broken file as missing), while test snippets and
@@ -161,9 +167,37 @@ fn build_parsed_module(
         source_type: typ,
         is_init,
         is_thrift_generated: is_thrift,
+        companion_stub_names: None,
         first_syntax_error,
         newline_positions: compute_newline_positions(source),
     }
+}
+
+/// Public names the stub `source` defines at module scope, sorted; a name it only imports, or
+/// assigns straight from an import (`x = _imported`), is left out.
+pub fn declared_stub_names(
+    source: &str,
+    module_name: ModuleName,
+    is_init: bool,
+    version: PythonVersion,
+) -> Vec<Name> {
+    let stub = parse_pyi_with_version(source, module_name, is_init, version);
+    let config = AnalysisConfig::with_python_version(version, None);
+    let definitions = Definitions::new(&stub.ast.body, module_name, is_init, true, &config);
+    let mut names: Vec<Name> = definitions
+        .definitions
+        .iter()
+        .filter(|(name, def)| {
+            !name.starts_with('_')
+                && matches!(
+                    def.style,
+                    DefinitionStyle::Annotated(..) | DefinitionStyle::Unannotated(_)
+                )
+        })
+        .map(|(name, _)| name.clone())
+        .collect();
+    names.sort();
+    names
 }
 
 pub fn parse_source(source: &str, module_name: ModuleName, is_init: bool) -> ParsedModule {
