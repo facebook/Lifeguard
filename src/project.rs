@@ -1208,18 +1208,19 @@ fn compute_mutated_params(
     // One entry per mutated scope (~3 seeds/scope)
     let mut mutated: AHashMap<ModuleName, AHashSet<ModuleName>> =
         AHashMap::with_capacity(all_seeds.len() / 3);
-    // One entry per mutated (owner, param) (~2 edges/key).
-    let mut dependents: AHashMap<(ModuleName, ModuleName), Vec<SeedMutation>> =
-        AHashMap::with_capacity(all_edges.len() / 2);
     let mut worklist: Vec<SeedMutation> = Vec::new();
     for (scope, param) in all_seeds {
         if mutated.entry(scope).or_default().insert(param) {
             worklist.push((scope, param));
         }
     }
-    for (key, dep) in all_edges {
+
+    // One entry per mutated (owner, param), not per edge (~2 edges/key).
+    let dependents: DashMap<(ModuleName, ModuleName), Vec<SeedMutation>> =
+        DashMap::with_capacity(all_edges.len() / 2);
+    all_edges.into_par_iter().for_each(|(key, dep)| {
         dependents.entry(key).or_default().push(dep);
-    }
+    });
 
     // Fixpoint: when (g, q) becomes mutated, each caller forwarding a parameter
     // into q has that parameter become mutated too.
@@ -1227,7 +1228,7 @@ fn compute_mutated_params(
         let Some(deps) = dependents.get(&(g, q)) else {
             continue;
         };
-        for &(f, p) in deps {
+        for &(f, p) in deps.value() {
             if mutated.entry(f).or_default().insert(p) {
                 worklist.push((f, p));
             }
