@@ -294,7 +294,7 @@ impl<'a> ResolutionContext<'a> {
 fn resolve_return_class(
     receiver: ModuleName,
     return_classes: &AHashMap<ModuleName, ModuleName>,
-    reexport_targets: &AHashMap<ModuleName, ModuleName>,
+    reexport_targets: &AHashMap<(ModuleName, &str), (ModuleName, &str)>,
 ) -> Option<ModuleName> {
     const MAX_REEXPORT_HOPS: usize = 8;
     let mut name = receiver;
@@ -302,10 +302,13 @@ fn resolve_return_class(
         if let Some(class) = return_classes.get(&name) {
             return Some(*class);
         }
-        match reexport_targets.get(&name) {
-            Some(next) if *next != name => name = *next,
-            _ => return None,
+        let (module, attr) = name.split_attr()?;
+        let &(next_module, next_attr) = reexport_targets.get(&(module, attr.as_str()))?;
+        let next = next_module.append_str(next_attr);
+        if next == name {
+            return None;
         }
+        name = next;
     }
     None
 }
@@ -431,8 +434,10 @@ impl LibraryCache {
         if class_properties.is_empty() {
             return;
         }
-        let return_classes: AHashMap<ModuleName, ModuleName> = self
-            .exports
+        let Self {
+            modules, exports, ..
+        } = self;
+        let return_classes: AHashMap<ModuleName, ModuleName> = exports
             .return_types
             .iter()
             .map(|rt| (rt.function, rt.class))
@@ -442,14 +447,13 @@ impl LibraryCache {
         // `factory.make`. Looking up the alias alone misses, the candidate is
         // dropped, and dropping one is a false-safe -- no error is emitted for a
         // getter that is unsafe.
-        let reexport_targets: AHashMap<ModuleName, ModuleName> = self
-            .exports
+        let reexport_targets: AHashMap<(ModuleName, &str), (ModuleName, &str)> = exports
             .re_exports
-            .iter()
+            .par_iter()
             .map(|re| {
                 (
-                    re.exported_module.append_str(&re.exported_attr),
-                    re.imported_module.append_str(&re.imported_attr),
+                    (re.exported_module, re.exported_attr.as_str()),
+                    (re.imported_module, re.imported_attr.as_str()),
                 )
             })
             .collect();
@@ -459,7 +463,7 @@ impl LibraryCache {
             &outcome.globally_safe,
         );
 
-        self.modules.par_iter_mut().for_each(|module| {
+        modules.par_iter_mut().for_each(|module| {
             let candidates = std::mem::take(&mut module.property_candidates);
             let CachedSafety::Ok(ref mut safety) = module.safety else {
                 return;
@@ -664,6 +668,32 @@ mod tests {
     use crate::effects::ImportedArgs;
     use crate::module_safety::MutationCandidate;
     use crate::module_safety::MutationCandidateSite;
+
+    /// A hop whose *imported* attribute contains the join separator. The key
+    /// side never does -- an exported attr is one Python identifier -- but 11%
+    /// of imported attrs on a large target do, so the name this rebuilds gets
+    /// re-split on the next hop and must still land on the right key.
+    #[test]
+    fn resolve_return_class_follows_a_hop_whose_attr_contains_a_dot() {
+        let m = ModuleName::from_str;
+        let reexport_targets: AHashMap<(ModuleName, &str), (ModuleName, &str)> = [
+            // facade.make -> factory.sub.make, joined from a dotted attr
+            ((m("facade"), "make"), (m("factory"), "sub.make")),
+            // the rebuilt name must re-split here, at its *last* dot
+            ((m("factory.sub"), "make"), (m("real"), "Thing")),
+        ]
+        .into_iter()
+        .collect();
+        let return_classes: AHashMap<ModuleName, ModuleName> =
+            [(m("real.Thing"), m("real.Widget"))].into_iter().collect();
+
+        assert_eq!(
+            resolve_return_class(m("facade.make"), &return_classes, &reexport_targets),
+            Some(m("real.Widget")),
+            "a dotted imported attr must not break the chain: the rebuilt name splits \
+             at its last dot, which is exactly the key the exported side stored",
+        );
+    }
 
     #[test]
     fn reduce_workspace_rejects_empty_cache_set() {
