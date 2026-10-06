@@ -411,6 +411,7 @@ fn transitive_importers(import_graph: &ImportGraph, target: &ModuleName) -> AHas
 
 /// Guard every passing module on an import path `consumer -> ... -> target` with
 /// `target`, forcing the path eager until `target` is loaded.
+/// `target` guards itself: without that the provider's own import of it stays lazy.
 fn propagate_implicit_imports_along_paths(
     import_graph: &ImportGraph,
     classified: &ClassifiedModules,
@@ -432,6 +433,9 @@ fn propagate_implicit_imports_along_paths(
     consumers_by_target
         .par_iter()
         .for_each(|(target, consumers)| {
+            if classified.passing_modules.contains(target) {
+                lazy_eligible.entry(*target).or_default().insert(*target);
+            }
             let ancestors = transitive_importers(import_graph, target);
             // Walk forward from the consumers within `target`'s ancestors,
             // guarding each passing module reached.

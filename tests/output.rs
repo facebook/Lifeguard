@@ -878,6 +878,37 @@ mod tests {
     }
 
     #[test]
+    fn test_implicit_import_target_guards_itself() {
+        // A leaf with no failing deps is freely deferrable, so nothing loads it.
+        let leaf = r#"
+            class AmeLocation:
+                pass
+        "#;
+        let provider = r#"
+            import pkg.crossdb.ttypes
+        "#;
+        let consumer = r#"
+            import pkg.structs.ttypes
+            x = pkg.crossdb.ttypes.AmeLocation
+        "#;
+        let modules = vec![
+            ("pkg.__init__", ""),
+            ("pkg.crossdb.__init__", ""),
+            ("pkg.structs.__init__", ""),
+            ("pkg.crossdb.ttypes", leaf),
+            ("pkg.structs.ttypes", provider),
+            ("consumer", consumer),
+        ];
+
+        let result = run_lifeguard_analysis(&modules);
+
+        assert!(
+            has_lazy_eligible_dep(&result, "pkg.crossdb.ttypes", "pkg.crossdb.ttypes"),
+            "pkg.crossdb.ttypes should guard itself so its first import is eager"
+        );
+    }
+
+    #[test]
     fn test_implicit_import_propagates_along_multi_hop_path() {
         // Same as above but the provider reaches the leaf through an intermediate
         // module: consumer -> mid -> provider -> leaf. Every passing module on the
