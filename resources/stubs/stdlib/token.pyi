@@ -164,6 +164,6 @@ if sys.version_info >= (3, 14):
     TSTRING_MIDDLE: Final[int]
     TSTRING_END: Final[int]
 
-def ISTERMINAL(x: int) -> bool: ...
-def ISNONTERMINAL(x: int) -> bool: ...
-def ISEOF(x: int) -> bool: ...
+def ISTERMINAL(x: int) -> bool: no_effects()
+def ISNONTERMINAL(x: int) -> bool: no_effects()
+def ISEOF(x: int) -> bool: no_effects()
