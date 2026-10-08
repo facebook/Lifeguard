@@ -763,6 +763,95 @@ mod tests {
         );
     }
 
+    /// Closed only by `from mining.taxonomy import ...`, which runs `mining/__init__` first.
+    /// At runtime it initializes when entered through `mining` and fails through `judges`.
+    fn package_init_cycle_modules() -> Vec<(&'static str, &'static str)> {
+        let judge = r#"
+            from mining.taxonomy import OUTCOMES
+            class MinerJudge:
+                pass
+            def classify():
+                pass
+        "#;
+        vec![
+            ("mining", "from mining.miner import classify"),
+            ("mining.miner", "from judges.miner_judge import classify"),
+            ("mining.taxonomy", "OUTCOMES = ()"),
+            ("judges", "from judges.miner_judge import MinerJudge"),
+            ("judges.miner_judge", judge),
+        ]
+    }
+
+    #[test]
+    fn test_cycle_through_package_init_is_detected() {
+        let result = run_lifeguard_analysis_verbose(&package_init_cycle_modules());
+
+        let cycles = result.output.import_cycles.as_ref().unwrap();
+        let (mining, judge) = (
+            ModuleName::from_str("mining"),
+            ModuleName::from_str("judges.miner_judge"),
+        );
+        assert!(
+            cycles
+                .iter()
+                .any(|c| c.contains(&mining) && c.contains(&judge)),
+            "mining -> mining.miner -> judges.miner_judge -> mining should be a cycle: {cycles:?}"
+        );
+    }
+
+    #[test]
+    fn test_cycle_child_never_guards_itself() {
+        let result = run_lifeguard_analysis(&package_init_cycle_modules());
+
+        assert!(
+            !has_lazy_eligible_dep(&result, "mining.miner", "mining.miner"),
+            "a module guarded by itself could never be deferred"
+        );
+        assert!(
+            has_lazy_eligible_dep(&result, "mining.miner", "mining"),
+            "its package takes its place, so `from mining import miner` still runs mining first"
+        );
+    }
+
+    #[test]
+    fn test_failing_cycle_member_guards_its_children() {
+        let failing_mining = r#"
+            import os
+            os.environ["X"] = "1"
+            from mining.miner import classify
+        "#;
+        let mut modules = package_init_cycle_modules();
+        modules[0] = ("mining", failing_mining);
+
+        let result = run_lifeguard_analysis(&modules);
+
+        assert!(
+            result
+                .summary
+                .failing_modules
+                .contains(&ModuleName::from_str("mining"))
+        );
+        assert!(
+            has_lazy_eligible_dep(&result, "mining.taxonomy", "mining"),
+            "`from mining import taxonomy` is checked as `mining.taxonomy`, so it must stay \
+             eager until the failing mining has run"
+        );
+    }
+
+    #[test]
+    fn test_cycle_through_package_init_guards_its_members() {
+        let result = run_lifeguard_analysis(&package_init_cycle_modules());
+
+        assert!(
+            has_lazy_eligible_dep(&result, "judges.miner_judge", "mining"),
+            "its import of mining.taxonomy runs mining/__init__, the edge that closes the cycle"
+        );
+        assert!(
+            has_lazy_eligible_dep(&result, "mining", "mining.miner"),
+            "mining should carry its in-cycle import like any other cycle member"
+        );
+    }
+
     #[test]
     fn test_side_effect_imports_propagate_failing_deps() {
         // When module A does a bare `import B` that is never accessed (side-effect import),

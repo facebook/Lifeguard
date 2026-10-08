@@ -264,6 +264,31 @@ impl ImportGraph {
             .is_some_and(|mods| mods.contains(module))
     }
 
+    /// Packages an import runs first: `from a.b.c import x` runs `a` and `a.b`. Namespace
+    /// packages are not nodes, and the importer's own ancestors ran already. A parent may also be
+    /// a direct import.
+    pub fn implicit_parent_imports(&self) -> AHashMap<ModuleName, Vec<ModuleName>> {
+        self.modules_par_iter()
+            .filter_map(|from| {
+                let mut seen = AHashSet::new();
+                let mut parents = Vec::new();
+                for target in self.get_imports(from) {
+                    for (parent, _) in target.iter_parents() {
+                        // A parent seen before was seen along with all of its ancestors.
+                        if !seen.insert(parent) {
+                            break;
+                        }
+                        if self.contains(&parent) && parent != *from && !parent.is_ancestor_of(from)
+                        {
+                            parents.push(parent);
+                        }
+                    }
+                }
+                (!parents.is_empty()).then_some((*from, parents))
+            })
+            .collect()
+    }
+
     /// Re-resolve missing imports to their nearest known module (the nearest
     /// ancestor package present in the graph). A resolved import becomes a real edge to
     /// that ancestor; unresolvable ones stay missing.

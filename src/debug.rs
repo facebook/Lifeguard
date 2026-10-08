@@ -36,7 +36,9 @@ pub fn print_exports(exports: &Exports) {
 }
 
 pub fn print_import_cycles(imports: &ImportGraph) {
-    let cycles = imports.graph.find_cycles();
+    let cycles = imports
+        .graph
+        .find_cycles(&imports.implicit_parent_imports());
     for c in cycles {
         println!("cycle {{");
         for m in imports.graph.cycle_names(&c) {

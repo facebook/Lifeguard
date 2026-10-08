@@ -139,6 +139,9 @@ pub trait ModuleNameExt {
     /// Iterate over parent module names from longest to shortest.
     /// For "a.b.c.d", yields "a.b.c", "a.b", "a".
     fn iter_parents(&self) -> ParentIter<'_>;
+
+    /// Whether `module` sits under this package: `a.b` is an ancestor of `a.b.c`, not of `a.bc`.
+    fn is_ancestor_of(&self, module: &Self) -> bool;
 }
 
 impl ModuleNameExt for ModuleName {
@@ -168,6 +171,13 @@ impl ModuleNameExt for ModuleName {
     fn iter_parents(&self) -> ParentIter<'_> {
         let s = self.as_str();
         ParentIter { s, end: s.len() }
+    }
+
+    fn is_ancestor_of(&self, module: &Self) -> bool {
+        module
+            .as_str()
+            .strip_prefix(self.as_str())
+            .is_some_and(|rest| rest.starts_with('.'))
     }
 }
 
@@ -301,6 +311,16 @@ mod tests {
             .chain(defs.import_all.keys().copied())
             .collect();
         assert_eq!(expected_module_names, imports);
+    }
+
+    #[test]
+    fn test_is_ancestor_of() {
+        let m = ModuleName::from_str;
+        assert!(m("a").is_ancestor_of(&m("a.b")));
+        assert!(m("a").is_ancestor_of(&m("a.b.c")));
+        assert!(!m("a.b").is_ancestor_of(&m("a.b")));
+        assert!(!m("a").is_ancestor_of(&m("ab.c")));
+        assert!(!m("a.b").is_ancestor_of(&m("a")));
     }
 
     fn get_call_func(s: &Stmt) -> &Expr {

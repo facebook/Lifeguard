@@ -426,4 +426,40 @@ else:
         // `get_imports` yields one entry per edge, so a parallel edge would show `b` twice.
         assert_deps(&g, "a", vec!["b"]);
     }
+
+    #[test]
+    fn test_implicit_parent_imports() {
+        let from_leaf = "from pkg.sub.leaf import x";
+        let g = build_import_graph(&vec![
+            ("pkg", from_leaf),
+            ("pkg.sub", ""),
+            ("pkg.sub.leaf", "x = 1"),
+            ("pkg.sibling", from_leaf),
+            ("pkg_other", from_leaf),
+            ("plain", "import pkg.sub.leaf"),
+            ("ns_user", "from ns.leaf import y"),
+            ("ns.leaf", "y = 1"),
+        ]);
+        let mut actual: Vec<(&str, &str)> = Vec::new();
+        let implicit = g.implicit_parent_imports();
+        for (from, parents) in &implicit {
+            for parent in parents {
+                actual.push((from.as_str(), parent.as_str()));
+            }
+        }
+        actual.sort();
+        // `pkg.sibling` skips its own ancestor `pkg`, `plain` keeps the parents it also imports
+        // directly, and `ns` is not a module.
+        assert_eq!(
+            actual,
+            vec![
+                ("pkg", "pkg.sub"),
+                ("pkg.sibling", "pkg.sub"),
+                ("pkg_other", "pkg"),
+                ("pkg_other", "pkg.sub"),
+                ("plain", "pkg"),
+                ("plain", "pkg.sub"),
+            ]
+        );
+    }
 }

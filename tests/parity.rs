@@ -176,6 +176,23 @@ mod tests {
     }
 
     #[test]
+    fn package_init_cycle_agrees() {
+        // Closed only by `from mining.taxonomy import ...`, which runs `mining/__init__`.
+        let judge = r#"
+            from mining.taxonomy import OUTCOMES
+            def classify():
+                pass
+        "#;
+        assert_paths_agree_sharded(&[
+            ("mining", "from mining.miner import classify"),
+            ("mining.miner", "from judges.miner_judge import classify"),
+            ("mining.taxonomy", "OUTCOMES = ()"),
+            ("judges", "from judges.miner_judge import classify"),
+            ("judges.miner_judge", judge),
+        ]);
+    }
+
+    #[test]
     fn module_scope_side_effects_agree() {
         let plain = r#"
             VALUE = 1

@@ -322,6 +322,7 @@ fn resolve_reexport_chain(
 /// and adding implicit imports.
 fn build_lazy_eligible(
     import_graph: &ImportGraph,
+    implicit_parents: &AHashMap<ModuleName, Vec<ModuleName>>,
     classified: &ClassifiedModules,
     re_export_map: &AHashMap<ModuleName, AHashSet<ModuleName>>,
     all_cycles: &[Vec<ModuleName>],
@@ -373,6 +374,7 @@ fn build_lazy_eligible(
 
     let cycle_ctx = CycleDepsContext {
         import_graph,
+        implicit_parents,
         lazy_eligible: &lazy_eligible,
         passing_modules: &classified.passing_modules,
         cycle_children: &cycle_children,
@@ -542,8 +544,12 @@ impl LifeGuardAnalysis {
             .chain(&classified.failing_modules)
             .copied()
             .collect();
-        let (all_cycles, re_export_map) = rayon::join(
-            || collect_cycles(&import_graph, &source_modules),
+        let ((implicit_parents, all_cycles), re_export_map) = rayon::join(
+            || {
+                let implicit_parents = import_graph.implicit_parent_imports();
+                let cycles = collect_cycles(&import_graph, &implicit_parents, &source_modules);
+                (implicit_parents, cycles)
+            },
             || match re_exports {
                 ReExports::Whole(exports) => {
                     build_re_export_map(exports, &classified.failing_modules)
@@ -553,8 +559,13 @@ impl LifeGuardAnalysis {
                 }
             },
         );
-        let lazy_eligible =
-            build_lazy_eligible(&import_graph, &classified, &re_export_map, &all_cycles);
+        let lazy_eligible = build_lazy_eligible(
+            &import_graph,
+            &implicit_parents,
+            &classified,
+            &re_export_map,
+            &all_cycles,
+        );
 
         let verbose = options.verbose_output_path.is_some();
         let output = if verbose {
@@ -653,11 +664,12 @@ impl LifeGuardAnalysis {
 /// Collect import cycles as lists of module names, filtered to source modules only.
 fn collect_cycles(
     import_graph: &ImportGraph,
+    implicit_parents: &AHashMap<ModuleName, Vec<ModuleName>>,
     source_modules: &AHashSet<ModuleName>,
 ) -> Vec<Vec<ModuleName>> {
     import_graph
         .graph
-        .find_cycles()
+        .find_cycles(implicit_parents)
         .into_iter()
         .filter_map(|cycle| {
             let members: Vec<ModuleName> = import_graph
@@ -673,14 +685,16 @@ fn collect_cycles(
 /// Shared context for cycle dependency propagation.
 struct CycleDepsContext<'a> {
     import_graph: &'a ImportGraph,
+    /// Packages a module's imports run first; can close a cycle. May repeat direct imports.
+    implicit_parents: &'a AHashMap<ModuleName, Vec<ModuleName>>,
     lazy_eligible: &'a DashMap<ModuleName, SmallSet<ModuleName>>,
     passing_modules: &'a SmallSet<ModuleName>,
     cycle_children: &'a DashMap<ModuleName, Vec<ModuleName>>,
 }
 
 /// Add cycle dependencies to the lazy_eligible dict and propagate to child modules.
-/// For each module in a cycle, only its *direct imports* that are also in the cycle
-/// are added as lazy_eligible deps, rather than all cycle members.
+/// For each module in a cycle, only its direct and implicit parent imports that are also in
+/// the cycle are added as lazy_eligible deps, rather than all cycle members.
 /// Only passing modules are added to the lazy_eligible dict.
 ///
 /// Propagation to children is needed because CPython's `from X import Y` lazy_eligible check
@@ -691,11 +705,15 @@ fn add_cycle_deps(all_cycles: &[Vec<ModuleName>], ctx: &CycleDepsContext) {
         let cycle_set: AHashSet<ModuleName> = cycle_modules.iter().cloned().collect();
         for module_name in cycle_modules {
             if !ctx.passing_modules.contains(module_name) {
+                // A failing member always loads eagerly, but its children are checked on their
+                // own; keep them eager until it has run.
+                propagate_to_children(ctx, module_name, &SmallSet::from_iter([*module_name]));
                 continue;
             }
             let cycle_imports: SmallSet<ModuleName> = ctx
                 .import_graph
                 .get_imports(module_name)
+                .chain(ctx.implicit_parents.get(module_name).into_iter().flatten())
                 .filter(|m| *m != module_name && cycle_set.contains(m))
                 .cloned()
                 .collect();
@@ -705,19 +723,28 @@ fn add_cycle_deps(all_cycles: &[Vec<ModuleName>], ctx: &CycleDepsContext) {
                     .entry(*module_name)
                     .or_default()
                     .extend(cycle_imports.iter().cloned());
-
-                // Propagate to direct children of this cycle module
-                if let Some(children) = ctx.cycle_children.get(module_name) {
-                    for child in children.value() {
-                        if ctx.passing_modules.contains(child) {
-                            ctx.lazy_eligible
-                                .entry(*child)
-                                .or_default()
-                                .extend(cycle_imports.iter().cloned());
-                        }
-                    }
-                }
+                propagate_to_children(ctx, module_name, &cycle_imports);
             }
+        }
+    }
+}
+
+/// Give each passing direct child of a cycle member the member's deps. A child that is one of
+/// them gets the member instead: it cannot load before its package, and must not guard itself.
+fn propagate_to_children(
+    ctx: &CycleDepsContext,
+    module_name: &ModuleName,
+    deps: &SmallSet<ModuleName>,
+) {
+    let Some(children) = ctx.cycle_children.get(module_name) else {
+        return;
+    };
+    for child in children.value() {
+        if ctx.passing_modules.contains(child) {
+            ctx.lazy_eligible.entry(*child).or_default().extend(
+                deps.iter()
+                    .map(|dep| if dep == child { *module_name } else { *dep }),
+            );
         }
     }
 }
@@ -847,6 +874,7 @@ mod tests {
 
         let lazy_eligible = build_lazy_eligible(
             &import_graph,
+            &AHashMap::new(),
             &classified,
             &AHashMap::new(),
             &Vec::<Vec<ModuleName>>::new(),
@@ -887,6 +915,7 @@ mod tests {
 
         let lazy_eligible = build_lazy_eligible(
             &import_graph,
+            &AHashMap::new(),
             &classified,
             &AHashMap::new(),
             &Vec::<Vec<ModuleName>>::new(),
@@ -927,8 +956,13 @@ mod tests {
 
         let re_export_map = AHashMap::new();
         let all_cycles: Vec<Vec<ModuleName>> = vec![];
-        let lazy_eligible =
-            build_lazy_eligible(&import_graph, &classified, &re_export_map, &all_cycles);
+        let lazy_eligible = build_lazy_eligible(
+            &import_graph,
+            &AHashMap::new(),
+            &classified,
+            &re_export_map,
+            &all_cycles,
+        );
 
         let entry = lazy_eligible.get(&mn("safe")).unwrap();
         assert!(entry.contains(&mn("unsafe_mod")));
@@ -962,8 +996,13 @@ mod tests {
 
         let re_export_map = AHashMap::new();
         let all_cycles = vec![vec![a, b]];
-        let lazy_eligible =
-            build_lazy_eligible(&import_graph, &classified, &re_export_map, &all_cycles);
+        let lazy_eligible = build_lazy_eligible(
+            &import_graph,
+            &AHashMap::new(),
+            &classified,
+            &re_export_map,
+            &all_cycles,
+        );
 
         // a should have b as a cycle dep
         let a_deps = lazy_eligible.get(&a).unwrap();
@@ -996,8 +1035,13 @@ mod tests {
         classified.passing_modules.insert(a);
 
         let re_export_map = AHashMap::new();
-        let lazy_eligible =
-            build_lazy_eligible(&import_graph, &classified, &re_export_map, &[vec![a]]);
+        let lazy_eligible = build_lazy_eligible(
+            &import_graph,
+            &AHashMap::new(),
+            &classified,
+            &re_export_map,
+            &[vec![a]],
+        );
 
         let deps = lazy_eligible.get(&a).unwrap();
         assert!(

@@ -159,16 +159,35 @@ impl Graph {
         })
     }
 
-    /// Find cycles in the graph (for circular import detection)
+    /// Find cycles in the graph (for circular import detection), as if each key of `extra` also
+    /// had edges to its values, which are not kept. Edges with an endpoint that is not a node are
+    /// skipped.
     ///
     /// Finds non-trivial strongly-connected components in the graph; an SCC with more than one
     /// node contains at least one cycle.
     /// Note that this doesn't find every possible cycle, but it does find every node that is part
     /// of at least one cycle.
-    pub fn find_cycles(&self) -> Vec<Cycle> {
-        let mut sccs = kosaraju_scc(&self.graph);
-        sccs.retain(|scc| scc.len() > 1);
-        sccs
+    pub fn find_cycles(&self, extra: &AHashMap<ModuleName, Vec<ModuleName>>) -> Vec<Cycle> {
+        if extra.is_empty() {
+            return multi_node_sccs(&self.graph);
+        }
+        let extra_edges: usize = extra.values().map(Vec::len).sum();
+        let mut graph = DiGraph::with_capacity(
+            self.graph.node_count(),
+            self.graph.edge_count() + extra_edges,
+        );
+        graph.clone_from(&self.graph);
+        for (from, tos) in extra {
+            let Some(&p) = self.nodes.get(from) else {
+                continue;
+            };
+            for to in tos {
+                if let Some(&q) = self.nodes.get(to) {
+                    graph.add_edge(p, q, ());
+                }
+            }
+        }
+        multi_node_sccs(&graph)
     }
 
     /// Get an iterator over all module names in a cycle.
@@ -177,10 +196,20 @@ impl Graph {
     }
 }
 
+fn multi_node_sccs(graph: &DiGraph<ModuleName, ()>) -> Vec<Cycle> {
+    let mut sccs = kosaraju_scc(graph);
+    sccs.retain(|scc| scc.len() > 1);
+    sccs
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_lib::*;
+
+    fn all_cycles(g: &Graph) -> Vec<Cycle> {
+        g.find_cycles(&AHashMap::new())
+    }
 
     fn assert_deps(g: &Graph, module: &str, expected: Vec<&str>) {
         let m = ModuleName::from_str(module);
@@ -241,7 +270,7 @@ mod tests {
         g.add_node(&c);
         g.add_edge(&a, &b);
         g.add_edge(&b, &c);
-        assert!(g.find_cycles().is_empty());
+        assert!(all_cycles(&g).is_empty());
     }
 
     #[test]
@@ -267,7 +296,7 @@ mod tests {
         g.add_edge(&c, &e);
         g.add_edge(&d, &e);
         g.add_edge(&e, &c);
-        let cycles = g.find_cycles();
+        let cycles = all_cycles(&g);
         assert_eq!(cycles.len(), 2);
     }
 
@@ -296,7 +325,7 @@ mod tests {
         g.add_edge(&a, &b);
         g.add_edge(&b, &c);
         g.add_edge(&c, &a);
-        let cycles = g.find_cycles();
+        let cycles = all_cycles(&g);
         assert_eq!(cycles.len(), 1);
         let mut names = g.cycle_names(&cycles[0]).collect::<Vec<_>>();
         names.sort();
@@ -311,7 +340,7 @@ mod tests {
         g.add_edge(&a, &a);
         // Self-loops form a trivial SCC (len 1), filtered out by find_cycles
         assert!(
-            g.find_cycles().is_empty(),
+            all_cycles(&g).is_empty(),
             "self-loop should not be reported as a cycle"
         );
     }
@@ -360,6 +389,25 @@ mod tests {
     }
 
     #[test]
+    fn test_find_cycles_with_extra_edges() {
+        let mut g = Graph::new();
+        let a = ModuleName::from_str("a");
+        let b = ModuleName::from_str("b");
+        g.add_node(&a);
+        g.add_node(&b);
+        g.add_edge(&a, &b);
+        let mut extra = AHashMap::new();
+        extra.insert(b, vec![a, ModuleName::from_str("unknown")]);
+        extra.insert(ModuleName::from_str("unknown"), vec![a]);
+        let cycles = g.find_cycles(&extra);
+        assert_eq!(cycles.len(), 1);
+        let mut names = g.cycle_names(&cycles[0]).collect::<Vec<_>>();
+        names.sort();
+        assert_eq!(names, vec![a, b]);
+        assert!(all_cycles(&g).is_empty(), "extra edges should not be kept");
+    }
+
+    #[test]
     fn test_find_cycles_deep_chain_on_small_stack() {
         let n = 100_000;
         let names: Vec<ModuleName> = (0..n)
@@ -375,7 +423,7 @@ mod tests {
         // Rayon workers get the default 2 MiB stack.
         let cycles = std::thread::Builder::new()
             .stack_size(2 << 20)
-            .spawn(move || g.find_cycles())
+            .spawn(move || all_cycles(&g))
             .unwrap()
             .join()
             .unwrap();
