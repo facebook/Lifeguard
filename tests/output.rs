@@ -952,6 +952,35 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_implicit_import_guards_one_chain_not_every_path() {
+        // Two routes reach the leaf; guarding either loads it, so the longer stays lazy.
+        let consumer = r#"
+            import pkg.direct
+            import pkg.long_a
+            x = pkg.leaf.AmeLocation
+        "#;
+        let modules = vec![
+            ("pkg.__init__", ""),
+            ("pkg.leaf", "class AmeLocation:\n    pass"),
+            ("pkg.direct", "import pkg.leaf"),
+            ("pkg.long_a", "import pkg.long_b"),
+            ("pkg.long_b", "import pkg.leaf"),
+            ("consumer", consumer),
+        ];
+
+        let result = run_lifeguard_analysis(&modules);
+
+        assert!(
+            has_lazy_eligible_dep(&result, "pkg.direct", "pkg.leaf"),
+            "the one-hop route should be guarded"
+        );
+        assert!(
+            !has_lazy_eligible_dep(&result, "pkg.long_a", "pkg.leaf"),
+            "pkg.long_a is only on the longer route and should stay lazy"
+        );
+    }
+
     fn run_lifeguard_analysis_verbose(modules: &Vec<(&str, &str)>) -> LifeGuardAnalysis {
         run_lifeguard_analysis_with(modules, &verbose_test_options())
     }

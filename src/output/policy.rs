@@ -23,7 +23,6 @@ use crate::exports::Exports;
 use crate::hasher::AHashMap;
 use crate::hasher::AHashSet;
 use crate::hasher::HashMapExt;
-use crate::hasher::HashSetExt;
 use crate::imports::ImportGraph;
 use crate::module_safety::SafetyResult;
 use crate::output::LifeGuardOutput;
@@ -391,28 +390,47 @@ fn build_lazy_eligible(
         }
     }
     time("  Propagating implicit imports", || {
-        propagate_implicit_imports_along_paths(import_graph, classified, &lazy_eligible)
+        propagate_implicit_imports_along_chains(import_graph, classified, &lazy_eligible)
     });
 
     lazy_eligible
 }
 
-/// All modules that transitively import `target` (excluding `target` itself).
-fn transitive_importers(import_graph: &ImportGraph, target: &ModuleName) -> AHashSet<ModuleName> {
-    let mut seen = AHashSet::new();
-    let mut stack: Vec<ModuleName> = import_graph.get_importers(target).copied().collect();
-    while let Some(m) = stack.pop() {
-        if seen.insert(m) {
-            stack.extend(import_graph.get_importers(&m).copied());
+/// Hops from each transitive importer of `target` down to its direct importers, at zero.
+/// Stops once every consumer is reached: chains only descend, so nothing beyond is on one.
+fn hops_to_target(
+    import_graph: &ImportGraph,
+    target: &ModuleName,
+    consumers: &[ModuleName],
+) -> AHashMap<ModuleName, u32> {
+    let mut unreached: AHashSet<ModuleName> = consumers.iter().copied().collect();
+    let mut hops: AHashMap<ModuleName, u32> = AHashMap::new();
+    let mut frontier: Vec<ModuleName> = import_graph.get_importers(target).copied().collect();
+    let mut depth = 0;
+    while !frontier.is_empty() && !unreached.is_empty() {
+        let mut next = Vec::new();
+        for m in frontier {
+            if hops.contains_key(&m) {
+                continue;
+            }
+            hops.insert(m, depth);
+            unreached.remove(&m);
+            next.extend(
+                import_graph
+                    .get_importers(&m)
+                    .filter(|n| !hops.contains_key(*n))
+                    .copied(),
+            );
         }
+        frontier = next;
+        depth += 1;
     }
-    seen
+    hops
 }
 
-/// Guard every passing module on an import path `consumer -> ... -> target` with
-/// `target`, forcing the path eager until `target` is loaded.
-/// `target` guards itself: without that the provider's own import of it stays lazy.
-fn propagate_implicit_imports_along_paths(
+/// Guard the passing modules on one chain `consumer -> ... -> target` with `target`.
+/// `target` guards itself: without that the last hop stays lazy.
+fn propagate_implicit_imports_along_chains(
     import_graph: &ImportGraph,
     classified: &ClassifiedModules,
     lazy_eligible: &DashMap<ModuleName, SmallSet<ModuleName>>,
@@ -436,34 +454,56 @@ fn propagate_implicit_imports_along_paths(
             if classified.passing_modules.contains(target) {
                 lazy_eligible.entry(*target).or_default().insert(*target);
             }
-            let ancestors = transitive_importers(import_graph, target);
-            // Walk forward from the consumers within `target`'s ancestors,
-            // guarding each passing module reached.
-            let mut visited = AHashSet::new();
-            let mut stack: Vec<ModuleName> = consumers
+            // A consumer that imports `target` itself needs no chain.
+            let needs_chain: Vec<ModuleName> = consumers
                 .iter()
-                .flat_map(|c| {
-                    import_graph
-                        .get_imports(c)
-                        .filter(|m| ancestors.contains(*m))
-                        .copied()
-                })
+                .filter(|c| !import_graph.get_imports(c).any(|m| m == target))
+                .copied()
                 .collect();
-            while let Some(m) = stack.pop() {
-                if !visited.insert(m) {
-                    continue;
-                }
-                if classified.passing_modules.contains(&m) {
-                    lazy_eligible.entry(m).or_default().insert(*target);
-                }
-                stack.extend(
-                    import_graph
-                        .get_imports(&m)
-                        .filter(|n| ancestors.contains(*n))
-                        .copied(),
-                );
+            let hops = hops_to_target(import_graph, target, &needs_chain);
+            for consumer in &needs_chain {
+                guard_shortest_chain(ChainGuard {
+                    import_graph,
+                    hops: &hops,
+                    consumer,
+                    target,
+                    classified,
+                    lazy_eligible,
+                });
             }
         });
+}
+
+struct ChainGuard<'a> {
+    import_graph: &'a ImportGraph,
+    hops: &'a AHashMap<ModuleName, u32>,
+    consumer: &'a ModuleName,
+    target: &'a ModuleName,
+    classified: &'a ClassifiedModules,
+    lazy_eligible: &'a DashMap<ModuleName, SmallSet<ModuleName>>,
+}
+
+/// Each step lands exactly one hop lower, so the walk reaches a direct importer of
+/// `target` even through a cycle. Ties go to the lower module name, for reproducibility.
+fn guard_shortest_chain(ctx: ChainGuard<'_>) {
+    let mut current = *ctx.consumer;
+    while let Some((hops, next)) = ctx
+        .import_graph
+        .get_imports(&current)
+        .filter_map(|m| ctx.hops.get(m).map(|hops| (*hops, *m)))
+        .min()
+    {
+        if ctx.classified.passing_modules.contains(&next) {
+            ctx.lazy_eligible
+                .entry(next)
+                .or_default()
+                .insert(*ctx.target);
+        }
+        if hops == 0 {
+            return;
+        }
+        current = next;
+    }
 }
 
 impl LifeGuardAnalysis {
@@ -778,6 +818,95 @@ mod tests {
     }
 
     // ---- build_lazy_eligible / cycle propagation tests ----
+
+    #[test]
+    fn test_shortest_chain_descends_through_an_import_cycle() {
+        // `a` and `b` import each other on the way to `leaf`.
+        let mut import_graph = ImportGraph::new();
+        for m in ["consumer", "a", "b", "leaf"] {
+            import_graph.graph.add_node(&mn(m));
+        }
+        import_graph.graph.add_edge(&mn("consumer"), &mn("a"));
+        import_graph.graph.add_edge(&mn("a"), &mn("b"));
+        import_graph.graph.add_edge(&mn("b"), &mn("a"));
+        import_graph.graph.add_edge(&mn("b"), &mn("leaf"));
+
+        let mut classified = ClassifiedModules {
+            failing_modules: SmallSet::new(),
+            passing_modules: SmallSet::new(),
+            load_imports_eagerly: SmallSet::new(),
+            implicit_imports: AHashMap::new(),
+            aggregated_errors: AHashMap::new(),
+        };
+        for m in ["consumer", "a", "b", "leaf"] {
+            classified.passing_modules.insert(mn(m));
+        }
+        classified
+            .implicit_imports
+            .insert(mn("consumer"), vec![mn("leaf")]);
+
+        let lazy_eligible = build_lazy_eligible(
+            &import_graph,
+            &classified,
+            &AHashMap::new(),
+            &Vec::<Vec<ModuleName>>::new(),
+        );
+
+        for m in ["a", "b"] {
+            assert!(
+                lazy_eligible.get(&mn(m)).unwrap().contains(&mn("leaf")),
+                "{m} is on the chain to leaf and should be guarded"
+            );
+        }
+    }
+
+    #[test]
+    fn test_consumer_that_imports_the_target_guards_no_route() {
+        // `consumer` imports `leaf` itself, so `route` needs no guard on its behalf.
+        let mut import_graph = ImportGraph::new();
+        for m in ["consumer", "route", "leaf"] {
+            import_graph.graph.add_node(&mn(m));
+        }
+        import_graph.graph.add_edge(&mn("consumer"), &mn("leaf"));
+        import_graph.graph.add_edge(&mn("consumer"), &mn("route"));
+        import_graph.graph.add_edge(&mn("route"), &mn("leaf"));
+
+        let mut classified = ClassifiedModules {
+            failing_modules: SmallSet::new(),
+            passing_modules: SmallSet::new(),
+            load_imports_eagerly: SmallSet::new(),
+            implicit_imports: AHashMap::new(),
+            aggregated_errors: AHashMap::new(),
+        };
+        for m in ["consumer", "route", "leaf"] {
+            classified.passing_modules.insert(mn(m));
+        }
+        classified
+            .implicit_imports
+            .insert(mn("consumer"), vec![mn("leaf")]);
+
+        let lazy_eligible = build_lazy_eligible(
+            &import_graph,
+            &classified,
+            &AHashMap::new(),
+            &Vec::<Vec<ModuleName>>::new(),
+        );
+
+        assert!(
+            lazy_eligible
+                .get(&mn("leaf"))
+                .unwrap()
+                .contains(&mn("leaf")),
+            "the target still guards itself so its first import is eager"
+        );
+        assert!(
+            !lazy_eligible
+                .get(&mn("route"))
+                .unwrap()
+                .contains(&mn("leaf")),
+            "route is a second way in and should stay lazy"
+        );
+    }
 
     #[test]
     fn test_build_lazy_eligible_basic() {
