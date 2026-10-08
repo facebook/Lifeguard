@@ -55,7 +55,7 @@ use crate::pyrefly::sys_info::PythonVersion;
 use crate::resolution::ResolutionOutcome;
 use crate::resolution::resolve_program;
 use crate::resolution::unqualified_index_key;
-use crate::runner::check_main_module;
+use crate::runner::warn_unknown_main_module;
 use crate::safety_resolver::DecoratorVerdictMap;
 use crate::safety_resolver::SafetyResolver;
 use crate::traits::ModuleNameExt;
@@ -174,10 +174,12 @@ impl ReduceWorkspace {
         self.artifact_module_count
     }
 
-    /// [`crate::runner::check_main_module`] against the merged module set.
-    pub fn check_main_module(&self, main_module: Option<ModuleName>) -> anyhow::Result<()> {
-        check_main_module(main_module, |name| {
-            self.cache.modules.iter().any(|module| module.name == name)
+    /// [`crate::runner::warn_unknown_main_module`] against the modules the caches provide;
+    /// a graph-only stub was never analyzed, so it does not count.
+    pub fn warn_unknown_main_module(&self, main_module: Option<ModuleName>) {
+        warn_unknown_main_module(main_module, |name| {
+            !self.graph_only_stubs.contains(&name)
+                && self.cache.modules.iter().any(|module| module.name == name)
         })
     }
 

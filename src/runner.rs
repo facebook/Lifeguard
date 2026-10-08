@@ -61,15 +61,34 @@ pub fn check_main_module(
     main_module: Option<ModuleName>,
     known: impl Fn(ModuleName) -> bool,
 ) -> Result<()> {
-    let Some(name) = main_module.filter(|name| !name.as_str().is_empty()) else {
-        return Ok(());
-    };
-    anyhow::ensure!(
-        known(name),
-        "--main-module {name} names no module in this build; pass \"\" for a binary whose \
-         entry file is imported normally (buck `main_function`)",
-    );
+    if let Some(name) = unknown_main_module(main_module, known) {
+        anyhow::bail!(
+            "--main-module {name} names no module in this build; pass \"\" for a binary whose \
+             entry file is imported normally (buck `main_function`)",
+        );
+    }
     Ok(())
+}
+
+/// [`check_main_module`] for a build, which has to finish: there an unknown name is usually an
+/// entry file outside what was analyzed (a test runner with no cache, a thrift `-remote` script).
+pub fn warn_unknown_main_module(
+    main_module: Option<ModuleName>,
+    known: impl Fn(ModuleName) -> bool,
+) {
+    if let Some(name) = unknown_main_module(main_module, known) {
+        // Not `warn!`: the analyzer's subscriber drops everything below ERROR unless RUST_LOG is set.
+        eprintln!(
+            "warning: --main-module {name} names no analyzed module; pruning every `__main__` guard"
+        );
+    }
+}
+
+fn unknown_main_module(
+    main_module: Option<ModuleName>,
+    known: impl Fn(ModuleName) -> bool,
+) -> Option<ModuleName> {
+    main_module.filter(|&name| !name.as_str().is_empty() && !known(name))
 }
 
 pub fn to_ruff_version(v: &PythonVersion) -> ruff_python_ast::PythonVersion {

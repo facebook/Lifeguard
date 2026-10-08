@@ -84,7 +84,7 @@ pub fn run(args: AnalyzeBinaryArgs) -> Result<()> {
         workspace.module_count()
     );
     let main_module = args.main_module.as_deref().map(ModuleName::from_str);
-    workspace.check_main_module(main_module)?;
+    workspace.warn_unknown_main_module(main_module);
     let resolved = time("Resolving cross-library facts", || {
         workspace.resolve(main_module)
     });
