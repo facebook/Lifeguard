@@ -16,11 +16,14 @@ use petgraph::Direction;
 use petgraph::algo::kosaraju_scc;
 use petgraph::graph::DiGraph;
 use petgraph::graph::NodeIndex;
+use petgraph::visit::EdgeFiltered;
+use petgraph::visit::EdgeRef;
 use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
 
 use crate::hasher::AHashMap;
 use crate::hasher::HashMapExt;
+use crate::traits::ModuleNameExt;
 
 /// Sequence of nodes that form a cycle in the graph.
 pub type Cycle = Vec<NodeIndex>;
@@ -161,7 +164,7 @@ impl Graph {
 
     /// Find cycles in the graph (for circular import detection), as if each key of `extra` also
     /// had edges to its values, which are not kept. Edges with an endpoint that is not a node are
-    /// skipped.
+    /// skipped, and so are edges to a module's own package: CPython runs that package first.
     ///
     /// Finds non-trivial strongly-connected components in the graph; an SCC with more than one
     /// node contains at least one cycle.
@@ -197,7 +200,10 @@ impl Graph {
 }
 
 fn multi_node_sccs(graph: &DiGraph<ModuleName, ()>) -> Vec<Cycle> {
-    let mut sccs = kosaraju_scc(graph);
+    let kept = EdgeFiltered::from_fn(graph, |edge| {
+        !graph[edge.target()].is_ancestor_of(&graph[edge.source()])
+    });
+    let mut sccs = kosaraju_scc(&kept);
     sccs.retain(|scc| scc.len() > 1);
     sccs
 }
@@ -405,6 +411,27 @@ mod tests {
         names.sort();
         assert_eq!(names, vec![a, b]);
         assert!(all_cycles(&g).is_empty(), "extra edges should not be kept");
+    }
+
+    #[test]
+    fn test_edge_to_own_package_closes_no_cycle() {
+        let mut g = Graph::new();
+        let pkg = ModuleName::from_str("pkg");
+        let sub = ModuleName::from_str("pkg.sub");
+        let other = ModuleName::from_str("other");
+        g.add_node(&pkg);
+        g.add_node(&sub);
+        g.add_node(&other);
+        g.add_edge(&pkg, &sub);
+        g.add_edge(&sub, &pkg);
+        assert!(all_cycles(&g).is_empty());
+        g.add_edge(&sub, &other);
+        g.add_edge(&other, &pkg);
+        assert_eq!(
+            all_cycles(&g).len(),
+            1,
+            "pkg -> pkg.sub -> other -> pkg is a cycle"
+        );
     }
 
     #[test]

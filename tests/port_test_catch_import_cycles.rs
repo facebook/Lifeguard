@@ -190,10 +190,8 @@ mod tests {
     }
 
     // Port of test_dont_catch_import_cycle_in_submodule_import
-    // In the original analyzer, `import dir.sub` from dir/__init__.py does not form a cycle. In
-    // Lifeguard, importing a submodule implicitly adds the parent to the import graph, creating a
-    // parent<->child cycle. This is a known behavioral difference; the cycle is harmless because
-    // CPython handles parent/child imports specially.
+    // `import dir.sub.sibling` records an edge from dir.sub to its own package dir, which CPython
+    // always runs first, so cycle detection leaves it out and dir <-> dir.sub is not a cycle.
     #[test]
     fn test_submodule_import_parent_child_cycle() {
         let dir = r#"
@@ -221,9 +219,8 @@ mod tests {
         );
         assert_failing(&result, vec![]);
 
-        // Lifeguard detects a parent<->child cycle here (dir <-> dir.sub)
-        assert_eq!(get_cycle_count(&result), 1);
-        assert!(has_lazy_eligible_dep(&result, "dir", "dir.sub"));
+        assert_eq!(get_cycle_count(&result), 0);
+        assert!(has_no_cycle_deps(&result, "dir"));
     }
 
     #[test]
