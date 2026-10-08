@@ -602,6 +602,43 @@ a = importlib.import_module("sys")
     }
 
     #[test]
+    fn test_method_on_builtin_class_resolves_from_the_stub() {
+        // Without reading the stub, a method reached through its class looks
+        // unresolved, and that makes every subclass instantiated at module
+        // scope unsafe too.
+        let code = r#"
+class C:
+    def __new__(cls):
+        return object.__new__(cls)
+
+c = C()
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_mutating_builtin_method_called_through_its_class() {
+        // The stub declares `builtins.list.append` mutating. Reached through the
+        // class rather than an instance it is still that method, so the stub's
+        // effect governs instead of the call reading as an unknown name.
+        let code = r#"
+xs = []
+list.append(xs, 1)  # E: prohibited-call
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_builtin_method_inherited_from_object_through_its_class() {
+        // `int` declares `__new__` but not `__init__`; the one it runs is
+        // `object.__init__`, which the stub declares effect-free.
+        let code = r#"
+x = int.__init__(0)
+"#;
+        check(code);
+    }
+
+    #[test]
     fn test_aliased_function_call() {
         let code = r#"
 def f(x): pass

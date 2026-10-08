@@ -7,6 +7,7 @@
 
 use pyrefly_python::module_name::ModuleName;
 use ruff_python_ast::Expr;
+use ruff_python_ast::ExprAttribute;
 use ruff_python_ast::name::Name;
 use ruff_text_size::Ranged;
 
@@ -42,6 +43,14 @@ impl<'a> Builtins<'a> {
         self.builtins.classes.contains(&key)
     }
 
+    fn effects_for(&self, qname: &ModuleName) -> Option<&'a [Effect]> {
+        self.builtins
+            .module_effects
+            .effects
+            .get(qname)
+            .map(Vec::as_slice)
+    }
+
     // Check that `name` is in the effects table, and calls `pred` over the set of effects for
     // `name` if so. If `name` is a class, checks for any of `name`, `name.__init__` and
     // `name.__new__`.
@@ -49,49 +58,80 @@ impl<'a> Builtins<'a> {
     // init methods if it is.
     fn check_call_effects<F>(&self, name: &Name, pred: F) -> bool
     where
-        F: Fn(&Vec<Effect>) -> bool,
+        F: Fn(&[Effect]) -> bool,
     {
-        let effects = &self.builtins.module_effects.effects;
         let qname = ModuleName::builtins().append(name);
-        let check = |n: &ModuleName| effects.get(n).is_some_and(&pred);
+        let check = |n: &ModuleName| self.effects_for(n).is_some_and(&pred);
         if check(&qname) {
             true
         } else if self.is_class(name) {
-            let k_new = qname.append_str("__new__");
-            let k_init = qname.append_str("__init__");
-            check(&k_new) || check(&k_init)
+            check(&qname.append_str("__new__")) || check(&qname.append_str("__init__"))
         } else {
             false
         }
     }
 
     fn is_prohibited_call(&self, name: &Name) -> bool {
-        self.check_call_effects(name, |effs| {
-            effs.iter().any(|e| e.kind.is_unsafe_stub_effect())
-        })
+        self.check_call_effects(name, unsafe_stub_effects)
+    }
+
+    /// The `builtins` entry a call target names.
+    fn qualified_name(&self, func: &Expr) -> Option<ModuleName> {
+        // Bare name, e.g. `len`
+        if let Some(name) = func.as_var_name() {
+            return Some(ModuleName::builtins().append(&name));
+        }
+        // Method call, e.g. `list.append`
+        let Expr::Attribute(ExprAttribute { value, attr, .. }) = func else {
+            return None;
+        };
+        let base = value.as_var_name()?;
+        self.is_class(&base)
+            .then(|| ModuleName::builtins().append(&base).append(&attr.id))
     }
 
     pub fn call_effect(&self, func: &Expr) -> Option<Effect> {
-        // A builtin function should be an undotted name
-        let fname = func.as_var_name()?;
-        let qname = ModuleName::builtins().append(&fname);
-        if self.is_prohibited_call(&fname) {
-            Some(Effect::new(
-                EffectKind::ProhibitedFunctionCall,
-                qname,
-                func.range(),
-            ))
-        } else {
-            // Safe builtin or unknown call (treated as safe): emit no effect.
-            None
-        }
+        let qname = self.qualified_name(func)?;
+        let prohibited = match func.as_var_name() {
+            // A bare class name is a constructor call, so its `__new__` and
+            // `__init__` count too.
+            Some(name) => self.is_prohibited_call(&name),
+            None => self.effects_for(&qname).is_some_and(unsafe_stub_effects),
+        };
+        // Safe builtin or unknown call (treated as safe): emit no effect.
+        prohibited.then(|| Effect::new(EffectKind::ProhibitedFunctionCall, qname, func.range()))
     }
 
     /// Returns true if the given function name is a known builtin (safe or unsafe).
+    /// Callers must consult [`Self::call_effect`] first: a method the stub
+    /// declares is "known" whether or not it mutates.
     pub fn is_known_builtin(&self, func: &Expr) -> bool {
-        func.as_var_name()
-            .is_some_and(|fname| self.contains(&fname) || self.is_prohibited_call(&fname))
+        match func.as_var_name() {
+            Some(name) => self.contains(&name) || self.is_prohibited_call(&name),
+            None => self.declares_method(func),
+        }
     }
+
+    /// Whether the stub declares this `<builtin class>.<method>`, either on the
+    /// class or on `object`, which every builtin class inherits from.
+    fn declares_method(&self, func: &Expr) -> bool {
+        let Some(qname) = self.qualified_name(func) else {
+            return false;
+        };
+        let Some((class, method)) = qname.split_attr() else {
+            return false;
+        };
+        self.builtins.definitions.get(&class, &method).is_some()
+            || self
+                .builtins
+                .definitions
+                .get(&ModuleName::builtins().append_str("object"), &method)
+                .is_some()
+    }
+}
+
+fn unsafe_stub_effects(effs: &[Effect]) -> bool {
+    effs.iter().any(|e| e.kind.is_unsafe_stub_effect())
 }
 
 #[cfg(test)]
