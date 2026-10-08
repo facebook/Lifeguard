@@ -2222,6 +2222,45 @@ mod tests {
     }
 
     #[test]
+    fn test_reduce_keeps_unqualified_unknown_object_despite_global_safe_name() {
+        let cache = LibraryCache {
+            modules: vec![
+                cached_module("app")
+                    .errors(vec![cached_error(ErrorKind::UnknownObject, "f")])
+                    .function_safety([unsafe_missing_dep("wrapper", "dep.safe")])
+                    .build(),
+                cached_module("dep")
+                    .function_safety([safe("f"), safe("safe")])
+                    .build(),
+            ],
+            exports: empty_exports(),
+            ..Default::default()
+        };
+
+        let resolved = resolve(cache);
+
+        let app = resolved
+            .find_module(mn("app"))
+            .expect("app module should be present");
+        let CachedSafety::Ok(safety) = &app.safety else {
+            panic!("app should have cached module safety");
+        };
+        assert!(
+            safety
+                .errors
+                .iter()
+                .any(|e| e.kind == ErrorKind::UnknownObject && e.metadata.as_str() == "f"),
+            "an unresolved object must not clear on a same-named safe function: it is an \
+             attribute access, and the name is the object, not a proven callee",
+        );
+        assert_eq!(
+            app.function_safety.get("wrapper").map(|i| i.verdict),
+            Some(FunctionSafety::Safe),
+            "the unrelated promotion should still run and trigger global error clearing",
+        );
+    }
+
+    #[test]
     fn test_reduce_keeps_unqualified_unknown_decorator_despite_global_safe_name() {
         let cache = LibraryCache {
             modules: vec![

@@ -359,10 +359,13 @@ impl<'a> SafetyResolver<'a> {
             // The returned wrapper runs at decoration time too.
             (_, true) => self.is_decorator_call_verified_safe(func_name),
             // Nothing bound the callee, so do not treat the name as qualified.
+            // `UnknownObject` belongs here for the same reason, and is not even a
+            // call: it is an attribute access on a name the map could not resolve.
             (
                 ErrorKind::UnknownFunctionCall
                 | ErrorKind::UnknownMethodCall
-                | ErrorKind::UnknownDecoratorCall,
+                | ErrorKind::UnknownDecoratorCall
+                | ErrorKind::UnknownObject,
                 false,
             ) => self.is_call_verified_safe_no_unqualified(func_name),
             (_, false) => self.is_call_verified_safe(func_name),
