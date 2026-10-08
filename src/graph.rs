@@ -13,7 +13,7 @@
 //! see `csr_graph::CsrGraph`.
 
 use petgraph::Direction;
-use petgraph::algo::tarjan_scc;
+use petgraph::algo::kosaraju_scc;
 use petgraph::graph::DiGraph;
 use petgraph::graph::NodeIndex;
 use pyrefly_python::module_name::ModuleName;
@@ -166,7 +166,7 @@ impl Graph {
     /// Note that this doesn't find every possible cycle, but it does find every node that is part
     /// of at least one cycle.
     pub fn find_cycles(&self) -> Vec<Cycle> {
-        let mut sccs = tarjan_scc(&self.graph);
+        let mut sccs = kosaraju_scc(&self.graph);
         sccs.retain(|scc| scc.len() > 1);
         sccs
     }
@@ -357,5 +357,29 @@ mod tests {
         let ix1 = g.add_node(&a);
         let ix2 = g.add_node(&a);
         assert_eq!(ix1, ix2, "adding same node twice should return same index");
+    }
+
+    #[test]
+    fn test_find_cycles_deep_chain_on_small_stack() {
+        let n = 100_000;
+        let names: Vec<ModuleName> = (0..n)
+            .map(|i| ModuleName::from_str(&format!("m{i}")))
+            .collect();
+        let mut g = Graph::with_capacity(n, n);
+        for name in &names {
+            g.add_node(name);
+        }
+        for i in 0..n {
+            g.add_edge(&names[i], &names[(i + 1) % n]);
+        }
+        // Rayon workers get the default 2 MiB stack.
+        let cycles = std::thread::Builder::new()
+            .stack_size(2 << 20)
+            .spawn(move || g.find_cycles())
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(cycles.len(), 1);
+        assert_eq!(cycles[0].len(), n);
     }
 }
