@@ -201,6 +201,17 @@ impl Cursor {
     pub fn current_function_scope(&self) -> Option<ModuleName> {
         self.function_scope((0..self.scopes.len()).rev())
     }
+
+    /// Get the name of the nearest (innermost) enclosing class scope.
+    ///
+    /// Zero-argument `super()` binds to the class whose body the method is
+    /// defined in, so this is the class its MRO walk starts above.
+    pub fn enclosing_class_scope(&self) -> Option<ModuleName> {
+        (0..self.scopes.len())
+            .rev()
+            .find(|&i| self.scopes[i].kind == ScopeKind::Class)
+            .map(|i| self.qualified_scopes[i])
+    }
 }
 
 #[cfg(test)]

@@ -293,6 +293,110 @@ def f(x):
         check(code);
     }
 
+    /// `super().m()` dispatches to the ancestor's `m`, so a safe ancestor
+    /// leaves the caller safe.
+    #[test]
+    fn test_super_method_call_resolves_to_base() {
+        let code = r#"
+class A:
+    def m(self):
+        pass
+
+class B(A):
+    def m(self):
+        super().m()
+
+b = B()
+b.m()
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_super_method_call_to_unsafe_base() {
+        let code = r#"
+import foo
+
+class A:
+    def m(self):
+        foo.x = 42
+
+class B(A):
+    def m(self):
+        super().m()
+
+b = B()
+b.m()  # E: unsafe-method-call
+"#;
+        check(code);
+    }
+
+    /// `super()` starts above the calling class, so an override that only
+    /// chains upwards must not resolve back to itself and read as recursive.
+    #[test]
+    fn test_super_method_call_skips_own_definition() {
+        let code = r#"
+import foo
+
+class A:
+    def m(self):
+        pass
+
+class B(A):
+    def m(self):
+        super().m()
+
+class C(B):
+    def m(self):
+        foo.x = 42
+
+b = B()
+b.m()
+"#;
+        check(code);
+    }
+
+    /// The base is external, so no ancestor definition is available to
+    /// analyze. Unresolved calls are safe.
+    #[test]
+    fn test_super_method_call_to_unknown_base() {
+        let code = r#"
+from external import Base
+
+class B(Base):
+    def m(self):
+        super().m()
+
+b = B()
+b.m()
+"#;
+        check(code);
+    }
+
+    /// A `super()` call two levels up skips every intermediate definition
+    /// that does not define the method.
+    #[test]
+    fn test_super_method_call_through_mro() {
+        let code = r#"
+import foo
+
+class A:
+    def m(self):
+        foo.x = 42
+
+class B(A):
+    pass
+
+class C(B):
+    def m(self):
+        super().m()
+
+c = C()
+c.m()  # E: unsafe-method-call
+"#;
+        check(code);
+    }
+
     #[test]
     fn test_method_call_on_literal_safe() {
         // A method call on a freshly-constructed builtin literal is safe.

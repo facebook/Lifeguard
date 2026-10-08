@@ -56,6 +56,9 @@ pub enum EffectKind {
     MethodCall,
     // Calling a method through the class, e.g. `C.method(obj, ...)`
     UnboundMethodCall,
+    // Calling a method through zero-argument `super()`. Named on the class the
+    // call is written in; the callee comes from that class's MRO, above it.
+    SuperMethodCall,
     // Calling a method on a function parameter.
     ParamMethodCall,
     // Calling a locally-defined function.
@@ -134,6 +137,7 @@ impl EffectKind {
                 | Self::ImportedDecoratorCall
                 | Self::MethodCall
                 | Self::UnboundMethodCall
+                | Self::SuperMethodCall
         )
     }
 

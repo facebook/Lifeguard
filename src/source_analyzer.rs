@@ -686,6 +686,13 @@ impl<'a> SourceAnalyzer<'a> {
             }
         }
 
+        if let Some(fname) = self.super_call_method(func) {
+            let data = call_data.into_effect_data();
+            let eff = Effect::with_data(EffectKind::SuperMethodCall, fname, range, data);
+            self.add_effect(eff, output);
+            return;
+        }
+
         if let Some(fname) = self.chained_call_method(func) {
             output.called_functions.insert(fname);
             let data = call_data.into_effect_data();
@@ -734,6 +741,27 @@ impl<'a> SourceAnalyzer<'a> {
             return None;
         };
         Some(self.call_result_class(&receiver.func)?.append_str(&attr.id))
+    }
+
+    /// The method a zero-argument `super().m()` call dispatches to, named on
+    /// the class the call is written in. Only the whole-project view can walk
+    /// that class's MRO to find the definition that actually runs.
+    fn super_call_method(&self, func: &Expr) -> Option<ModuleName> {
+        let Expr::Attribute(ExprAttribute { value, attr, .. }) = func else {
+            return None;
+        };
+        let Expr::Call(receiver) = value.as_ref() else {
+            return None;
+        };
+        // `super(C, obj)` names its own starting class, so it needs no help
+        // from the enclosing scope.
+        if !receiver.arguments.args.is_empty() {
+            return None;
+        }
+        if self.call_target_name(&receiver.func)? != ModuleName::builtins().append_str("super") {
+            return None;
+        }
+        Some(self.cursor.enclosing_class_scope()?.append_str(&attr.id))
     }
 
     /// The class a call to `func` returns: `func` itself when it names a class,

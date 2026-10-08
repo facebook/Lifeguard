@@ -1065,7 +1065,7 @@ fn iter_callees<'a>(
 ) -> impl Iterator<Item = (ModuleName, usize)> + 'a {
     let is_method = matches!(
         eff.kind,
-        EffectKind::MethodCall | EffectKind::UnboundMethodCall
+        EffectKind::MethodCall | EffectKind::UnboundMethodCall | EffectKind::SuperMethodCall
     );
     let is_constructor = !is_method && classes.contains(&eff.name);
 
@@ -1081,12 +1081,16 @@ fn iter_callees<'a>(
     // one or two offsets; empty for constructor calls.
     let (offset, extra_offset) = match eff.kind {
         _ if is_constructor => (None, None),
-        EffectKind::MethodCall => match method_receiver_offset(&eff.name, classes, true) {
-            Some(offset) => (Some(offset), None),
-            // Unknown kind (e.g. a builtin / third-party class): assume an
-            // implicit receiver, as bound calls usually have one.
-            None => (Some(1), None),
-        },
+        // A `super()` call is bound, and its recorded name is the caller's own
+        // method, whose signature an override mirrors.
+        EffectKind::MethodCall | EffectKind::SuperMethodCall => {
+            match method_receiver_offset(&eff.name, classes, true) {
+                Some(offset) => (Some(offset), None),
+                // Unknown kind (e.g. a builtin / third-party class): assume an
+                // implicit receiver, as bound calls usually have one.
+                None => (Some(1), None),
+            }
+        }
         EffectKind::UnboundMethodCall => match method_receiver_offset(&eff.name, classes, false) {
             Some(offset) => (Some(offset), None),
             // Unknown kind: the receiver may be explicit (0) or implicit (1), so
@@ -1342,11 +1346,43 @@ impl ProjectInfo {
         if !self.classes.contains(&class) {
             return None;
         }
-        c3_linearize(&self.class_bases, &class)
+        self.resolve_inherited(&class, method.as_str())
+    }
+
+    /// The nearest ancestor's definition of `method`, skipping `class`'s own.
+    fn resolve_inherited(&self, class: &ModuleName, method: &str) -> Option<ModuleName> {
+        // Classes without bases inherit nothing, and c3_linearize allocates a
+        // memo per call, so skipping them keeps this off the hot path.
+        if !self.class_bases.contains_key(class) {
+            return None;
+        }
+        c3_linearize(&self.class_bases, class)
             .into_iter()
             .skip(1)
-            .map(|base| base.append_str(method.as_str()))
+            .map(|base| base.append_str(method))
             .find(|candidate| self.contains_callable(candidate))
+    }
+
+    /// The definition a zero-argument `super().m()` runs. `name` is `m` on the
+    /// class the call is written in, and dispatch starts above that class.
+    fn resolve_super_call(&self, name: &ModuleName) -> Option<ModuleName> {
+        let (class, method) = name.split_attr()?;
+        self.resolve_inherited(&class, method.as_str())
+    }
+
+    /// The callee a call effect dispatches to, or `None` when the project view
+    /// cannot name one. A `super()` call resolves through the MRO rather than
+    /// the name it was recorded under, which would be the caller itself.
+    fn call_graph_target(
+        &self,
+        eff: &Effect,
+        is_node: impl Fn(&ModuleName) -> bool,
+    ) -> Option<ModuleName> {
+        match eff.kind {
+            EffectKind::SuperMethodCall => self.resolve_super_call(&eff.name),
+            _ if is_node(&eff.name) => Some(eff.name),
+            _ => self.resolve_callable(&eff.name),
+        }
     }
 
     pub fn collect_errors_from_project(
@@ -1687,11 +1723,7 @@ impl ProjectInfo {
                         //
                         // Only consulted when the direct lookup missed, which is
                         // the only case resolution can help.
-                        let target = if indexes.contains_key(&e.name) {
-                            Some(e.name)
-                        } else {
-                            self.resolve_callable(&e.name)
-                        };
+                        let target = self.call_graph_target(e, |name| indexes.contains_key(name));
                         let callee = target
                             .and_then(|target| indexes.get(&target))
                             .map(|&to| (from, to));
@@ -2054,8 +2086,17 @@ impl ProjectInfo {
         publish_safety_error: bool,
     ) -> Result<bool> {
         let written = call.func;
-        if let Some(resolved) = self.resolve_callable(&call.func) {
-            call.func = resolved;
+        match call.effect.kind {
+            EffectKind::SuperMethodCall => match self.resolve_super_call(&call.func) {
+                Some(resolved) => call.func = resolved,
+                // No ancestor defines the method, so there is no body to run.
+                None => return Ok(true),
+            },
+            _ => {
+                if let Some(resolved) = self.resolve_callable(&call.func) {
+                    call.func = resolved;
+                }
+            }
         }
         if !self.can_resolve_call(call, state) {
             if publish_safety_error {

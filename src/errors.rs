@@ -278,6 +278,7 @@ impl SafetyError {
             }
             EffectKind::MethodCall
             | EffectKind::UnboundMethodCall
+            | EffectKind::SuperMethodCall
             | EffectKind::ImportedTypeAttr => ErrorKind::UnsafeMethodCall,
             _ => return Err(anyhow!("Unexpected call effect {:?}", eff)),
         };
