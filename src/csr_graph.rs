@@ -225,17 +225,12 @@ impl CsrGraph {
 
 #[cfg(test)]
 mod tests {
-    use super::CsrGraph;
+    use petgraph::algo::tarjan_scc;
+    use petgraph::graph::DiGraph;
+    use petgraph::graph::NodeIndex;
 
-    /// Indices of nodes flagged as being in a cycle.
-    fn cyclic(n: usize, edges: &[(u32, u32)]) -> Vec<usize> {
-        CsrGraph::from_edges(n, edges)
-            .nodes_in_cycles()
-            .into_iter()
-            .enumerate()
-            .filter_map(|(i, c)| c.then_some(i))
-            .collect()
-    }
+    use super::CsrGraph;
+    use crate::test_lib::TestRng;
 
     #[test]
     fn neighbors_reflect_edges() {
@@ -249,74 +244,15 @@ mod tests {
     }
 
     #[test]
-    fn acyclic_chain_has_no_cycles() {
-        // 0 -> 1 -> 2
-        assert_eq!(cyclic(3, &[(0, 1), (1, 2)]), Vec::<usize>::new());
-    }
-
-    #[test]
     fn self_loop_is_a_cycle() {
-        // 1 -> 1
-        assert_eq!(cyclic(3, &[(0, 1), (1, 1)]), vec![1]);
-    }
-
-    #[test]
-    fn three_node_cycle_marks_all() {
-        // 0 -> 1 -> 2 -> 0
-        assert_eq!(cyclic(3, &[(0, 1), (1, 2), (2, 0)]), vec![0, 1, 2]);
-    }
-
-    #[test]
-    fn only_scc_members_are_marked() {
-        // cycle 0<->1, plus 2 -> 0 (reaches the cycle but is not in it),
-        // and 1 -> 3 (downstream, not in the cycle).
-        assert_eq!(cyclic(4, &[(0, 1), (1, 0), (2, 0), (1, 3)]), vec![0, 1]);
-    }
-
-    #[test]
-    fn two_disjoint_cycles() {
-        // 0<->1 and 2->3->4->2; node 5 isolated.
-        let edges = [(0, 1), (1, 0), (2, 3), (3, 4), (4, 2)];
-        assert_eq!(cyclic(6, &edges), vec![0, 1, 2, 3, 4]);
-    }
-
-    #[test]
-    fn nested_scc_with_chord() {
-        // SCC over {0,1,2}: 0->1->2->0 with chords 0->2 and 2->1.
-        let edges = [(0, 1), (1, 2), (2, 0), (0, 2), (2, 1)];
-        assert_eq!(cyclic(3, &edges), vec![0, 1, 2]);
-    }
-
-    #[test]
-    fn duplicate_edges_are_handled() {
-        // Parallel edges must not corrupt the adjacency or the SCC result.
-        let edges = [(0, 1), (0, 1), (1, 0), (1, 0)];
-        assert_eq!(cyclic(2, &edges), vec![0, 1]);
-    }
-
-    #[test]
-    fn empty_graph() {
-        assert_eq!(cyclic(0, &[]), Vec::<usize>::new());
-        assert_eq!(cyclic(3, &[]), Vec::<usize>::new());
+        // Unlike a self-import in `graph::Graph`, recursion is a cycle here.
+        let in_cycle = CsrGraph::from_edges(3, &[(0, 1), (1, 1)]).nodes_in_cycles();
+        assert_eq!(in_cycle, vec![false, true, false]);
     }
 
     /// Levels of an `n`-node graph with no node settled.
     fn levels(n: usize, edges: &[(u32, u32)]) -> Vec<Vec<u32>> {
         CsrGraph::from_edges(n, edges).dependency_levels(&vec![false; n])
-    }
-
-    #[test]
-    fn isolated_nodes_share_the_first_level() {
-        assert_eq!(levels(3, &[]), vec![vec![0, 1, 2]]);
-    }
-
-    #[test]
-    fn a_chain_levels_callees_before_callers() {
-        // 0 -> 1 -> 2: node 2 has no out-edges, so it must come first.
-        assert_eq!(
-            levels(3, &[(0, 1), (1, 2)]),
-            vec![vec![2], vec![1], vec![0]]
-        );
     }
 
     #[test]
@@ -340,12 +276,6 @@ mod tests {
     }
 
     #[test]
-    fn every_node_settled_yields_no_levels() {
-        let graph = CsrGraph::from_edges(2, &[(0, 1)]);
-        assert!(graph.dependency_levels(&[true, true]).is_empty());
-    }
-
-    #[test]
     fn a_cycle_among_unsettled_nodes_terminates() {
         // Callers are expected to settle cycle members first. If they do not, the
         // back edge is ignored rather than looping, and every node still appears
@@ -357,23 +287,132 @@ mod tests {
     }
 
     #[test]
-    fn levels_place_every_out_neighbor_earlier() {
-        // The defining property, over a graph with a diamond and a shared tail.
-        let edges = [(0, 1), (0, 2), (1, 3), (2, 3), (3, 4), (5, 0)];
-        let levels = levels(6, &edges);
+    fn deep_graphs_do_not_overflow_the_stack() {
+        let n = 100_000;
+        let chain: Vec<(u32, u32)> = (1..n as u32).map(|v| (v - 1, v)).collect();
+        assert_eq!(levels(n, &chain).len(), n);
 
-        let mut level_of = [usize::MAX; 6];
+        let mut ring = chain;
+        ring.push((n as u32 - 1, 0));
+        assert!(
+            CsrGraph::from_edges(n, &ring)
+                .nodes_in_cycles()
+                .iter()
+                .all(|&c| c)
+        );
+    }
+
+    const ROUNDS: usize = 2000;
+
+    /// Up to 12 nodes with self-loops and duplicate edges allowed.
+    fn random_graph(rng: &mut TestRng) -> (usize, Vec<(u32, u32)>) {
+        let n = rng.below(13);
+        if n == 0 {
+            return (0, Vec::new());
+        }
+        let edges = (0..rng.below(3 * n + 1))
+            .map(|_| (rng.below(n) as u32, rng.below(n) as u32))
+            .collect();
+        (n, edges)
+    }
+
+    /// A random DAG whose edges all point from a higher `rank` to a lower one.
+    fn random_dag(rng: &mut TestRng) -> (usize, Vec<(u32, u32)>, Vec<usize>) {
+        let (n, edges) = random_graph(rng);
+        let mut rank: Vec<usize> = (0..n).collect();
+        for i in (1..n).rev() {
+            rank.swap(i, rng.below(i + 1));
+        }
+        let edges = edges
+            .into_iter()
+            .filter(|(u, v)| u != v)
+            .map(|(u, v)| {
+                if rank[u as usize] > rank[v as usize] {
+                    (u, v)
+                } else {
+                    (v, u)
+                }
+            })
+            .collect();
+        (n, edges, rank)
+    }
+
+    fn random_settled(rng: &mut TestRng, n: usize) -> Vec<bool> {
+        (0..n).map(|_| rng.below(4) == 0).collect()
+    }
+
+    /// Each node's level index, asserting no level is empty and no node repeats.
+    fn level_of(n: usize, levels: &[Vec<u32>]) -> Vec<Option<usize>> {
+        let mut level_of = vec![None; n];
         for (index, level) in levels.iter().enumerate() {
+            assert!(!level.is_empty(), "level {index} is empty");
             for &node in level {
-                level_of[node as usize] = index;
+                assert!(
+                    level_of[node as usize].replace(index).is_none(),
+                    "node {node} appears more than once",
+                );
             }
         }
-        for (from, to) in edges {
-            assert!(
-                level_of[to as usize] < level_of[from as usize],
-                "edge {from}->{to} must point at an earlier level, got {} -> {}",
-                level_of[from as usize],
-                level_of[to as usize],
+        level_of
+    }
+
+    #[test]
+    fn nodes_in_cycles_matches_petgraph_scc() {
+        let mut rng = TestRng::new(0xC5C);
+        for round in 0..ROUNDS {
+            let (n, edges) = random_graph(&mut rng);
+            let mut reference = DiGraph::<(), ()>::with_capacity(n, edges.len());
+            for _ in 0..n {
+                reference.add_node(());
+            }
+            for &(u, v) in &edges {
+                reference.add_edge(NodeIndex::new(u as usize), NodeIndex::new(v as usize), ());
+            }
+            let mut expected = vec![false; n];
+            for scc in tarjan_scc(&reference) {
+                let cyclic = scc.len() > 1 || reference.contains_edge(scc[0], scc[0]);
+                for node in scc {
+                    expected[node.index()] = cyclic;
+                }
+            }
+
+            assert_eq!(
+                CsrGraph::from_edges(n, &edges).nodes_in_cycles(),
+                expected,
+                "round {round}, {n} nodes, edges {edges:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn dag_levels_are_longest_paths_to_a_sink() {
+        let mut rng = TestRng::new(0xDA6);
+        for round in 0..ROUNDS {
+            let (n, edges, rank) = random_dag(&mut rng);
+            let settled = random_settled(&mut rng, n);
+
+            let mut by_rank: Vec<usize> = (0..n).collect();
+            by_rank.sort_by_key(|&v| rank[v]);
+            let mut expected: Vec<Option<usize>> = vec![None; n];
+            for v in by_rank {
+                if settled[v] {
+                    continue;
+                }
+                let level = edges
+                    .iter()
+                    .filter(|&&(u, _)| u as usize == v)
+                    .filter_map(|&(_, w)| expected[w as usize])
+                    .map(|l| l + 1)
+                    .max()
+                    .unwrap_or(0);
+                expected[v] = Some(level);
+            }
+
+            let levels = CsrGraph::from_edges(n, &edges).dependency_levels(&settled);
+            assert_eq!(
+                level_of(n, &levels),
+                expected,
+                "round {round}, {n} nodes, edges {edges:?}, settled {settled:?}",
             );
         }
     }
