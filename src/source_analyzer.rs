@@ -6,6 +6,7 @@
  */
 
 use std::cell::OnceCell;
+use std::cell::RefCell;
 
 use pyrefly_python::dunder;
 use pyrefly_python::module_name::ModuleName;
@@ -68,6 +69,7 @@ use crate::exceptions::TryHandler;
 use crate::exports::Attribute;
 use crate::exports::Exports;
 use crate::format;
+use crate::hasher::AHashMap;
 use crate::hasher::AHashSet;
 use crate::hasher::HashSetExt;
 use crate::imports::ImportGraph;
@@ -299,6 +301,8 @@ pub struct SourceAnalyzer<'a> {
     cursor: Cursor,
     /// Module names probed as `sys.modules` keys within this module.
     sys_modules_probed_keys: OnceCell<AHashSet<ModuleName>>,
+    /// Perf only: `chain_step` results, so a repeated step skips interning `module.attr`.
+    step_cache: RefCell<AHashMap<ModuleName, AHashMap<Name, (ModuleName, bool)>>>,
 }
 
 impl<'a> SourceAnalyzer<'a> {
@@ -437,7 +441,10 @@ impl<'a> SourceAnalyzer<'a> {
         output: &mut ModuleEffects,
     ) {
         for statement in &func_def.body {
-            self.check_function_statement(statement, output)
+            self.check_function_statement(statement, output);
+            // `visit` reaches each nested statement's outermost expressions but not the
+            // expressions inside them, so `check_function_expr` recurses for those.
+            statement.visit(&mut |e: &Expr| self.check_function_expr(e, output));
         }
     }
 
@@ -449,42 +456,67 @@ impl<'a> SourceAnalyzer<'a> {
             Stmt::ImportFrom(x) => {
                 self.import_from(x, output);
             }
-            Stmt::Expr(x) => {
-                if let Expr::Attribute(e) = &*x.value {
-                    let obj = &*e.value;
-                    let attr = &e.attr;
-                    if let Some(called_import_to_add) = self.check_function_attribute(obj, attr) {
-                        output.add_called_import(called_import_to_add, &self.cursor.scope());
-                    }
-                }
-            }
-            Stmt::Assign(x) => {
-                if let Expr::Attribute(e) = &*x.value {
-                    let obj = &*e.value;
-                    let attr = &e.attr;
-                    if let Some(called_import_to_add) = self.check_function_attribute(obj, attr) {
-                        output.add_called_import(called_import_to_add, &self.cursor.scope())
-                    }
-                }
-            }
             _ => {}
         }
         x.recurse(&mut |c| self.check_function_statement(c, output));
     }
 
-    fn check_function_attribute(&self, obj: &Expr, attr: &Identifier) -> Option<ModuleName> {
-        let res = self.info.resolve(&self.cursor, obj)?;
-        if res.is_import() {
-            for attr_key in [Some(attr), None] {
-                let attribute_module = get_import_chain_string(obj, attr_key, &res.name);
-                if let Some(full_module) = res.qualify_import_access(&attribute_module) {
-                    if self.import_graph.contains(&full_module) {
-                        return Some(full_module);
-                    }
-                }
-            }
+    /// Record every submodule an expression reaches through an imported name.
+    fn check_function_expr(&self, x: &Expr, output: &mut ModuleEffects) {
+        let Expr::Attribute(e) = x else {
+            x.recurse(&mut |c| self.check_function_expr(c, output));
+            return;
         };
-        None
+        if let Some((_, Some(called_import_to_add))) = self.imported_chain(x) {
+            output.add_called_import(called_import_to_add, &self.cursor.scope());
+        }
+        self.check_chain_base(&e.value, output);
+    }
+
+    /// Skip the rest of a dotted chain; resume under it, where a call or subscript can
+    /// hold expressions.
+    fn check_chain_base(&self, x: &Expr, output: &mut ModuleEffects) {
+        match x {
+            Expr::Attribute(e) => self.check_chain_base(&e.value, output),
+            Expr::Name(_) => {}
+            _ => self.check_function_expr(x, output),
+        }
+    }
+
+    /// The module a chain rooted at an import names, and its longest prefix that is a
+    /// real module; importing `a.b.c` imports `a.b`.
+    fn imported_chain(&self, x: &Expr) -> Option<(ModuleName, Option<ModuleName>)> {
+        let Expr::Attribute(ExprAttribute { value, attr, .. }) = x else {
+            let res = self
+                .info
+                .resolve(&self.cursor, x)
+                .filter(|res| res.is_import())?;
+            let base = res.qualify_import_access(&ModuleName::from_name(&res.name))?;
+            return Some((base, self.import_graph.contains(&base).then_some(base)));
+        };
+        let (current, longest) = self.imported_chain(value)?;
+        let (next, is_module) = self.chain_step(current, &attr.id);
+        Some((next, if is_module { Some(next) } else { longest }))
+    }
+
+    /// `module.attr` as a module name, and whether the graph has it.
+    fn chain_step(&self, current: ModuleName, link: &Name) -> (ModuleName, bool) {
+        if let Some(hit) = self
+            .step_cache
+            .borrow()
+            .get(&current)
+            .and_then(|links| links.get(link))
+        {
+            return *hit;
+        }
+        let next = current.append(link);
+        let step = (next, self.import_graph.contains(&next));
+        self.step_cache
+            .borrow_mut()
+            .entry(current)
+            .or_default()
+            .insert(link.clone(), step);
+        step
     }
 
     fn unknown_function_name(&self, func: &Expr, output: &mut ModuleEffects) {
@@ -2052,6 +2084,7 @@ impl<'a> Analyzer<'a> for SourceAnalyzer<'a> {
             import_graph,
             cursor: Cursor::new(),
             sys_modules_probed_keys: OnceCell::new(),
+            step_cache: RefCell::default(),
         }
     }
 

@@ -188,6 +188,40 @@ mod tests {
     }
 
     #[test]
+    fn test_catch_implicit_import_in_call_argument_inside_function() {
+        let __main__ = r#"
+            import waldo
+            import foo
+
+            def womp_womp():
+                raise ValueError(foo.bar.Bar)
+
+            def main():
+                pass
+
+            if __name__ == "__main__":
+                main()
+        "#;
+        let waldo = r#"
+            import foo.bar
+        "#;
+        let foo_bar = r#"
+            Bar = "Bar"
+        "#;
+        let foo_init = r#"
+        "#;
+        let modules = vec![
+            ("__main__", __main__),
+            ("waldo", waldo),
+            ("foo.bar", foo_bar),
+            ("foo.__init__", foo_init),
+        ];
+
+        let implicit_imports = vec![("__main__", vec!["foo.bar"])];
+        check_errors_and_implicit_imports(modules, implicit_imports);
+    }
+
+    #[test]
     fn test_no_error_explicit_import_function_in_other_file() {
         let __main__ = r#"
             from qux import resolver
