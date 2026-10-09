@@ -371,6 +371,13 @@ impl GlobalAnalysisState {
                 if let Some(mut safety_entry) = safety_map.get_mut(&module) {
                     if let SafetyResult::Ok(module_safety) = safety_entry.value_mut() {
                         if let Some(mutated) = project.resolve_cached_mutated_params_for(&fqn) {
+                            if method_receiver_offset(&fqn, &project.classes, false) == Some(1)
+                                && mutated
+                                    .iter()
+                                    .any(|param| param.position == ParamPosition::Positional(0))
+                            {
+                                info.verdict.insert(FunctionSafety::UnsafeIfImported);
+                            }
                             info.mutated_params = mutated;
                         }
                         module_safety
@@ -2399,10 +2406,52 @@ impl ProjectInfo {
     }
 
     fn check_call_params(&self, call: &Call, state: &GlobalAnalysisState) {
-        if self.call_mutates_imported_arg(call.effect) {
+        if self.call_mutates_imported_arg(call.effect)
+            || self
+                .class_receiver_mutation_module(call.effect)
+                .is_some_and(|module| module != *call.caller_module)
+        {
             let err = SafetyError::new_from_effect(ErrorKind::ImportedVarArgument, call.effect);
             state.add_error_to_module(call.caller_module, err);
         }
+    }
+
+    fn class_receiver_mutation_module(&self, effect: &Effect) -> Option<ModuleName> {
+        let defining = self.defining_name(&effect.name);
+        let (receiver, _) = defining.split_attr()?;
+        let class = self.classes.lookup(&receiver)?;
+        let callee = resolve_definition(
+            &defining,
+            &self.functions,
+            &self.classes,
+            &self.re_exports,
+            &self.class_bases,
+        )?;
+        if method_receiver_offset(&callee, &self.classes, false) != Some(1) {
+            return None;
+        }
+        let module = self.functions.get(&callee)?;
+        let first = self
+            .analysis_map
+            .get(module)?
+            .definitions
+            .param_names
+            .get(&callee)?
+            .first()?;
+        if !self
+            .mutated_params
+            .get(&callee)?
+            .contains(&ModuleName::from_name(first))
+        {
+            return None;
+        }
+        let (scope, _) = receiver.split_attr()?;
+        self.analysis_map
+            .get(&class.module)?
+            .definitions
+            .eager_scopes
+            .contains(&scope)
+            .then_some(class.module)
     }
 
     fn check_call_body(&self, call: &mut Call, state: &GlobalAnalysisState) -> Result<bool> {
@@ -2443,6 +2492,15 @@ impl ProjectInfo {
                     state.mark_unsafe(&func);
                     ret = false;
                 } else if eff.kind.is_runnable() {
+                    if let Some(receiver_module) = self.class_receiver_mutation_module(eff) {
+                        if receiver_module == *call_module {
+                            state.mark_unsafe_if_imported(&func);
+                            ret &= !is_cross_module_call;
+                        } else {
+                            state.mark_unsafe(&func);
+                            ret = false;
+                        }
+                    }
                     // If we pass an imported variable to a function that mutates it
                     // (directly or transitively), mark the current function as unsafe.
                     if self.call_mutates_imported_arg(eff) {

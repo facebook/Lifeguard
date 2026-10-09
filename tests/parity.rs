@@ -995,4 +995,41 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn imported_classmethod_receiver_mutation_is_unsafe() {
+        let origin = "registry = {}\nclass C:\n @classmethod\n def configure(cls, value):\n  cls.settings = value\ndef configure():\n C.configure(1)\n";
+        for call in [
+            "origin.C.configure(1)",
+            "origin.C.configure(origin.registry)",
+            "facade.C.configure(1)",
+            "origin.C().configure(1)",
+            "def run():\n facade.C.configure(1)\nrun()",
+            "origin.configure()",
+        ] {
+            let app = format!("import origin\nimport facade\n{call}\n");
+            let modules = vec![
+                ("origin", origin),
+                ("facade", "from origin import C\n"),
+                ("app", &app),
+            ];
+            assert_failing(&run_lifeguard_analysis(&modules), vec!["app"]);
+            for (count, difference) in path_differences(&modules, &[1, 2, 3]) {
+                assert!(
+                    difference.starts_with("aggregated errors:"),
+                    "{count} shards: {difference}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn classmethod_receiver_mutation_keeps_local_classes_safe() {
+        let origin = "class C:\n @classmethod\n def configure(cls, value):\n  cls.settings = value\n @staticmethod\n def pure(value):\n  return value\ndef create():\n class Fresh:\n  @classmethod\n  def configure(cls):\n   cls.settings = 1\n Fresh.configure()\n";
+        let app = "import origin\nfrom origin import C\nclass Local(C):\n pass\nLocal.configure(1)\nC.pure(1)\norigin.create()\n";
+        assert_passing(
+            &run_lifeguard_analysis(&vec![("origin", origin), ("app", app)]),
+            vec!["origin", "app"],
+        );
+    }
 }
