@@ -5,6 +5,17 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+//! Indexed wire format for library caches.
+//!
+//! The encoder is *canonical*: equal in-memory caches must produce byte-identical
+//! files. Buck keys downstream reduce actions on artifact content, so unstable bytes
+//! would defeat cache reuse for an unchanged library.
+//!
+//! Canonicality is the encoder's responsibility, not the caller's: every
+//! order-insensitive collection is sorted here rather than assumed sorted.
+//! Order-*sensitive* sequences are the exception and are encoded verbatim — see
+//! `CachedModule::mutation_candidates` and `class_bases`, both noted below.
+
 use std::fs::File;
 use std::io::BufWriter;
 use std::io::Write;
@@ -137,6 +148,8 @@ struct WireReExport {
     imported_attr: String,
 }
 
+// Ids are lexicographic ranks over the list of names, so sorting
+// a `Vec<NameId>` sorts by module name.
 struct NameTable {
     names: Vec<ModuleName>,
     ids: AHashMap<ModuleName, NameId>,
@@ -173,7 +186,8 @@ impl NameTable {
             unique.len() <= NameId::MAX as usize,
             "cache contains too many distinct module names"
         );
-        let names: Vec<ModuleName> = unique.into_iter().collect();
+        let mut names: Vec<ModuleName> = unique.into_iter().collect();
+        names.par_sort_unstable();
         let ids = names
             .iter()
             .enumerate()
@@ -188,6 +202,22 @@ impl NameTable {
             .get(&name)
             .expect("all cached module names should be in the wire name table")
     }
+
+    /// Encode an order-insensitive name collection as ids in canonical order.
+    /// Duplicates are preserved, so a multiset encodes faithfully.
+    fn encode_sorted<'a>(&self, names: impl IntoIterator<Item = &'a ModuleName>) -> Vec<NameId> {
+        let mut ids: Vec<NameId> = names.into_iter().map(|name| self.id(*name)).collect();
+        ids.sort_unstable();
+        ids
+    }
+}
+
+/// Errors in canonical order. `SafetyError`'s `Ord` is a total order over all of
+/// its fields, so this does not depend on how errors were accumulated.
+fn sorted_errors(errors: &[SafetyError]) -> Vec<SafetyError> {
+    let mut errors = errors.to_vec();
+    errors.sort_unstable();
+    errors
 }
 
 fn collect_module_names(module: &CachedModule, names: &mut AHashSet<ModuleName>) {
@@ -228,25 +258,42 @@ fn collect_module_names(module: &CachedModule, names: &mut AHashSet<ModuleName>)
 
 pub(crate) fn write(cache: &LibraryCache, path: &Path) -> Result<()> {
     let table = NameTable::build(cache)?;
-    let module_blobs: Vec<Vec<u8>> = cache
+
+    // Modules are written in name order, with the encoded blob breaking ties.
+    //
+    // Name alone would not be a total order: nothing in `LibraryCache`
+    // prevents two records naming one logical module.
+    // NOTE: `merge_dep_caches` coalesces such records, but canonicality here
+    // should not rest on a caller's invariant.
+    let mut module_blobs: Vec<(NameId, Vec<u8>)> = cache
         .modules
         .par_iter()
-        .map(|module| postcard::to_allocvec(&WireModule::encode(module, &table)))
-        .collect::<std::result::Result<_, _>>()?;
-    let exports = cache
+        .map(|module| {
+            let blob = postcard::to_allocvec(&WireModule::encode(module, &table))?;
+            Ok((table.id(module.name), blob))
+        })
+        .collect::<Result<_>>()?;
+    module_blobs.par_sort_unstable();
+
+    let mut exports: Vec<WireReExport> = cache
         .exports
         .re_exports
         .iter()
         .map(|re_export| WireReExport::encode(re_export, &table.ids))
         .collect();
-    let return_types: Vec<(NameId, NameId)> = cache
+    exports.sort_unstable_by(|a, b| a.sort_key().cmp(&b.sort_key()));
+
+    let mut return_types: Vec<(NameId, NameId)> = cache
         .exports
         .return_types
         .iter()
         .map(|rt| (table.id(rt.function), table.id(rt.class)))
         .collect();
+    return_types.sort_unstable();
 
-    let class_bases = cache
+    // A class's base list is declaration order, which C3 depends on, so only the
+    // outer sequence is sorted; whole tuples keep the order total across libraries.
+    let mut class_bases: Vec<(NameId, Vec<NameId>)> = cache
         .class_bases
         .iter()
         .map(|(class, bases)| {
@@ -256,23 +303,38 @@ pub(crate) fn write(cache: &LibraryCache, path: &Path) -> Result<()> {
             )
         })
         .collect();
-    let constructor_callees = cache
+    class_bases.sort_unstable();
+
+    // The map phase collects these in parallel, so the sequence arrives in
+    // nondeterministic order. `extra` is an order-insensitive callee set, so it
+    // is sorted too rather than left to whichever library contributed first.
+    let mut constructor_callees: Vec<(NameId, Option<NameId>, u8, Vec<NameId>)> = cache
         .constructor_callees
         .iter()
         .map(|(class, recorded)| {
+            let mut extra: Vec<NameId> = recorded.extra.iter().map(|c| table.id(*c)).collect();
+            extra.sort_unstable();
             (
                 table.id(*class),
                 recorded.metaclass.map(|metaclass| table.id(metaclass)),
                 recorded.mask,
-                recorded.extra.iter().map(|c| table.id(*c)).collect(),
+                extra,
             )
         })
         .collect();
-    let class_properties: Vec<(NameId, Vec<String>)> = cache
+    constructor_callees.sort_unstable();
+
+    // Property names within a class are order-insensitive, so both levels sort.
+    let mut class_properties: Vec<(NameId, Vec<String>)> = cache
         .class_properties
         .iter()
-        .map(|(class, properties)| (table.id(*class), properties.clone()))
+        .map(|(class, properties)| {
+            let mut properties = properties.clone();
+            properties.sort_unstable();
+            (table.id(*class), properties)
+        })
         .collect();
+    class_properties.sort_unstable();
 
     let header = WireHeader {
         names: table.names,
@@ -289,7 +351,7 @@ pub(crate) fn write(cache: &LibraryCache, path: &Path) -> Result<()> {
     write_len(&mut writer, header_bytes.len())?;
     writer.write_all(&header_bytes)?;
     write_len(&mut writer, module_blobs.len())?;
-    for blob in module_blobs {
+    for (_, blob) in module_blobs {
         write_len(&mut writer, blob.len())?;
         writer.write_all(&blob)?;
     }
@@ -430,36 +492,28 @@ fn decode_name_set(names: &[ModuleName], ids: Vec<NameId>) -> Result<AHashSet<Mo
 
 impl WireModule {
     fn encode(module: &CachedModule, table: &NameTable) -> Self {
+        let mut function_safety: Vec<(&String, &FunctionSafetyInfo)> =
+            module.function_safety.iter().collect();
+        function_safety.sort_unstable_by_key(|(name, _)| *name);
+
+        let mut property_candidates: Vec<&PropertyCandidate> =
+            module.property_candidates.iter().collect();
+        property_candidates.sort_unstable();
+
         Self {
             name: table.id(module.name),
             safety: WireSafety::encode(&module.safety, table),
-            imports: module.imports.iter().map(|name| table.id(*name)).collect(),
-            missing_imports: module
-                .missing_imports
-                .iter()
-                .map(|name| table.id(*name))
-                .collect(),
-            ambiguous_imports: module
-                .ambiguous_imports
-                .iter()
-                .map(|name| table.id(*name))
-                .collect(),
-            side_effect_imports: module
-                .side_effect_imports
-                .iter()
-                .map(|name| table.id(*name))
-                .collect(),
-            main_guard_imports: module
-                .main_guard
-                .imports()
-                .iter()
-                .map(|name| table.id(*name))
-                .collect(),
-            function_safety: module
-                .function_safety
-                .iter()
+            imports: table.encode_sorted(&module.imports),
+            missing_imports: table.encode_sorted(&module.missing_imports),
+            ambiguous_imports: table.encode_sorted(&module.ambiguous_imports),
+            side_effect_imports: table.encode_sorted(&module.side_effect_imports),
+            main_guard_imports: table.encode_sorted(module.main_guard.imports()),
+            function_safety: function_safety
+                .into_iter()
                 .map(|(name, info)| (name.clone(), WireFunctionSafetyInfo::encode(info, table)))
                 .collect(),
+            // Not sorted: `apply_mutation_candidates` observes verdict writes
+            // from earlier candidates, so this sequence is order-sensitive.
             mutation_candidates: module
                 .mutation_candidates
                 .iter()
@@ -467,9 +521,8 @@ impl WireModule {
                 .collect(),
             // Sorted: unlike mutation candidates, property candidates are resolved
             // independently, so no order carries meaning.
-            property_candidates: module
-                .property_candidates
-                .iter()
+            property_candidates: property_candidates
+                .into_iter()
                 .map(|candidate| WirePropertyCandidate::encode(candidate, table))
                 .collect(),
         }
@@ -526,13 +579,12 @@ impl WireSafety {
     fn encode(safety: &CachedSafety, table: &NameTable) -> Self {
         match safety {
             CachedSafety::Ok(safety) => Self::Ok {
-                errors: safety.errors.clone(),
-                force_imports_eager_overrides: safety.force_imports_eager_overrides.clone(),
-                implicit_imports: safety
-                    .implicit_imports
-                    .iter()
-                    .map(|name| table.id(*name))
-                    .collect(),
+                // Errors are consumed as multisets (deduped for clearing, counted
+                // for reporting), so sorting is canonicalization. Duplicates are
+                // kept: `--explain` reports a repeated error's count.
+                errors: sorted_errors(&safety.errors),
+                force_imports_eager_overrides: sorted_errors(&safety.force_imports_eager_overrides),
+                implicit_imports: table.encode_sorted(&safety.implicit_imports),
             },
             CachedSafety::AnalysisError { message } => Self::AnalysisError {
                 message: message.clone(),
@@ -558,21 +610,20 @@ impl WireSafety {
 
 impl WireFunctionSafetyInfo {
     fn encode(info: &FunctionSafetyInfo, table: &NameTable) -> Self {
+        let mut mutated_params: Vec<WireMutatedParam> = info
+            .mutated_params
+            .iter()
+            .map(|param| WireMutatedParam {
+                name: table.id(param.name),
+                position: param.position,
+            })
+            .collect();
+        mutated_params.sort_unstable_by_key(|param| param.name);
+
         Self {
             verdict: info.verdict,
-            missing_dep_callees: info
-                .missing_dep_callees
-                .iter()
-                .map(|name| table.id(*name))
-                .collect(),
-            mutated_params: info
-                .mutated_params
-                .iter()
-                .map(|param| WireMutatedParam {
-                    name: table.id(param.name),
-                    position: param.position,
-                })
-                .collect(),
+            missing_dep_callees: table.encode_sorted(&info.missing_dep_callees),
+            mutated_params,
         }
     }
 
@@ -611,12 +662,9 @@ impl WireMutationCandidate {
             from_main_guard: candidate.from_main_guard,
             imported_args: WireImportedArgs {
                 unsafe_arg_indices: candidate.imported_args.unsafe_arg_indices,
-                unsafe_keyword_names: candidate
-                    .imported_args
-                    .unsafe_keyword_names
-                    .iter()
-                    .map(|name| table.id(*name))
-                    .collect(),
+                // Read only through `has_unsafe_keyword`, so this is a set.
+                unsafe_keyword_names: table
+                    .encode_sorted(&candidate.imported_args.unsafe_keyword_names),
                 has_unsafe_kwargs_expansion: candidate.imported_args.has_unsafe_kwargs_expansion,
                 unsafe_args_expansion_min: candidate.imported_args.unsafe_args_expansion_min,
             },
@@ -651,6 +699,17 @@ impl WireMutationCandidate {
 }
 
 impl WireReExport {
+    /// Total order over every field. Sorting by the exported `(module, attr)`
+    /// alone would leave the order of two records that share it unspecified.
+    fn sort_key(&self) -> (NameId, &str, NameId, &str) {
+        (
+            self.exported_module,
+            &self.exported_attr,
+            self.imported_module,
+            &self.imported_attr,
+        )
+    }
+
     fn encode(re_export: &CachedReExport, ids: &AHashMap<ModuleName, NameId>) -> Self {
         let id = |name| {
             *ids.get(&name)
@@ -671,5 +730,366 @@ impl WireReExport {
             imported_module: decode_name(names, self.imported_module)?,
             imported_attr: Name::new(self.imported_attr),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rayon::ThreadPoolBuilder;
+    use tempfile::TempDir;
+
+    use super::*;
+    use crate::cache::CachedExports;
+    use crate::cache::CachedModuleSafety;
+    use crate::errors::ErrorKind;
+    use crate::hasher::HashMapExt;
+
+    fn mn(name: &str) -> ModuleName {
+        ModuleName::from_str(name)
+    }
+
+    /// Reverse a sequence when `reversed`, leaving its contents unchanged.
+    fn arrange<T>(reversed: bool, mut items: Vec<T>) -> Vec<T> {
+        if reversed {
+            items.reverse();
+        }
+        items
+    }
+
+    fn error(metadata: &str) -> SafetyError {
+        SafetyError::new(
+            ErrorKind::UnsafeFunctionCall,
+            metadata.to_owned(),
+            TextRange::default(),
+        )
+    }
+
+    fn candidate(callee: &str, caller: &str) -> MutationCandidate {
+        MutationCandidate {
+            callee: mn(callee),
+            site: MutationCandidateSite::Function { name: mn(caller) },
+            arg_offset: 0,
+            range: TextRange::default(),
+            from_main_guard: false,
+            imported_args: ImportedArgs {
+                unsafe_arg_indices: 1,
+                unsafe_keyword_names: vec![mn("zeta_kw"), mn("alpha_kw")],
+                has_unsafe_kwargs_expansion: false,
+                unsafe_args_expansion_min: None,
+            },
+        }
+    }
+
+    /// A cache exercising every collection the encoder touches, with names chosen
+    /// so that insertion order and lexicographic order disagree.
+    ///
+    /// `reversed` flips each in-memory sequence. The logical content is identical
+    /// either way, which is what lets the permutation tests below distinguish a
+    /// canonical encoder from one that mirrors its input's order.
+    fn property(attribute: &str) -> PropertyCandidate {
+        PropertyCandidate {
+            attribute: mn(attribute),
+            range: TextRange::default(),
+            from_main_guard: false,
+        }
+    }
+
+    fn fixture_cache(reversed: bool) -> LibraryCache {
+        let mut function_safety = AHashMap::new();
+        let mut zeta_func = FunctionSafetyInfo::new(FunctionSafety::UnsafeMissingDep);
+        zeta_func.missing_dep_callees = [mn("dep.zeta"), mn("dep.alpha")].into_iter().collect();
+        zeta_func.mutated_params = arrange(
+            reversed,
+            vec![
+                MutatedParam {
+                    name: mn("zeta_param"),
+                    position: ParamPosition::Positional(1),
+                },
+                MutatedParam {
+                    name: mn("alpha_param"),
+                    position: ParamPosition::Positional(0),
+                },
+            ],
+        );
+        function_safety.insert("zeta_func".to_owned(), zeta_func);
+        function_safety.insert(
+            "alpha_func".to_owned(),
+            FunctionSafetyInfo::new(FunctionSafety::Safe),
+        );
+
+        let zeta = CachedModule {
+            name: mn("pkg.zeta"),
+            main_guard: MainGuardFacts::new(
+                [mn("guard.zeta"), mn("guard.alpha")].into_iter().collect(),
+            ),
+            property_candidates: arrange(
+                reversed,
+                vec![property("pkg.Zeta.attr"), property("pkg.Alpha.attr")],
+            ),
+            safety: CachedSafety::Ok(CachedModuleSafety {
+                errors: arrange(reversed, vec![error("zeta.call()"), error("alpha.call()")]),
+                force_imports_eager_overrides: Vec::new(),
+                implicit_imports: arrange(reversed, vec![mn("pkg.zeta.sub"), mn("pkg.alpha.sub")]),
+            }),
+            imports: [mn("pkg.zeta.dep"), mn("pkg.alpha.dep")]
+                .into_iter()
+                .collect(),
+            missing_imports: [mn("missing.zeta"), mn("missing.alpha")]
+                .into_iter()
+                .collect(),
+            ambiguous_imports: [mn("ambiguous.zeta"), mn("ambiguous.alpha")]
+                .into_iter()
+                .collect(),
+            side_effect_imports: [mn("side.zeta"), mn("side.alpha")].into_iter().collect(),
+            function_safety,
+            // Not subject to `arrange`: this sequence is order-sensitive, so
+            // permuting it is a change of content, not of arrangement. The
+            // dedicated test below permutes it to assert exactly that.
+            mutation_candidates: vec![
+                candidate("dep.zeta", "zeta_func"),
+                candidate("dep.alpha", "alpha_func"),
+            ],
+        };
+        let alpha = CachedModule {
+            name: mn("pkg.alpha"),
+            main_guard: MainGuardFacts::default(),
+            property_candidates: Vec::new(),
+            safety: CachedSafety::AnalysisError {
+                message: "parse error".to_owned(),
+            },
+            imports: AHashSet::new(),
+            missing_imports: AHashSet::new(),
+            ambiguous_imports: AHashSet::new(),
+            side_effect_imports: AHashSet::new(),
+            function_safety: AHashMap::new(),
+            mutation_candidates: Vec::new(),
+        };
+
+        let re_export = |exported: &str, attr: &str| CachedReExport {
+            exported_module: mn(exported),
+            exported_attr: attr.into(),
+            imported_module: mn("dep.source"),
+            imported_attr: "value".into(),
+        };
+
+        LibraryCache {
+            modules: arrange(reversed, vec![zeta, alpha]),
+            exports: CachedExports {
+                return_types: Vec::new(),
+                re_exports: arrange(
+                    reversed,
+                    vec![
+                        re_export("pkg.zeta", "zeta_attr"),
+                        re_export("pkg.alpha", "alpha_attr"),
+                    ],
+                ),
+            },
+            class_bases: arrange(
+                reversed,
+                vec![
+                    (mn("pkg.zeta.Zeta"), vec![mn("pkg.b.B"), mn("pkg.a.A")]),
+                    (mn("pkg.alpha.Alpha"), vec![mn("pkg.a.A")]),
+                ],
+            ),
+            ..Default::default()
+        }
+    }
+
+    fn encoded_bytes(cache: &LibraryCache) -> Vec<u8> {
+        let dir = TempDir::new().expect("temp dir should be creatable");
+        let path = dir.path().join("library-cache.bin");
+        write(cache, &path).expect("cache write should succeed");
+        std::fs::read(&path).expect("written cache should be readable")
+    }
+
+    #[test]
+    fn name_table_ids_are_lexicographic_ranks() {
+        let table = NameTable::build(&fixture_cache(false)).expect("name table should build");
+
+        assert!(
+            table.names.is_sorted(),
+            "name ids are assigned by lexicographic rank, so the table must be sorted",
+        );
+        assert!(
+            table.id(mn("pkg.alpha")) < table.id(mn("pkg.zeta")),
+            "id order must follow name order, since the encoder sorts ids to sort by name",
+        );
+    }
+
+    #[test]
+    fn encoded_module_collections_are_canonically_ordered() {
+        let cache = fixture_cache(false);
+        let table = NameTable::build(&cache).expect("name table should build");
+        let zeta = cache
+            .modules
+            .iter()
+            .find(|module| module.name == mn("pkg.zeta"))
+            .expect("fixture should contain pkg.zeta");
+
+        let wire = WireModule::encode(zeta, &table);
+
+        assert!(wire.imports.is_sorted(), "imports must encode sorted");
+        assert!(
+            wire.missing_imports.is_sorted(),
+            "missing imports must encode sorted"
+        );
+        assert!(
+            wire.ambiguous_imports.is_sorted(),
+            "ambiguous imports must encode sorted"
+        );
+        assert!(
+            wire.side_effect_imports.is_sorted(),
+            "side-effect imports must encode sorted"
+        );
+        assert!(
+            wire.main_guard_imports.is_sorted(),
+            "main-guard imports must encode sorted"
+        );
+        assert!(
+            wire.property_candidates
+                .is_sorted_by_key(|candidate| candidate.attribute),
+            "property candidates must encode in attribute order",
+        );
+        assert!(
+            wire.function_safety
+                .is_sorted_by_key(|(name, _)| name.as_str()),
+            "function safety must encode in local-name order",
+        );
+        let WireSafety::Ok {
+            ref errors,
+            ref implicit_imports,
+            ..
+        } = wire.safety
+        else {
+            panic!("fixture module pkg.zeta should encode as WireSafety::Ok");
+        };
+        assert!(errors.is_sorted(), "errors must encode sorted");
+        assert!(
+            implicit_imports.is_sorted(),
+            "implicit imports must encode sorted"
+        );
+
+        let zeta_func = wire
+            .function_safety
+            .iter()
+            .find(|(name, _)| name == "zeta_func")
+            .map(|(_, info)| info)
+            .expect("fixture should contain zeta_func");
+        assert!(
+            zeta_func.missing_dep_callees.is_sorted(),
+            "missing-dep callees must encode sorted",
+        );
+        assert!(
+            zeta_func
+                .mutated_params
+                .is_sorted_by_key(|param| param.name),
+            "mutated params must encode in name order",
+        );
+        assert!(
+            wire.mutation_candidates[0]
+                .imported_args
+                .unsafe_keyword_names
+                .is_sorted(),
+            "unsafe keyword names must encode sorted",
+        );
+    }
+
+    #[test]
+    fn encoding_is_invariant_under_input_permutation() {
+        assert_eq!(
+            encoded_bytes(&fixture_cache(false)),
+            encoded_bytes(&fixture_cache(true)),
+            "two orderings of the same facts must produce byte-identical caches",
+        );
+    }
+
+    #[test]
+    fn encoding_is_invariant_under_duplicate_module_permutation() {
+        // Sorting modules by name alone would not be a total order. `LibraryCache`
+        // does not prevent two records naming one logical module -- the merge
+        // coalesces them, but the encoder must not depend on that -- and under an
+        // unstable sort two same-named records would keep an unspecified relative
+        // order, so permuting them would move bytes.
+        let duplicated = |reversed: bool| {
+            let module = |import: &str| CachedModule {
+                name: mn("pkg.duplicated"),
+                main_guard: MainGuardFacts::default(),
+                property_candidates: Vec::new(),
+                safety: CachedSafety::Ok(CachedModuleSafety::default()),
+                imports: [mn(import)].into_iter().collect(),
+                missing_imports: AHashSet::new(),
+                ambiguous_imports: AHashSet::new(),
+                side_effect_imports: AHashSet::new(),
+                function_safety: AHashMap::new(),
+                mutation_candidates: Vec::new(),
+            };
+            LibraryCache {
+                modules: arrange(reversed, vec![module("dep.zeta"), module("dep.alpha")]),
+                exports: CachedExports {
+                    return_types: Vec::new(),
+                    re_exports: Vec::new(),
+                },
+                ..Default::default()
+            }
+        };
+
+        assert_eq!(
+            encoded_bytes(&duplicated(false)),
+            encoded_bytes(&duplicated(true)),
+            "duplicate module records must encode in a total order, not input order",
+        );
+    }
+
+    #[test]
+    fn encoding_is_stable_across_rayon_thread_counts() {
+        let cache = fixture_cache(false);
+        let encode_with = |threads: usize| {
+            ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .expect("test thread pool should build")
+                .install(|| encoded_bytes(&cache))
+        };
+
+        assert_eq!(
+            encode_with(1),
+            encode_with(8),
+            "the encoder's parallel sorts and maps must not let worker count reach the bytes",
+        );
+    }
+
+    #[test]
+    fn encoding_preserves_order_sensitive_sequences() {
+        // Both sequences below are deliberately *not* canonicalized: mutation
+        // candidates are applied in order by `apply_mutation_candidates`, and a
+        // class's base list is its declaration order, which C3 depends on.
+        // Sorting either would silently change analysis results, so assert the
+        // encoder still round-trips their order.
+        let mut swapped = fixture_cache(false);
+        let zeta = swapped
+            .modules
+            .iter_mut()
+            .find(|module| module.name == mn("pkg.zeta"))
+            .expect("fixture should contain pkg.zeta");
+        zeta.mutation_candidates.reverse();
+        assert_ne!(
+            encoded_bytes(&fixture_cache(false)),
+            encoded_bytes(&swapped),
+            "mutation candidate order is semantic and must survive encoding",
+        );
+
+        let mut rebased = fixture_cache(false);
+        rebased
+            .class_bases
+            .iter_mut()
+            .find(|(class, _)| *class == mn("pkg.zeta.Zeta"))
+            .expect("fixture should contain pkg.zeta.Zeta")
+            .1
+            .reverse();
+        assert_ne!(
+            encoded_bytes(&fixture_cache(false)),
+            encoded_bytes(&rebased),
+            "class base order is semantic (C3 linearization) and must survive encoding",
+        );
     }
 }
