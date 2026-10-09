@@ -272,6 +272,14 @@ fn sys_modules_key(e: &ExprSubscript) -> Option<ModuleName> {
 /// reordered past such a delete, and these keys are read from function bodies.
 const EXPECTED_IN_SYS_MODULES: &[&str] = &["__main__", "builtins", "sys"];
 
+/// Classes whose instances hold per-thread state, each paired with the class defining
+/// its `__setattr__`. A store on one reaches only the thread that makes it.
+const THREAD_LOCAL_CLASSES: &[(&str, &str)] = &[
+    ("threading.local", "_thread._local"),
+    ("_thread._local", "_thread._local"),
+    ("_threading_local.local", "_threading_local.local"),
+];
+
 fn is_builtin_literal(expr: &Expr) -> bool {
     matches!(
         expr,
@@ -409,6 +417,64 @@ impl<'a> SourceAnalyzer<'a> {
                 self.check_assign_target(obj, output);
             }
         }
+    }
+
+    /// The thread-local class `typ` descends from, as the class defining its hooks.
+    /// Only bases defined in this module are visible here.
+    fn thread_local_base(&self, typ: &ModuleName) -> Option<ModuleName> {
+        let mut pending = vec![*typ];
+        let mut seen = AHashSet::new();
+        while let Some(typ) = pending.pop() {
+            if let Some((_, owner)) = THREAD_LOCAL_CLASSES
+                .iter()
+                .find(|(c, _)| *c == typ.as_str())
+            {
+                return Some(ModuleName::from_str(owner));
+            }
+            if seen.insert(typ)
+                && let Some(cls) = self.info.classes.lookup(&typ)
+            {
+                pending.extend(cls.bases.iter().copied());
+            }
+        }
+        None
+    }
+
+    /// A store on a thread-local is invisible to every other thread, so it runs the
+    /// base class's `__setattr__` (or `__delattr__`) as a call and lets the stub decide.
+    /// A subclass override is not trusted: it almost always stores per-thread too. The
+    /// same holds for `__slots__` attributes, although their values are shared.
+    fn check_thread_local_store(
+        &self,
+        obj: &Expr,
+        ctx: &ExprContext,
+        range: TextRange,
+        output: &mut ModuleEffects,
+    ) {
+        if !obj.is_name_expr() {
+            return;
+        }
+        let Some(res) = self.info.resolve(&self.cursor, obj) else {
+            return;
+        };
+        if res.is_import() {
+            return;
+        }
+        let hook = if *ctx == ExprContext::Del {
+            "__delattr__"
+        } else {
+            "__setattr__"
+        };
+        let Some(base) = self
+            .info
+            .bindings
+            .get_type(&res.scope, &res.name)
+            .and_then(|typ| self.thread_local_base(typ))
+        else {
+            return;
+        };
+        let name = base.append_str(hook);
+        self.add_effect(Effect::new(EffectKind::MethodCall, name, range), output);
     }
 
     fn resolves_to_import(&self, expr: &Expr) -> bool {
@@ -1085,6 +1151,9 @@ impl<'a> SourceAnalyzer<'a> {
                 self.add_effect(eff, output);
             }
         };
+        if *ctx == ExprContext::Store {
+            self.check_thread_local_store(obj, ctx, obj.range().cover(attr.range()), output);
+        }
     }
 
     fn check_attr(&self, e: &ExprAttribute, output: &mut ModuleEffects) {
@@ -1318,6 +1387,9 @@ impl<'a> SourceAnalyzer<'a> {
             self.add_effect(eff, output);
             return;
         }
+        if let Expr::Attribute(e) = target {
+            self.check_thread_local_store(&e.value, &e.ctx, target.range(), output);
+        }
 
         let name = ModuleName::from_name(&res.name);
         if res.is_global() {
@@ -1342,12 +1414,34 @@ impl<'a> SourceAnalyzer<'a> {
         }
     }
 
+    /// Evaluate what a store target reads before storing: `f().x = v` calls `f`.
+    fn check_target_operands(&self, target: &Expr, output: &mut ModuleEffects) {
+        match target {
+            Expr::Tuple(e) => e
+                .elts
+                .iter()
+                .for_each(|t| self.check_target_operands(t, output)),
+            Expr::List(e) => e
+                .elts
+                .iter()
+                .for_each(|t| self.check_target_operands(t, output)),
+            Expr::Starred(e) => self.check_target_operands(&e.value, output),
+            Expr::Attribute(e) => self.expr(&e.value, output),
+            Expr::Subscript(e) => {
+                self.expr(&e.value, output);
+                self.expr(&e.slice, output);
+            }
+            _ => {}
+        }
+    }
+
     fn assign(&self, x: &StmtAssign, output: &mut ModuleEffects) {
         for target in &x.targets {
             // if the value is an import_module call don't treat it as a regular assign
             if !self.check_assign_to_import_module(target, &x.value, output) {
                 self.check_assign_target(target, output);
             }
+            self.check_target_operands(target, output);
         }
         // only check toplevel constants for re-exports
         if self.cursor.scope() == self.info.module_name {
@@ -1364,7 +1458,11 @@ impl<'a> SourceAnalyzer<'a> {
         // We don't check the annotation since it is unlikely it can cause unsafe behaviour, and
         // checking for corner cases like `x: T[S]` triggering a custom `__getitem__` runs a higher
         // risk of false positives with low chance of actual benefits.
-        self.check_assign_target(&x.target, output);
+        // Without a value, only the target's operands are evaluated; nothing is stored.
+        if x.value.is_some() {
+            self.check_assign_target(&x.target, output);
+        }
+        self.check_target_operands(&x.target, output);
         if let Some(val) = &x.value {
             self.expr(val, output);
         }
@@ -1377,24 +1475,15 @@ impl<'a> SourceAnalyzer<'a> {
         // the Definitions table will always mark x as Local, but if x overrides __iadd__ the
         // assignment will modify foo.x and should therefore be marked unsafe.
         self.check_assign_target(&x.target, output);
+        self.check_target_operands(&x.target, output);
         self.expr(&x.value, output);
     }
 
     fn delete(&self, x: &StmtDelete, output: &mut ModuleEffects) {
         for target in &x.targets {
-            match target {
-                Expr::Subscript(e) => {
-                    self.check_assign_target(target, output);
-                    // `del f()[k]` evaluates the receiver and the key.
-                    self.expr(&e.value, output);
-                    self.expr(&e.slice, output);
-                }
-                Expr::Attribute(e) => {
-                    self.check_assign_target(target, output);
-                    // `del f().x` evaluates the object the attribute is on.
-                    self.expr(&e.value, output);
-                }
-                _ => {}
+            if matches!(target, Expr::Subscript(_) | Expr::Attribute(_)) {
+                self.check_assign_target(target, output);
+                self.check_target_operands(target, output);
             }
         }
     }
@@ -1634,6 +1723,10 @@ impl<'a> SourceAnalyzer<'a> {
     fn with(&mut self, x: &StmtWith, output: &mut ModuleEffects) {
         for item in &x.items {
             self.expr(&item.context_expr, output);
+            if let Some(target) = &item.optional_vars {
+                self.check_assign_target(target, output);
+                self.check_target_operands(target, output);
+            }
         }
         self.stmts_with_called_imports(&x.body, output);
     }
