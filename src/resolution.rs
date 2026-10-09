@@ -19,6 +19,8 @@ use crate::module_safety::FunctionSafetyInfo;
 use crate::module_safety::MutationCandidate;
 use crate::module_safety::MutationCandidateSite;
 use crate::names::enclosing_module;
+use crate::safety_resolver::ReExportIndex;
+use crate::safety_resolver::SafetyResolver;
 use crate::traits::ModuleNameExt;
 
 pub(crate) struct ResolutionOutcome {
@@ -46,6 +48,7 @@ pub(crate) fn resolve_program<'a>(
     function_safety: &mut AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
     candidates: impl Iterator<Item = (ModuleName, &'a [MutationCandidate])>,
     mut needed_unqualified: AHashSet<String>,
+    re_exports: &ReExportIndex,
     mut module_scope_error: impl FnMut(ModuleName, String, TextRange),
 ) -> ResolutionOutcome {
     apply_mutation_candidates(
@@ -59,8 +62,12 @@ pub(crate) fn resolve_program<'a>(
             module_scope_error(module, metadata, range);
         },
     );
-    let (promoted, globally_safe) =
-        promote_fixpoint(module_names, function_safety, needed_unqualified);
+    let (promoted, globally_safe) = promote_fixpoint(
+        module_names,
+        function_safety,
+        needed_unqualified,
+        re_exports,
+    );
     ResolutionOutcome {
         promoted,
         globally_safe,
@@ -115,6 +122,7 @@ fn apply_confirmed_candidate(
                 // The callee is resolved as mutating the imported argument;
                 // discharge that missing dependency while retaining `Unsafe`.
                 info.missing_dep_callees.remove(&candidate.callee);
+                info.missing_dep_decorators.remove(&candidate.callee);
                 if info.missing_dep_callees.is_empty() {
                     info.verdict.remove(FunctionSafety::UnsafeMissingDep);
                 }
@@ -126,6 +134,7 @@ fn apply_confirmed_candidate(
 fn discharge_candidate(
     module: ModuleName,
     candidate: &MutationCandidate,
+    module_names: &AHashSet<ModuleName>,
     function_safety: &mut AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
 ) {
     let MutationCandidateSite::Function { name } = &candidate.site else {
@@ -134,8 +143,14 @@ fn discharge_candidate(
     let Some(info) = get_function_safety_mut(function_safety, &module, name.as_str()) else {
         return;
     };
+    if info.missing_dep_decorators.contains(&candidate.callee)
+        && enclosing_module(candidate.callee.as_str(), |m| module_names.contains(m)).is_some()
+    {
+        return;
+    }
 
     info.missing_dep_callees.remove(&candidate.callee);
+    info.missing_dep_decorators.remove(&candidate.callee);
     if !info.verdict.has(FunctionSafety::UnsafeMissingDep) || !info.missing_dep_callees.is_empty() {
         return;
     }
@@ -194,7 +209,7 @@ fn apply_mutation_candidates<'a>(
         .collect();
 
     for (&(module, candidate), _) in pairs.iter().zip(&discharges).filter(|(_, d)| **d) {
-        discharge_candidate(module, candidate, function_safety);
+        discharge_candidate(module, candidate, module_names, function_safety);
     }
 }
 
@@ -252,6 +267,7 @@ struct PromotionCandidate {
     /// Verdict without `UnsafeMissingDep`; stable across every fixpoint round.
     base_verdict: FunctionSafety,
     callees: Vec<ResolvedCallee>,
+    decorators: Vec<ModuleName>,
 }
 
 /// Split a callee at its longest known module prefix.
@@ -299,6 +315,7 @@ fn promote_fixpoint(
     module_names: &AHashSet<ModuleName>,
     function_safety: &mut AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
     mut needed_unqualified: AHashSet<String>,
+    re_exports: &ReExportIndex,
 ) -> (Vec<(ModuleName, String)>, AHashSet<String>) {
     // The promotion guard is stable: promotion only removes
     // `UnsafeMissingDep`. Precompute candidates and split their callees once.
@@ -320,6 +337,7 @@ fn promote_fixpoint(
                             .iter()
                             .map(|callee| resolve_callee(callee.as_str(), module_names))
                             .collect(),
+                        decorators: info.missing_dep_decorators.iter().copied().collect(),
                     })
                 } else {
                     None
@@ -393,6 +411,7 @@ fn promote_fixpoint(
     loop {
         // Frozen phase: no promotion in this round observes another from the same round.
         let frozen: &AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>> = function_safety;
+        let resolver = SafetyResolver::new(module_names, frozen).with_re_exports(re_exports);
         let to_promote: Vec<(u32, FunctionSafety)> = (0..candidates.len() as u32)
             .into_par_iter()
             .filter_map(|index| {
@@ -400,6 +419,13 @@ fn promote_fixpoint(
                     return None;
                 }
                 let candidate = &candidates[index as usize];
+                if candidate
+                    .decorators
+                    .iter()
+                    .any(|callee| !resolver.is_decorator_call_verified_safe(callee.as_str()))
+                {
+                    return None;
+                }
                 let mut target = candidate.base_verdict;
                 for callee in &candidate.callees {
                     target.insert(resolve_callee_verdict(
@@ -498,6 +524,7 @@ mod tests {
             &mut function_safety,
             std::iter::once((caller, std::slice::from_ref(&candidate))),
             AHashSet::new(),
+            &ReExportIndex::new(&[]),
             |module, metadata, _range| errors.push((module, metadata)),
         );
 
@@ -599,6 +626,7 @@ mod tests {
                 &mut function_safety,
                 modules.into_iter(),
                 AHashSet::new(),
+                &ReExportIndex::new(&[]),
                 |_, _, _| {},
             );
             function_safety[&caller]["helper"].clone()

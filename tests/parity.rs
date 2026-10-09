@@ -23,8 +23,8 @@ mod tests {
     use lifeguard::test_lib::ParityFixture;
     use lifeguard::test_lib::PathRun;
     use lifeguard::test_lib::Shards;
+    use lifeguard::test_lib::assert_failing;
     use lifeguard::test_lib::assert_passing;
-    use lifeguard::test_lib::assert_paths_agree;
     use lifeguard::test_lib::assert_paths_agree_sharded;
     use lifeguard::test_lib::assert_paths_agree_sharded_with_options;
     use lifeguard::test_lib::partition_modules;
@@ -491,9 +491,7 @@ mod tests {
     }
 
     #[test]
-    fn re_exported_parameterized_decorator_agrees_in_one_library() {
-        // Split across libraries, the reduce still verifies the decorator through the
-        // re-export's copied verdict, which lacks the nested `wrap`.
+    fn re_exported_parameterized_decorator_differs_only_in_the_label() {
         let deco_impl = r#"
             REGISTRY = []
 
@@ -513,10 +511,22 @@ mod tests {
             def f():
                 pass
         "#;
-        assert_paths_agree(
+        let differences = path_differences(
             &[("deco_impl", deco_impl), ("deco", deco), ("app", app)],
-            &[1],
+            &[1, 2, 3],
         );
+
+        // Split across libraries, the incremental path reports any unsafe decorator
+        // it cannot resolve at map time as unknown, re-exported or not.
+        for (count, difference) in &differences {
+            assert!(
+                *count > 1
+                    && difference.starts_with("aggregated errors:")
+                    && difference.contains(r#"[("UnsafeDecoratorCall deco_impl.register", 1)]"#)
+                    && difference.contains(r#"[("UnknownDecoratorCall deco.register", 1)]"#),
+                "{count} shards: expected only the unknown-decorator label to differ, got: {difference}",
+            );
+        }
     }
 
     #[test]
@@ -966,5 +976,138 @@ mod tests {
             sorted_names(&run.analysis().summary.passing_modules),
             sorted_names(&run.analysis().summary.failing_modules),
         )
+    }
+
+    #[test]
+    fn nested_decorator_factories_are_checked_across_libraries() {
+        let origin = r#"
+            from leaf import identity
+            registry = []
+            def register(value):
+                def decorator(f):
+                    registry.append(f)
+                    return f
+                return decorator
+            def pure(value):
+                def decorator(f):
+                    return identity(f)
+                return decorator
+        "#;
+        for source in ["origin", "facade"] {
+            for argument in ["1", "registry"] {
+                for factory in ["register", "pure"] {
+                    let app = format!(
+                        "from {source} import {factory}\nfrom origin import registry\ndef run():\n @{factory}({argument})\n def f(): pass\n return f\nrun()\n"
+                    );
+                    let modules = vec![
+                        ("origin", origin),
+                        ("facade", "from origin import register, pure\n"),
+                        ("app", &app),
+                        ("leaf", "def identity(value):\n return value\n"),
+                    ];
+                    let result = run_lifeguard_analysis(&modules);
+                    if factory == "register" {
+                        assert_failing(&result, vec!["app"]);
+                    } else {
+                        assert_passing(&result, vec!["origin", "facade", "app", "leaf"]);
+                    }
+                    assert_paths_agree_sharded(&modules);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ordinary_factory_calls_do_not_run_returned_decorators() {
+        let modules = vec![
+            (
+                "origin",
+                "registry = []\ndef register(value):\n def decorator(f):\n  registry.append(f)\n  return f\n return decorator\n",
+            ),
+            ("facade", "from origin import register\n"),
+            (
+                "app",
+                "from facade import register\ndef run():\n return register(1)\nrun()\n",
+            ),
+        ];
+        assert_passing(
+            &run_lifeguard_analysis(&modules),
+            vec!["origin", "facade", "app"],
+        );
+        assert_paths_agree_sharded(&modules);
+    }
+
+    #[test]
+    fn unknown_decorator_factory_with_imported_argument_is_safe() {
+        let modules = vec![
+            ("origin", "registry = []\ndef keep(value):\n return value\n"),
+            (
+                "mid",
+                "from origin import registry, keep\ndef helper():\n keep(registry)\n",
+            ),
+            (
+                "app",
+                "from thirdparty import factory\nfrom origin import registry\nfrom mid import helper\ndef run():\n @factory(registry)\n def f(): pass\n helper()\n return f\nrun()\n",
+            ),
+        ];
+        assert_passing(
+            &run_lifeguard_analysis(&modules),
+            vec!["origin", "mid", "app"],
+        );
+        assert_paths_agree_sharded(&modules);
+    }
+
+    #[test]
+    fn decorator_factory_defined_beside_an_external_import_is_safe() {
+        let compat = "import sys\nif sys.version_info >= (3, 11):\n from typing import dataclass_transform\nelse:\n def dataclass_transform():\n  def decorator(obj):\n   return obj\n  return decorator\n";
+        let modules = vec![
+            ("compat", compat),
+            (
+                "app",
+                "from compat import dataclass_transform\n@dataclass_transform()\ndef f(): pass\n",
+            ),
+        ];
+        assert_passing(&run_lifeguard_analysis(&modules), vec!["compat", "app"]);
+        assert_paths_agree_sharded(&modules);
+    }
+
+    #[test]
+    fn unresolved_returned_decorator_keeps_caller_unsafe() {
+        let dep = "from functools import wraps\ndef deprecated(version):\n def do_wrap(fn):\n  @wraps(fn)\n  def wrapper():\n   return fn()\n  wrapper.__doc__.rstrip()\n  return wrapper\n return do_wrap\ndef alias(new_fn):\n @deprecated(1)\n def wrapper():\n  return new_fn()\n return wrapper\n";
+        let modules = vec![
+            ("dep", dep),
+            ("app", "from dep import alias\nalias(print)\n"),
+        ];
+        assert_failing(&run_lifeguard_analysis(&modules), vec!["app"]);
+        for (count, difference) in path_differences(&modules, &[1, 2, 3]) {
+            assert!(
+                difference.starts_with("aggregated errors:"),
+                "{count} shards: expected only error labels to differ, got: {difference}",
+            );
+        }
+    }
+
+    #[test]
+    fn identity_decorator_does_not_run_nested_helpers() {
+        for returned in ["lambda f: f", "wrap"] {
+            for source in ["origin", "facade"] {
+                let origin = format!(
+                    "registry = []\ndef deco(value):\n def unused():\n  registry.append(value)\n def wrap(f):\n  return f\n return {returned}\n"
+                );
+                let app = format!(
+                    "from {source} import deco\ndef run():\n @deco(1)\n def f(): pass\n return f\nrun()\n"
+                );
+                let modules = vec![
+                    ("origin", origin.as_str()),
+                    ("facade", "from origin import deco\n"),
+                    ("app", &app),
+                ];
+                assert_passing(
+                    &run_lifeguard_analysis(&modules),
+                    vec!["origin", "facade", "app"],
+                );
+                assert_paths_agree_sharded(&modules);
+            }
+        }
     }
 }

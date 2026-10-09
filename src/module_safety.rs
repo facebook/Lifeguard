@@ -116,6 +116,10 @@ pub struct FunctionSafetyInfo {
     /// The missing cross-library callees that caused an `UnsafeMissingDep`
     /// concern. Promotion drops that concern only once every callee resolves safe.
     pub missing_dep_callees: AHashSet<ModuleName>,
+    /// Missing callees applied as parameterized decorators, whose nested functions also run.
+    pub missing_dep_decorators: AHashSet<ModuleName>,
+    /// Proven to return a one-argument identity function; false includes unknown returns.
+    pub returns_identity_decorator: bool,
     /// Parameters this function (transitively) mutates, each with how it matches
     /// call arguments (see `ParamPosition`).
     pub mutated_params: Vec<MutatedParam>,
@@ -126,6 +130,8 @@ impl FunctionSafetyInfo {
         Self {
             verdict,
             missing_dep_callees: AHashSet::new(),
+            missing_dep_decorators: AHashSet::new(),
+            returns_identity_decorator: false,
             mutated_params: Vec::new(),
         }
     }
@@ -134,6 +140,8 @@ impl FunctionSafetyInfo {
         Self {
             verdict: FunctionSafety::UnsafeMissingDep,
             missing_dep_callees: [callee].into_iter().collect(),
+            missing_dep_decorators: AHashSet::new(),
+            returns_identity_decorator: false,
             mutated_params: Vec::new(),
         }
     }
@@ -150,13 +158,20 @@ impl FunctionSafetyInfo {
     pub fn merge_ref(&mut self, other: &Self) -> bool {
         let before_verdict = self.verdict;
         let before_callees = self.missing_dep_callees.len();
+        let before_decorators = self.missing_dep_decorators.len();
+        let before_identity = self.returns_identity_decorator;
         let before_params = self.mutated_params.len();
         self.verdict.insert(other.verdict);
         self.missing_dep_callees
             .extend(other.missing_dep_callees.iter().copied());
+        self.missing_dep_decorators
+            .extend(other.missing_dep_decorators.iter().copied());
+        self.returns_identity_decorator &= other.returns_identity_decorator;
         self.extend_mutated_params(other.mutated_params.iter().cloned());
         self.verdict != before_verdict
             || self.missing_dep_callees.len() != before_callees
+            || self.missing_dep_decorators.len() != before_decorators
+            || self.returns_identity_decorator != before_identity
             || self.mutated_params.len() != before_params
     }
 
