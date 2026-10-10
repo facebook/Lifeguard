@@ -23,6 +23,7 @@ mod tests {
     use lifeguard::test_lib::ParityFixture;
     use lifeguard::test_lib::PathRun;
     use lifeguard::test_lib::Shards;
+    use lifeguard::test_lib::assert_failing;
     use lifeguard::test_lib::assert_passing;
     use lifeguard::test_lib::assert_paths_agree;
     use lifeguard::test_lib::assert_paths_agree_sharded;
@@ -966,5 +967,69 @@ mod tests {
             sorted_names(&run.analysis().summary.passing_modules),
             sorted_names(&run.analysis().summary.failing_modules),
         )
+    }
+
+    #[test]
+    fn reexported_method_shadowed_by_field_is_unsafe() {
+        for shadow in [
+            "method = staticmethod(lambda: print('effect'))",
+            "method = None",
+            "if True:\n  method = None",
+            "method, other = None, 0",
+            "from builtins import print as method",
+            "if True:\n  method: object = None",
+        ] {
+            for class_body in [
+                format!("class Sub(Base):\n {shadow}\n"),
+                format!("class Middle(Base):\n {shadow}\nclass Sub(Middle):\n pass\n"),
+            ] {
+                let origin =
+                    format!("class Base:\n @staticmethod\n def method():\n  pass\n{class_body}");
+                let modules = [
+                    ("origin", origin.as_str()),
+                    ("facade", "from origin import Sub\n"),
+                    ("app", "from facade import Sub\nSub.method()\n"),
+                ];
+                assert_failing(&run_lifeguard_analysis(&modules.to_vec()), vec!["app"]);
+                assert_paths_agree_sharded(&modules);
+            }
+        }
+    }
+
+    #[test]
+    fn imported_classmethod_receiver_mutation_is_unsafe() {
+        let origin = "registry = {}\nclass C:\n @classmethod\n def configure(cls, value):\n  cls.settings = value\ndef configure():\n C.configure(1)\n";
+        for call in [
+            "origin.C.configure(1)",
+            "origin.C.configure(origin.registry)",
+            "facade.C.configure(1)",
+            "origin.C().configure(1)",
+            "def run():\n facade.C.configure(1)\nrun()",
+            "origin.configure()",
+        ] {
+            let app = format!("import origin\nimport facade\n{call}\n");
+            let modules = vec![
+                ("origin", origin),
+                ("facade", "from origin import C\n"),
+                ("app", &app),
+            ];
+            assert_failing(&run_lifeguard_analysis(&modules), vec!["app"]);
+            for (count, difference) in path_differences(&modules, &[1, 2, 3]) {
+                assert!(
+                    difference.starts_with("aggregated errors:"),
+                    "{count} shards: {difference}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn classmethod_receiver_mutation_keeps_local_classes_safe() {
+        let origin = "class C:\n @classmethod\n def configure(cls, value):\n  cls.settings = value\n @staticmethod\n def pure(value):\n  return value\ndef create():\n class Fresh:\n  @classmethod\n  def configure(cls):\n   cls.settings = 1\n Fresh.configure()\n";
+        let app = "import origin\nfrom origin import C\nclass Local(C):\n pass\nLocal.configure(1)\nC.pure(1)\norigin.create()\n";
+        assert_passing(
+            &run_lifeguard_analysis(&vec![("origin", origin), ("app", app)]),
+            vec!["origin", "app"],
+        );
     }
 }
