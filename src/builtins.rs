@@ -51,23 +51,18 @@ impl<'a> Builtins<'a> {
             .map(Vec::as_slice)
     }
 
-    // Check that `name` is in the effects table, and calls `pred` over the set of effects for
-    // `name` if so. If `name` is a class, checks for any of `name`, `name.__init__` and
-    // `name.__new__`.
-    // TODO: Perhaps we should check for name() strictly if name is *not* a class, and the new and
-    // init methods if it is.
+    // Calls `pred` over the effects a call to `name` runs: its own, or for a class the
+    // `__new__` and `__init__` the constructor dispatches to.
     fn check_call_effects<F>(&self, name: &Name, pred: F) -> bool
     where
         F: Fn(&[Effect]) -> bool,
     {
         let qname = ModuleName::builtins().append(name);
         let check = |n: &ModuleName| self.effects_for(n).is_some_and(&pred);
-        if check(&qname) {
-            true
-        } else if self.is_class(name) {
+        if self.is_class(name) {
             check(&qname.append_str("__new__")) || check(&qname.append_str("__init__"))
         } else {
-            false
+            check(&qname)
         }
     }
 
@@ -209,6 +204,27 @@ mod tests {
             }));
             assert!(!builtins.is_prohibited_call(&name));
         }
+    }
+
+    #[test]
+    fn test_no_builtin_class_declares_effects_on_its_own_scope() {
+        // `check_call_effects` reads a class's `__new__` and `__init__` and
+        // nothing else. Annotating a `class` line with anything but
+        // `no_effects()` would put effects on the class scope itself, where
+        // nothing would ever read them.
+        let stubs = Stubs::new();
+        let builtins = stubs.builtins();
+        let on_class_scope: Vec<_> = builtins
+            .builtins
+            .module_effects
+            .effects
+            .keys()
+            .filter(|scope| builtins.builtins.classes.contains(scope))
+            .collect();
+        assert!(
+            on_class_scope.is_empty(),
+            "builtin classes carrying effects on their own scope: {on_class_scope:?}",
+        );
     }
 
     #[test]
