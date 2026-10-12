@@ -1148,6 +1148,43 @@ mod tests {
     }
 
     #[test]
+    fn test_mutation_candidates_are_canonically_ordered() {
+        // The reduce applies a module's candidates in sequence, and later ones
+        // observe verdict writes from earlier ones, so the order is semantic.
+        // Check that an interleaved parallel map/reduce maintains a canonical order.
+        let other = r#"
+            value = 1
+        "#;
+        let m = r#"
+            import other
+            from zetalib import zeta_sink
+            from alphalib import alpha_sink
+            from midlib import mid_sink
+
+            def f():
+                zeta_sink(other)
+                alpha_sink(other)
+
+            def g():
+                mid_sink(other)
+                zeta_sink(other)
+        "#;
+        let cache = build_cache(&TestSources::new(&[("other", other), ("m", m)]));
+
+        let m = cache.modules.iter().find(|x| x.name == mn("m")).unwrap();
+        assert!(
+            m.mutation_candidates.len() > 1,
+            "fixture should produce several candidates to order; got {:?}",
+            m.mutation_candidates,
+        );
+        assert!(
+            m.mutation_candidates.is_sorted(),
+            "candidates must be emitted in canonical order; got {:?}",
+            m.mutation_candidates,
+        );
+    }
+
+    #[test]
     fn test_cache_no_mutation_candidate_for_in_library_callee() {
         // Negative case: when the callee is resolvable in this library, the map
         // step handles it directly, so no mutation candidate is cached (avoids the reduce

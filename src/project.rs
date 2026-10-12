@@ -1557,7 +1557,7 @@ impl ProjectInfo {
         &self,
         import_graph: &ImportGraph,
     ) -> AHashMap<ModuleName, Vec<MutationCandidate>> {
-        let flat: Vec<(ModuleName, MutationCandidate)> = self
+        let mut flat: Vec<(ModuleName, MutationCandidate)> = self
             .effect_table
             .par_iter()
             .fold(Vec::new, |mut acc, (scope, effs)| {
@@ -1621,6 +1621,10 @@ impl ProjectInfo {
                 a.append(&mut b);
                 a
             });
+
+        // Reduce-time application is order-sensitive, so sort to keep the sequence
+        // independent of how the parallel collection happened to interleave.
+        flat.par_sort_unstable();
 
         let mut result: AHashMap<ModuleName, Vec<MutationCandidate>> = AHashMap::new();
         for (module, candidate) in flat {

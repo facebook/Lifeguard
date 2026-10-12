@@ -175,7 +175,17 @@ impl FunctionSafetyInfo {
 
 /// Where a cross-library mutation candidate occurs, and how the reduce step
 /// applies it when the candidate is confirmed. The two cases are mutually exclusive.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize
+)]
 pub enum MutationCandidateSite {
     /// A call at module scope. On confirmation, an `ImportedVarArgument` error is added to the
     /// module. Carries the callee as written at the call site for the error metadata (the resolved
@@ -197,6 +207,26 @@ pub struct PropertyCandidate {
     pub range: TextRange,
     /// Recorded inside an `if __name__ == "__main__":` body.
     pub from_main_guard: bool,
+}
+
+impl Ord for MutationCandidate {
+    /// Over the fields a cache carries, and only those. Two candidates that tie
+    /// here are identical on the wire, so the order this sorts into is one the
+    /// wire can reproduce.
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.callee
+            .cmp(&other.callee)
+            .then_with(|| self.site.cmp(&other.site))
+            .then_with(|| self.arg_offset.cmp(&other.arg_offset))
+            .then_with(|| self.imported_args.cmp(&other.imported_args))
+            .then_with(|| self.from_main_guard.cmp(&other.from_main_guard))
+    }
+}
+
+impl PartialOrd for MutationCandidate {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 impl Ord for PropertyCandidate {

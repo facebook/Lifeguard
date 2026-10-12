@@ -188,7 +188,18 @@ pub(crate) const MAX_ARGS: usize = 64;
 
 /// The set of call arguments that carry an imported variable, plus the
 /// imprecision flags from `*args`/`**kwargs` expansion.
-#[derive(Debug, Eq, PartialEq, Hash, Clone, Default, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Eq,
+    PartialEq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Clone,
+    Default,
+    Serialize,
+    Deserialize
+)]
 pub struct ImportedArgs {
     /// Bitmask of positional arguments that are imported variables.
     pub unsafe_arg_indices: u64,
