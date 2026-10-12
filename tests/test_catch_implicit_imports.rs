@@ -44,6 +44,90 @@ mod tests {
     }
 
     #[test]
+    fn test_catch_implicit_import_through_import_alias() {
+        let __main__ = r#"
+            import foo as f
+            import waldo
+
+            f.bar
+        "#;
+        let waldo = r#"
+            import foo.bar
+        "#;
+        let modules = vec![
+            ("__main__", __main__),
+            ("waldo", waldo),
+            ("foo.bar", "Bar = 'Bar'"),
+            ("foo.__init__", ""),
+        ];
+
+        let implicit_imports = vec![("__main__", vec!["foo.bar"])];
+        check_errors_and_implicit_imports(modules, implicit_imports);
+    }
+
+    #[test]
+    fn test_catch_implicit_import_through_dotted_import_alias() {
+        let __main__ = r#"
+            import foo.bar as fb
+            import waldo
+
+            fb.baz.Qux
+        "#;
+        let waldo = r#"
+            from foo.bar import baz
+        "#;
+        let modules = vec![
+            ("__main__", __main__),
+            ("waldo", waldo),
+            ("foo.bar.baz", "class Qux:\n    pass"),
+            ("foo.bar.__init__", ""),
+            ("foo.__init__", ""),
+        ];
+
+        let implicit_imports = vec![("__main__", vec!["foo.bar.baz"])];
+        check_errors_and_implicit_imports(modules, implicit_imports);
+    }
+
+    #[test]
+    fn test_no_implicit_import_for_module_imported_through_alias() {
+        let __main__ = r#"
+            import foo.bar as fb
+
+            def f():
+                x = fb.Qux
+        "#;
+        let modules = vec![
+            ("__main__", __main__),
+            ("foo.bar", "class Qux:\n    pass"),
+            ("foo.__init__", ""),
+        ];
+
+        check_errors_and_implicit_imports(modules, Vec::new());
+    }
+
+    #[test]
+    fn test_catch_implicit_import_despite_same_alias_in_other_scope() {
+        let __main__ = r#"
+            def f():
+                import foo.bar as m
+
+            def g():
+                import baz as m
+                import foo
+                x = foo.bar.Qux
+        "#;
+        let modules = vec![
+            ("__main__", __main__),
+            ("foo.bar", "class Qux:\n    pass"),
+            ("foo.__init__", ""),
+            ("baz", ""),
+        ];
+
+        let implicit_imports = vec![("__main__", vec!["foo.bar"])];
+        check_errors_and_implicit_imports(modules, implicit_imports);
+    }
+
+    #[test]
     fn test_catch_implicit_import_function_in_other_file() {
         // If qux is analyzed first foo.bar is not reported as an implicit
         // import (foo.bar is unknown)

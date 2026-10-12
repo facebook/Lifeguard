@@ -188,6 +188,16 @@ fn visible_in_class_body(definition: &Definition, read_at: TextRange) -> bool {
         || definition.first_binding <= read_at.start()
 }
 
+/// pyrefly records `import a.b as c` as `ImportAs(a.b, "a.b")` and `from a import b as c`
+/// as `ImportAs(a, "b")`; `from x import x as c` is indistinguishable from the first.
+fn alias_target(module: &ModuleName, original_name: &Name) -> ModuleName {
+    if original_name.as_str() == module.as_str() {
+        *module
+    } else {
+        module.append(original_name)
+    }
+}
+
 #[derive(Debug)]
 pub struct ResolvedName<'a> {
     pub name: Name,
@@ -215,7 +225,9 @@ impl<'a> ResolvedName<'a> {
             DefinitionStyle::Import(parent) | DefinitionStyle::ImportAsEq(parent) => {
                 Some(parent.append(&self.name))
             }
-            DefinitionStyle::ImportAs(parent, original_name) => Some(parent.append(original_name)),
+            DefinitionStyle::ImportAs(parent, original_name) => {
+                Some(alias_target(parent, original_name))
+            }
             _ => None,
         }
     }
@@ -239,13 +251,14 @@ impl<'a> ResolvedName<'a> {
                 Some(parent.concat(access))
             }
             DefinitionStyle::ImportAs(parent, original_name) => {
+                let target = alias_target(parent, original_name);
                 let suffix = access
                     .as_str()
                     .strip_prefix(self.name.as_str())
                     .and_then(|rest| rest.strip_prefix('.'));
                 Some(match suffix {
-                    Some(suffix) => parent.append(original_name).append_str(suffix),
-                    None => parent.append(original_name),
+                    Some(suffix) => target.append_str(suffix),
+                    None => target,
                 })
             }
             _ => None,

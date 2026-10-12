@@ -1749,11 +1749,13 @@ impl<'a> SourceAnalyzer<'a> {
             match &name.asname {
                 None => output.add_pending_import(to, &self.cursor.scope()),
                 Some(asname) => {
+                    let scope = self.cursor.scope();
                     let as_name_module = ModuleName::from_name(&asname.id);
-                    output.add_pending_import(as_name_module, &self.cursor.scope());
+                    output.add_pending_import(as_name_module, &scope);
                     // add a pending import that maps the alias to the actual import
                     // we'll need this to check if imports are loaded
                     output.add_pending_import(to, &as_name_module);
+                    output.aliased_imports.entry(scope).or_default().insert(to);
                 }
             }
         }

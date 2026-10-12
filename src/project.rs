@@ -50,6 +50,7 @@ use crate::hasher::HashMapExt;
 use crate::hasher::HashSetExt;
 use crate::hasher::union_larger;
 use crate::imports::ImportGraph;
+use crate::module_effects::ModuleEffects;
 use crate::module_effects::ModuleImportsMap;
 use crate::module_parser::ParsedModule;
 pub use crate::module_safety::FunctionSafety;
@@ -766,6 +767,17 @@ static PYTHON_STARTUP_SUBMODULES: LazyLock<AHashSet<ModuleName>> = LazyLock::new
         .collect()
 });
 
+/// Whether an import statement in `scope` names `module`, directly or through an alias.
+fn scope_imports_module(effects: &ModuleEffects, scope: &ModuleName, module: &ModuleName) -> bool {
+    [&effects.pending_imports, &effects.aliased_imports]
+        .iter()
+        .any(|imports| {
+            imports
+                .get(scope)
+                .is_some_and(|names| names.contains(module))
+        })
+}
+
 fn compute_implicit_imports_for_module(
     curr_module: &ModuleName,
     ctx: &ImplicitImportContext,
@@ -774,10 +786,8 @@ fn compute_implicit_imports_for_module(
     let map_binding = AHashMap::new();
 
     let output = ctx.analysis_map.get(curr_module).unwrap();
-    let pending_imports_map = &output.module_effects.pending_imports;
     let called_imports_map = &output.module_effects.called_imports;
     let called_functions = &output.module_effects.called_functions;
-    let module_level_import = pending_imports_map.get(curr_module).unwrap_or(&set_binding);
 
     let all_pending_imports = &output.module_effects.all_pending_import_names;
 
@@ -837,10 +847,8 @@ fn compute_implicit_imports_for_module(
         for curr_import in imports {
             // if the import statement exists in the scope of where the import is
             // called or in the module level then it's loaded
-            if module_level_import.contains(curr_import)
-                || pending_imports_map
-                    .get(scope)
-                    .is_some_and(|imports| imports.contains(curr_import))
+            if scope_imports_module(&output.module_effects, curr_module, curr_import)
+                || scope_imports_module(&output.module_effects, scope, curr_import)
             {
                 non_implicit_imports.insert(*curr_import);
                 non_implicit_imports

@@ -38,6 +38,10 @@ pub struct ModuleEffects {
     // map of where import state is defined (ie function or class name) to the modules that are imported
     pub pending_imports: ModuleImportsMap,
 
+    // map of scope to the modules its `import a.b as c` statements import; `pending_imports`
+    // records only `c` for that scope
+    pub aliased_imports: ModuleImportsMap,
+
     // Set of all pending import names across all scopes, for O(1) membership checks.
     pub all_pending_import_names: AHashSet<ModuleName>,
 
@@ -69,6 +73,7 @@ impl ModuleEffects {
             file_errors: Vec::new(),
             called_imports: AHashMap::new(),
             pending_imports: AHashMap::new(),
+            aliased_imports: AHashMap::new(),
             all_pending_import_names: AHashSet::new(),
             all_called_import_names: AHashSet::new(),
             called_functions: AHashSet::new(),
