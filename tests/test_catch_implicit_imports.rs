@@ -222,6 +222,42 @@ mod tests {
     }
 
     #[test]
+    fn test_catch_implicit_import_in_nested_function_and_local_class() {
+        let __main__ = r#"
+            import waldo
+            import foo
+
+            def outer():
+                def inner():
+                    return foo.bar.Bar
+
+                class Local:
+                    def method(self):
+                        return foo.baz.Baz
+
+            def main():
+                pass
+
+            if __name__ == "__main__":
+                main()
+        "#;
+        let waldo = r#"
+            import foo.bar
+            import foo.baz
+        "#;
+        let modules = vec![
+            ("__main__", __main__),
+            ("waldo", waldo),
+            ("foo.bar", "Bar = 1"),
+            ("foo.baz", "Baz = 1"),
+            ("foo.__init__", ""),
+        ];
+
+        let implicit_imports = vec![("__main__", vec!["foo.bar", "foo.baz"])];
+        check_errors_and_implicit_imports(modules, implicit_imports);
+    }
+
+    #[test]
     fn test_no_error_explicit_import_function_in_other_file() {
         let __main__ = r#"
             from qux import resolver

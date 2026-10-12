@@ -428,8 +428,12 @@ impl<'a> SourceAnalyzer<'a> {
     ) -> ModuleEffects {
         // Run the function body.
         let mut out = ModuleEffects::new();
+        // Only the outermost function scans; its walk already reaches nested bodies
+        let is_outermost_function = self.cursor.in_eager_scope();
         self.cursor.enter_function_scope(func_def);
-        self.check_function_body_for_imports(func_def, output);
+        if is_outermost_function {
+            self.check_function_body_for_imports(func_def, output);
+        }
         self.stmts(&func_def.body, &mut out);
         self.cursor.exit_scope();
         out
