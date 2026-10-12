@@ -288,18 +288,35 @@ impl<'a> SafetyResolver<'a> {
             .any(|module| self.decorator_safe_in(module, func_name))
     }
 
-    /// The combined verdict of the constructor callees the map phase recorded for
-    /// `class_fqn`, or `None` when it recorded none (i.e. no visible constructor methods).
-    fn recorded_constructor_verdict(&self, class_fqn: &ModuleName) -> Option<FunctionSafety> {
+    /// Whether every callee a constructor call on `class_fqn` dispatches to
+    /// clears for a call from `caller_module`. `None` when no record applies,
+    /// or when one names no callee -- `all` over nothing is vacuously true, so
+    /// an empty record would clear rather than abstain.
+    ///
+    /// Decided per callee rather than over their union: `UnsafeIfImported` is
+    /// relative to the module defining the *callee*, and for an inherited or
+    /// metaclass constructor that is not the module defining the class.
+    fn recorded_constructor_clears_all(
+        &self,
+        class_fqn: &ModuleName,
+        caller_module: &ModuleName,
+    ) -> Option<bool> {
         let recorded = self.constructor_callees?.get(class_fqn)?;
+        if recorded.is_empty() {
+            return None;
+        }
         let derived = recorded
             .iter(*class_fqn)
-            .map(|(owner, method)| self.callee_verdict(&owner, method));
+            .map(|(owner, method)| (owner, self.callee_verdict(&owner, method)));
         let extra = recorded
             .extra
             .iter()
-            .map(|callee| self.recorded_callee_verdict(callee));
-        derived.chain(extra).reduce(|acc, verdict| acc | verdict)
+            .map(|callee| (*callee, self.recorded_callee_verdict(callee)));
+        Some(
+            derived
+                .chain(extra)
+                .all(|(owner, verdict)| self.callee_verdict_clears(verdict, caller_module, &owner)),
+        )
     }
 
     /// The verdict of a callee recorded by its full FQN, resolved the same way
@@ -320,24 +337,23 @@ impl<'a> SafetyResolver<'a> {
             .unwrap_or(FunctionSafety::Unsafe)
     }
 
-    /// Whether a constructor verdict lets its call clear. `UnsafeIfImported`
-    /// means safe only within the defining module, so it clears only when the
-    /// caller is that module.
-    fn constructor_verdict_clears(
+    /// Whether one callee's verdict lets the call clear. `UnsafeIfImported`
+    /// means safe only within the module that defines that callee, so it clears
+    /// only when the caller is that module.
+    fn callee_verdict_clears(
         &self,
         verdict: FunctionSafety,
         caller_module: &ModuleName,
-        class_fqn: &ModuleName,
+        callee_owner: &ModuleName,
     ) -> bool {
         if verdict == FunctionSafety::Safe {
             return true;
         }
-        // Only the module that defines the class may clear an `UnsafeIfImported`
-        // constructor. Matching any ancestor package would let the importing
-        // module clear it too, which is the opposite of what the verdict means.
+        // Matching any ancestor package would let the importing module clear it
+        // too, which is the opposite of what the verdict means.
         verdict == FunctionSafety::UnsafeIfImported
             && self
-                .split_at_module(class_fqn.as_str())
+                .split_at_module(callee_owner.as_str())
                 .is_some_and(|(defining, _)| &defining == caller_module)
     }
 
@@ -394,8 +410,7 @@ impl<'a> SafetyResolver<'a> {
             | ErrorKind::UnknownDecoratorCall => {
                 let func_name = error.metadata.as_str().trim_end_matches("()");
                 let fqn = ModuleName::from_str(func_name);
-                let verdict = self.recorded_constructor_verdict(&fqn)?;
-                Some(self.constructor_verdict_clears(verdict, &caller, &fqn))
+                self.recorded_constructor_clears_all(&fqn, &caller)
             }
             _ => None,
         }
@@ -460,6 +475,26 @@ fn is_class_like_entry(local_name: &str, fs: &AHashMap<String, FunctionSafetyInf
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `fold_constructor_callees` drops a record naming no callee, so one cannot
+    /// reach this through the reduce. The guard keeps the function right on its
+    /// own, where `all` over no callees would otherwise clear vacuously.
+    #[test]
+    fn a_constructor_record_naming_no_callee_is_inconclusive() {
+        let app = ModuleName::from_str("app");
+        let class = ModuleName::from_str("app.Sub");
+        let by_module = AHashMap::default();
+        let modules = AHashSet::from_iter([app]);
+        let callees = HashMap::from([(class, ConstructorCallees::default())]);
+        let resolver = SafetyResolver::new(&modules, &by_module).with_constructor_callees(&callees);
+
+        assert_eq!(
+            resolver.recorded_constructor_clears_all(&class, &app),
+            None,
+            "an empty record means the map resolved nothing, not that the \
+             constructor runs nothing"
+        );
+    }
 
     /// The flag and the kind travel separately through the cache, so an artifact
     /// written by another binary could pair them wrongly. The dispatch has to

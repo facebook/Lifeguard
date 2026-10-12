@@ -944,6 +944,34 @@ mod tests {
     }
 
     #[test]
+    fn test_inherited_unsafe_if_imported_constructor_does_not_clear_in_class_module() {
+        // `Base.__init__` is `UnsafeIfImported`, so it is safe only inside `base`.
+        // `app` defines the class that inherits it, not the callee, so testing the
+        // class's module -- the bug -- clears the error here.
+        let cache = LibraryCache {
+            modules: vec![
+                cached_module("app")
+                    .errors(vec![cached_error(ErrorKind::UnsafeFunctionCall, "app.Sub")])
+                    .build(),
+                cached_module("base")
+                    .function_safety([unsafe_if_imported("Base.__init__")])
+                    .build(),
+            ],
+            exports: empty_exports(),
+            constructor_callees: vec![(mn("app.Sub"), inherited(mn("base.Base.__init__")))],
+            ..Default::default()
+        };
+
+        let resolved = resolve(cache);
+
+        assert!(
+            !resolved.find_module(mn("app")).unwrap().is_safe(),
+            "an inherited `UnsafeIfImported` constructor is safe only inside the \
+             module that defines it, which is not the one defining the class",
+        );
+    }
+
+    #[test]
     fn test_resolve_cross_library_unsafe_if_imported_constructor() {
         let dep_cache = build_cache(&TestSources::new(&[(
             "defs",
