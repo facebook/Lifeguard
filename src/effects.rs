@@ -63,6 +63,8 @@ pub enum EffectKind {
     ParamMethodCall,
     // Calling a locally-defined function.
     FunctionCall,
+    // Creating a class, which runs `__init_subclass__` from its bases.
+    ClassCreation,
     // Calling explicitly prohibited builtins (e.g., `getattr` with non-literal arg).
     ProhibitedFunctionCall,
     // Call where the decorator target cannot be resolved.
@@ -133,6 +135,7 @@ impl EffectKind {
             self,
             Self::FunctionCall
                 | Self::ImportedFunctionCall
+                | Self::ClassCreation
                 | Self::DecoratorCall
                 | Self::ImportedDecoratorCall
                 | Self::MethodCall

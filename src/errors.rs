@@ -273,9 +273,9 @@ impl SafetyError {
             EffectKind::DecoratorCall | EffectKind::ImportedDecoratorCall => {
                 ErrorKind::UnsafeDecoratorCall
             }
-            EffectKind::FunctionCall | EffectKind::ImportedFunctionCall => {
-                ErrorKind::UnsafeFunctionCall
-            }
+            EffectKind::FunctionCall
+            | EffectKind::ImportedFunctionCall
+            | EffectKind::ClassCreation => ErrorKind::UnsafeFunctionCall,
             EffectKind::MethodCall
             | EffectKind::UnboundMethodCall
             | EffectKind::SuperMethodCall

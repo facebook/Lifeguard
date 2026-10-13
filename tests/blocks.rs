@@ -47,7 +47,7 @@ for x in f():  # E: imported-function-call
             "f()  # E: imported-function-call",
             "def g():\n    return f()  # E: imported-function-call",
             "def g(x=f()):  # E: imported-function-call\n    pass",
-            "class C(f()):  # E: imported-function-call\n    pass",
+            "class C(f()):  # E: imported-function-call  # E: class-creation\n    pass",
             "raise f() from f()  # E: raise  # E: imported-function-call",
             "assert True, f()  # E: imported-function-call",
             "@f()  # E: imported-decorator-call\ndef g():\n    pass",
@@ -105,19 +105,21 @@ del f()[  # E: imported-function-call
     fn test_class_base_effects() {
         let code = r#"
 from foo import f, g
-class C(f(), metaclass=g()):  # E: imported-function-call  # E: imported-function-call
+class C(f(), metaclass=g()):  # E: imported-function-call  # E: imported-function-call  # E: class-creation
     pass
 "#;
         // Bases and keywords are evaluated where the class is defined.
         check_effects(code);
     }
 
-    /// Looking up a name has no side effect
+    /// Looking up a name has no side effect, so a bare base contributes no call
+    /// of its own. Declaring one still creates the class, which runs
+    /// `__init_subclass__`.
     #[test]
     fn test_class_base_name_is_not_an_effect() {
         let code = r#"
 from foo import Base
-class C(Base):
+class C(Base):  # E: class-creation
     pass
 "#;
         check_effects(code);

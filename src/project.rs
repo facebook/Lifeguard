@@ -1371,23 +1371,28 @@ impl ProjectInfo {
             .find(|candidate| self.contains_callable(candidate))
     }
 
-    /// The definition a zero-argument `super().m()` runs. `name` is `m` on the
-    /// class the call is written in, and dispatch starts above that class.
-    fn resolve_super_call(&self, name: &ModuleName) -> Option<ModuleName> {
+    /// The definition an implicit dispatch above `name`'s class runs: `name` is
+    /// a method on the class the statement is written in, and lookup starts
+    /// above it. Zero-argument `super()` and class creation both dispatch this
+    /// way — the latter because `type.__new__` calls
+    /// `super().__init_subclass__`.
+    fn resolve_dispatch_above(&self, name: &ModuleName) -> Option<ModuleName> {
         let (class, method) = name.split_attr()?;
         self.resolve_inherited(&class, method.as_str())
     }
 
     /// The callee a call effect dispatches to, or `None` when the project view
-    /// cannot name one. A `super()` call resolves through the MRO rather than
-    /// the name it was recorded under, which would be the caller itself.
+    /// cannot name one. A `super()` call or a class statement resolves through the
+    /// MRO above the name it was recorded under, which is never the callee.
     fn call_graph_target(
         &self,
         eff: &Effect,
         is_node: impl Fn(&ModuleName) -> bool,
     ) -> Option<ModuleName> {
         match eff.kind {
-            EffectKind::SuperMethodCall => self.resolve_super_call(&eff.name),
+            EffectKind::SuperMethodCall | EffectKind::ClassCreation => {
+                self.resolve_dispatch_above(&eff.name)
+            }
             _ if is_node(&eff.name) => Some(eff.name),
             _ => self.resolve_callable(&eff.name),
         }
@@ -2099,11 +2104,14 @@ impl ProjectInfo {
     ) -> Result<bool> {
         let written = call.func;
         match call.effect.kind {
-            EffectKind::SuperMethodCall => match self.resolve_super_call(&call.func) {
-                Some(resolved) => call.func = resolved,
-                // No ancestor defines the method, so there is no body to run.
-                None => return Ok(true),
-            },
+            EffectKind::SuperMethodCall | EffectKind::ClassCreation => {
+                match self.resolve_dispatch_above(&call.func) {
+                    Some(resolved) => call.func = resolved,
+                    // No ancestor defines the method, so nothing runs: for a
+                    // class statement that means `object.__init_subclass__`.
+                    None => return Ok(true),
+                }
+            }
             _ => {
                 if let Some(resolved) = self.resolve_callable(&call.func) {
                     call.func = resolved;
@@ -2566,6 +2574,31 @@ mod tests {
         "#;
 
         assert_leveled_before(module, "m.Base.__init__", "m.Sub");
+    }
+
+    /// A class statement runs its ancestor's `__init_subclass__`, never its own,
+    /// so creating `Sub` reads `Base.__init_subclass__`'s verdict. `Sub` defining
+    /// its own makes the recorded name a node, which the edge has to look past.
+    #[test]
+    fn init_subclass_ancestors_are_leveled_before_class_creation() {
+        let module = r#"
+            def deepest():
+                pass
+
+            def deep():
+                deepest()
+
+            class Base:
+                def __init_subclass__(cls):
+                    deep()
+
+            def caller():
+                class Sub(Base):
+                    def __init_subclass__(cls):
+                        pass
+        "#;
+
+        assert_leveled_before(module, "m.Base.__init_subclass__", "m.caller");
     }
 
     /// Every class fact a pass ships has to name a class this pass owns.

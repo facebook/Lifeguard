@@ -158,4 +158,76 @@ a = A()  # E: unsafe-function-call
 "#;
         check(code);
     }
+
+    /// `Base.__init_subclass__` runs at the `class A(Base)` statement itself,
+    /// before anything instantiates `A`. This is the registry pattern: defining
+    /// the subclass is what registers it.
+    #[test]
+    fn test_init_subclass_runs_at_class_creation() {
+        let code = r#"
+import foo
+
+class Base:
+    def __init_subclass__(cls):
+        foo.x = 42
+
+class A(Base):  # E: unsafe-function-call
+    pass
+"#;
+        check(code);
+    }
+
+    /// The registry pattern as it appears in practice: the base is imported,
+    /// and defining the subclass is the whole point of the import.
+    #[test]
+    fn test_init_subclass_from_an_imported_base() {
+        let base = r#"
+import foo
+
+class Base:
+    def __init_subclass__(cls):
+        foo.registry = cls
+"#;
+        let leaf = r#"
+from base import Base
+
+class Leaf(Base):  # E: unsafe-function-call
+    pass
+"#;
+        check_all(vec![("base", base), ("leaf", leaf)]);
+    }
+
+    /// A class's own `__init_subclass__` runs for its subclasses, never at its
+    /// own class statement, because `type.__new__` calls
+    /// `super().__init_subclass__`.
+    #[test]
+    fn test_own_init_subclass_does_not_run_for_itself() {
+        let code = r#"
+import foo
+
+class Base:
+    pass
+
+class A(Base):
+    def __init_subclass__(cls):
+        foo.x = 42
+
+class B(A):  # E: unsafe-function-call
+    pass
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_safe_init_subclass_is_not_an_error() {
+        let code = r#"
+class Base:
+    def __init_subclass__(cls):
+        pass
+
+class A(Base):
+    pass
+"#;
+        check(code);
+    }
 }

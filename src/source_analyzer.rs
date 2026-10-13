@@ -1532,6 +1532,18 @@ impl<'a> SourceAnalyzer<'a> {
             for expr in evaluated {
                 self.expr(expr, output);
             }
+            // Creating the class runs `__init_subclass__` on its bases, before
+            // anything instantiates it. Naming the class here keeps the base's
+            // MRO walk in the analysis, which is the only place that can see it.
+            if !arguments.args.is_empty() {
+                let class_name = self.cursor.scope().append_str(&x.name.id);
+                let eff = Effect::new(
+                    EffectKind::ClassCreation,
+                    class_name.append_str("__init_subclass__"),
+                    x.range,
+                );
+                self.add_effect(eff, output);
+            }
         }
         self.cursor.enter_class_scope(x);
         let exported_name = Attribute::new(self.info.module_name, &x.name.id);
