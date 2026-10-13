@@ -657,6 +657,9 @@ impl<'a> SourceAnalyzer<'a> {
         } else if let Some(eff) = builtins.call_effect(func) {
             // Prohibited builtin call (e.g. open, __import__)
             self.add_effect(eff, output);
+        } else if matches!(name, "type.__new__" | "type.__init__") {
+            // A metaclass's base call: what it runs, the bases' `__init_subclass__`,
+            // is checked at the class statement, as for `super().__new__(...)`.
         } else if builtins.is_known_builtin(func) {
             // Known safe builtin - no effect needed
         } else {
@@ -1532,10 +1535,17 @@ impl<'a> SourceAnalyzer<'a> {
             for expr in evaluated {
                 self.expr(expr, output);
             }
-            // Creating the class runs `__init_subclass__` on its bases, before
-            // anything instantiates it. Naming the class here keeps the base's
-            // MRO walk in the analysis, which is the only place that can see it.
-            if !arguments.args.is_empty() {
+            // Creating the class runs `__init_subclass__` on its bases and its
+            // metaclass's `__new__`/`__init__`, before anything instantiates it.
+            // Naming the class here keeps those MRO walks in the analysis, which
+            // is the only place that can see them.
+            let has_metaclass = arguments.keywords.iter().any(|keyword| {
+                keyword
+                    .arg
+                    .as_ref()
+                    .is_some_and(|arg| arg.as_str() == "metaclass")
+            });
+            if !arguments.args.is_empty() || has_metaclass {
                 let class_name = self.cursor.scope().append_str(&x.name.id);
                 let eff = Effect::new(
                     EffectKind::ClassCreation,

@@ -233,10 +233,10 @@ mod tests {
         let code2 = r#"
             import m1
 
-            class SubClassOne(metaclass=m1.MetaCls):
+            class SubClassOne(metaclass=m1.MetaCls): # E: unsafe-function-call
                 pass
 
-            class SubClassTwo(metaclass=m1.MetaCls):
+            class SubClassTwo(metaclass=m1.MetaCls): # E: unsafe-function-call
                 pass
 
             a = SubClassOne() # E: unsafe-function-call
@@ -259,10 +259,10 @@ mod tests {
         let code2 = r#"
             import m1
 
-            class SubClassOne(metaclass=m1.MetaCls):
+            class SubClassOne(metaclass=m1.MetaCls): # E: unsafe-function-call
                 pass
 
-            class SubClassTwo(metaclass=m1.MetaCls):
+            class SubClassTwo(metaclass=m1.MetaCls): # E: unsafe-function-call
                 pass
 
             a = SubClassOne() # E: unsafe-function-call

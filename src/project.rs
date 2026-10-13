@@ -758,6 +758,9 @@ fn build_init_module_map(analysis_map: &AnalysisMap) -> HashMap<ModuleName, Modu
         .collect()
 }
 
+/// What `type.__call__` runs on the metaclass when a `class` statement creates a class.
+const METACLASS_CREATION_METHODS: [&str; 2] = ["__new__", "__init__"];
+
 /// Submodules pre-loaded into `sys.modules` during Python startup.
 /// These are always available at runtime, so accessing them is never an implicit import.
 static PYTHON_STARTUP_SUBMODULES: LazyLock<AHashSet<ModuleName>> = LazyLock::new(|| {
@@ -1381,6 +1384,38 @@ impl ProjectInfo {
         self.resolve_inherited(&class, method.as_str())
     }
 
+    /// The metaclass a `class` statement calls: the class's own `metaclass=`,
+    /// else the first one declared along its MRO.
+    fn creation_metaclass(&self, class: &ModuleName) -> Option<ModuleName> {
+        let declared = |cls: &ModuleName| self.classes.lookup(cls).and_then(|info| info.metaclass);
+        if let Some(own) = declared(class) {
+            return Some(own);
+        }
+        if !self.class_bases.contains_key(class) {
+            return None;
+        }
+        c3_linearize(&self.class_bases, class)
+            .iter()
+            .skip(1)
+            .find_map(declared)
+    }
+
+    /// The metaclass methods a `class` statement runs. `name` is the
+    /// `<class>.__init_subclass__` a `ClassCreation` effect is recorded under.
+    fn metaclass_creation_callees(&self, name: &ModuleName) -> Vec<ModuleName> {
+        let Some((class, _)) = name.split_attr() else {
+            return Vec::new();
+        };
+        self.creation_metaclass(&class)
+            .into_iter()
+            .flat_map(|metaclass| {
+                METACLASS_CREATION_METHODS
+                    .iter()
+                    .filter_map(move |method| self.resolve_callable(&metaclass.append_str(method)))
+            })
+            .collect()
+    }
+
     /// The callee a call effect dispatches to, or `None` when the project view
     /// cannot name one. A `super()` call or a class statement resolves through the
     /// MRO above the name it was recorded under, which is never the callee.
@@ -1760,7 +1795,13 @@ impl ProjectInfo {
                             .into_iter()
                             .flatten()
                             .filter_map(move |child| indexes.get(child).map(|&to| (from, to)));
-                        callee.into_iter().chain(nested)
+                        // A class statement also reads its metaclass methods' verdicts.
+                        let metaclass = (e.kind == EffectKind::ClassCreation)
+                            .then(|| self.metaclass_creation_callees(&e.name))
+                            .into_iter()
+                            .flatten()
+                            .filter_map(move |method| indexes.get(&method).map(|&to| (from, to)));
+                        callee.into_iter().chain(nested).chain(metaclass)
                     })
             })
             .collect();
@@ -2103,21 +2144,50 @@ impl ProjectInfo {
         publish_safety_error: bool,
     ) -> Result<bool> {
         let written = call.func;
-        match call.effect.kind {
-            EffectKind::SuperMethodCall | EffectKind::ClassCreation => {
-                match self.resolve_dispatch_above(&call.func) {
-                    Some(resolved) => call.func = resolved,
-                    // No ancestor defines the method, so nothing runs: for a
-                    // class statement that means `object.__init_subclass__`.
-                    None => return Ok(true),
-                }
+        if call.effect.kind == EffectKind::ClassCreation {
+            let mut safe = true;
+            for callee in self.metaclass_creation_callees(&call.func) {
+                let mut metaclass_call = call.clone_with_name(callee);
+                safe &= self.check_resolved_call(
+                    &mut metaclass_call,
+                    state,
+                    publish_safety_error,
+                    true,
+                )?;
             }
+            // No ancestor defines `__init_subclass__` means `object`'s no-op runs.
+            if let Some(resolved) = self.resolve_dispatch_above(&call.func) {
+                call.func = resolved;
+                safe &= self.check_resolved_call(call, state, publish_safety_error, false)?;
+            }
+            return Ok(safe);
+        }
+        match call.effect.kind {
+            EffectKind::SuperMethodCall => match self.resolve_dispatch_above(&call.func) {
+                Some(resolved) => call.func = resolved,
+                // No ancestor defines the method, so there is no body to run.
+                None => return Ok(true),
+            },
             _ => {
                 if let Some(resolved) = self.resolve_callable(&call.func) {
                     call.func = resolved;
                 }
             }
         }
+        let name_callee = self.re_exports.contains_key(&written);
+        self.check_resolved_call(call, state, publish_safety_error, name_callee)
+    }
+
+    /// Check a call whose callee is already resolved. `name_callee` records the
+    /// error under the callee rather than the written name, because the reduce
+    /// step re-verifies errors by name.
+    fn check_resolved_call(
+        &self,
+        call: &mut Call,
+        state: &GlobalAnalysisState,
+        publish_safety_error: bool,
+        name_callee: bool,
+    ) -> Result<bool> {
         if !self.can_resolve_call(call, state) {
             if publish_safety_error {
                 let err = self.check_unknown_call(call)?;
@@ -2129,9 +2199,7 @@ impl ProjectInfo {
         if !self.check_call(call, state)? {
             if publish_safety_error {
                 let mut err = SafetyError::from_unsafe_call(call.effect)?;
-                // The reduce step re-verifies errors by name, and a re-export's
-                // entry there lacks the definition's nested functions.
-                if self.re_exports.contains_key(&written) {
+                if name_callee {
                     err.metadata = call.func.as_str().into();
                 }
                 state.add_error_to_module(call.caller_module, err);

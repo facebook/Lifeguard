@@ -151,10 +151,68 @@ class Meta:
     def __init__(cls, name, bases, attrs):
         REGISTRY[name] = cls
 
-class A(metaclass=Meta):
+class A(metaclass=Meta):  # E: unsafe-function-call
     pass
 
 a = A()  # E: unsafe-function-call
+"#;
+        check(code);
+    }
+
+    /// The metaclass also runs for a class that only inherits it from a base.
+    #[test]
+    fn test_inherited_metaclass_runs_at_class_creation() {
+        let code = r#"
+from foo import REGISTRY
+
+class Meta(type):
+    def __new__(mcs, name, bases, attrs):
+        cls = super().__new__(mcs, name, bases, attrs)
+        REGISTRY[name] = cls
+        return cls
+
+class Base(metaclass=Meta):  # E: unsafe-function-call
+    pass
+
+class Robot(Base):  # E: unsafe-function-call
+    pass
+"#;
+        check(code);
+    }
+
+    /// `type.__new__(mcs, ...)` runs nothing more than `super().__new__(...)` does.
+    #[test]
+    fn test_metaclass_calling_type_new_directly_stays_safe() {
+        let code = r#"
+class Meta(type):
+    def __new__(mcs, name, bases, attrs):
+        return type.__new__(mcs, name, bases, attrs)
+
+    def __init__(cls, name, bases, attrs):
+        type.__init__(cls, name, bases, attrs)
+
+class Base(metaclass=Meta):
+    pass
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_metaclass_writing_its_own_module_stays_safe() {
+        let code = r#"
+REGISTRY = {}
+
+class Meta(type):
+    def __new__(mcs, name, bases, attrs):
+        cls = super().__new__(mcs, name, bases, attrs)
+        REGISTRY[name] = cls
+        return cls
+
+class Base(metaclass=Meta):
+    pass
+
+class Robot(Base):
+    pass
 "#;
         check(code);
     }
