@@ -814,6 +814,21 @@ mod tests {
     }
 
     #[test]
+    fn test_cycle_member_guards_its_deeper_descendants() {
+        let mut modules = package_init_cycle_modules();
+        modules.push(("mining.sub", ""));
+        modules.push(("mining.sub.leaf", "LEAF = 1"));
+
+        let result = run_lifeguard_analysis(&modules);
+
+        assert!(
+            has_lazy_eligible_dep(&result, "mining.sub.leaf", "mining"),
+            "`from mining.sub import leaf` runs mining first, so it must stay eager until \
+             mining has run"
+        );
+    }
+
+    #[test]
     fn test_failing_cycle_member_guards_its_children() {
         let failing_mining = r#"
             import os

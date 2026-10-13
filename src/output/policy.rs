@@ -31,6 +31,7 @@ use crate::project::SafetyMap;
 use crate::project::SideEffectMap;
 use crate::runner::Options;
 use crate::tracing::time;
+use crate::traits::ModuleNameExt;
 
 pub struct LifeGuardAnalysis {
     pub output: LifeGuardOutput,
@@ -368,6 +369,15 @@ fn build_lazy_eligible(
                     failing_imported_modules.insert(*missing_module);
                 }
             }
+            // Importing a module runs every package above it; past the direct parent, which
+            // `add_cycle_deps` covers, keep it eager until any such cycle member has run.
+            failing_imported_modules.extend(
+                module_name
+                    .iter_parents()
+                    .skip(1)
+                    .map(|(ancestor, _)| ancestor)
+                    .filter(|ancestor| cycle_module_set.contains(ancestor)),
+            );
             lazy_eligible.insert(*module_name, failing_imported_modules);
         }
     });
