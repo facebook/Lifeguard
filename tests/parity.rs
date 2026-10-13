@@ -442,6 +442,26 @@ mod tests {
     }
 
     #[test]
+    fn own_init_subclass_does_not_clear_base_init_subclass_agrees() {
+        // `Leaf`'s own hook only runs for its subclasses, so it can't clear `Base`'s
+        let base = r#"
+            import foo
+
+            class Base:
+                def __init_subclass__(cls):
+                    foo.registry = cls
+        "#;
+        let leaf = r#"
+            from base import Base
+
+            class Leaf(Base):
+                def __init_subclass__(cls):
+                    pass
+        "#;
+        assert_paths_agree(&[("base", base), ("leaf", leaf)], &[1]);
+    }
+
+    #[test]
     fn re_export_chain_agrees() {
         let origin = r#"
             import os

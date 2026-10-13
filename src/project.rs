@@ -2145,20 +2145,16 @@ impl ProjectInfo {
     ) -> Result<bool> {
         let written = call.func;
         if call.effect.kind == EffectKind::ClassCreation {
+            // No ancestor defines `__init_subclass__` means `object`'s no-op runs
+            let callees = self
+                .metaclass_creation_callees(&call.func)
+                .into_iter()
+                .chain(self.resolve_dispatch_above(&call.func));
             let mut safe = true;
-            for callee in self.metaclass_creation_callees(&call.func) {
-                let mut metaclass_call = call.clone_with_name(callee);
-                safe &= self.check_resolved_call(
-                    &mut metaclass_call,
-                    state,
-                    publish_safety_error,
-                    true,
-                )?;
-            }
-            // No ancestor defines `__init_subclass__` means `object`'s no-op runs.
-            if let Some(resolved) = self.resolve_dispatch_above(&call.func) {
-                call.func = resolved;
-                safe &= self.check_resolved_call(call, state, publish_safety_error, false)?;
+            for callee in callees {
+                let mut callee_call = call.clone_with_name(callee);
+                safe &=
+                    self.check_resolved_call(&mut callee_call, state, publish_safety_error, true)?;
             }
             return Ok(safe);
         }
