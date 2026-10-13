@@ -159,4 +159,4 @@ The analyzer produces a `LifeGuardOutput` with two main components:
 
 **Key distinction**: To mark a third-party module as unsafe for lazy imports, it should appear in the `lazy_eligible` dict values (as a failing dependency), NOT in the `load_imports_eagerly` set.
 
-**Import cycle handling**: Import cycles are detected and handled — modules in import cycles have all cycle members added to their `lazy_eligible` set.
+**Import cycle handling**: Import cycles are detected and handled — modules in import cycles have all cycle members added to their `lazy_eligible` set. When modules outside a cycle can enter it through more than one member, each of them is also guarded by the member it enters through, so deferring it cannot change which member of the cycle runs first.

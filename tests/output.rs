@@ -868,6 +868,39 @@ mod tests {
     }
 
     #[test]
+    fn test_cycle_entered_through_two_members_guards_outside_importers() {
+        let mut modules = package_init_cycle_modules();
+        modules.push(("mining.presto", "def sql_rows(): pass"));
+        modules.push(("sample", "from mining.presto import sql_rows"));
+        modules.push(("attribution", "from judges.miner_judge import MinerJudge"));
+
+        let result = run_lifeguard_analysis(&modules);
+
+        assert!(
+            has_lazy_eligible_dep(&result, "sample", "mining"),
+            "sample enters the cycle through mining, so it should stay eager until mining runs"
+        );
+        assert!(
+            has_lazy_eligible_dep(&result, "attribution", "judges"),
+            "attribution enters the cycle through judges, so it should stay eager until judges runs"
+        );
+    }
+
+    #[test]
+    fn test_cycle_entered_through_one_member_needs_no_entry_guard() {
+        let mut modules = package_init_cycle_modules();
+        modules.push(("mining.presto", "def sql_rows(): pass"));
+        modules.push(("sample", "from mining.presto import sql_rows"));
+
+        let result = run_lifeguard_analysis(&modules);
+
+        assert!(
+            !has_lazy_eligible_dep(&result, "sample", "mining"),
+            "with a single entry, deferring sample cannot change which member runs first"
+        );
+    }
+
+    #[test]
     fn test_side_effect_imports_propagate_failing_deps() {
         // When module A does a bare `import B` that is never accessed (side-effect import),
         // and B is a passing module with non-empty failing deps, B should appear in A's

@@ -8,7 +8,10 @@
 //! Lazy-eligibility policy: classify each module as passing or failing, then
 //! compute the eager-load guard set every passing module carries.
 
+use std::collections::hash_map::Entry;
+
 use dashmap::DashMap;
+use itertools::Itertools;
 use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
 use starlark_map::small_set::SmallSet;
@@ -390,6 +393,7 @@ fn build_lazy_eligible(
         cycle_children: &cycle_children,
     };
     add_cycle_deps(all_cycles, &cycle_ctx);
+    add_cycle_entry_guards(all_cycles, &cycle_ctx);
 
     // Guard each consumer with its implicit imports, then also guard the provider
     // path so the import is loaded before the consumer's body references it.
@@ -757,6 +761,69 @@ fn propagate_to_children(
             );
         }
     }
+}
+
+/// Some cycles only initialize correctly if entered from a specific member, and deferring an
+/// import can move which module runs first. When outsiders enter through 2+ members, keep
+/// each eager until its entry has run.
+fn add_cycle_entry_guards(all_cycles: &[Vec<ModuleName>], ctx: &CycleDepsContext) {
+    let mut implicit_importers: AHashMap<ModuleName, Vec<ModuleName>> = AHashMap::new();
+    for (from, parents) in ctx.implicit_parents {
+        for parent in parents {
+            implicit_importers.entry(*parent).or_default().push(*from);
+        }
+    }
+    all_cycles.par_iter().for_each(|cycle| {
+        let members: AHashSet<ModuleName> = cycle.iter().copied().collect();
+        let member_names: AHashMap<&str, ModuleName> =
+            cycle.iter().map(|m| (m.as_str(), *m)).collect();
+        let mut entries: AHashMap<ModuleName, SmallSet<ModuleName>> = AHashMap::new();
+        for member in cycle {
+            let entry =
+                outermost_member_ancestor(member.as_str(), &member_names).unwrap_or(*member);
+            let importers = ctx
+                .import_graph
+                .get_importers(member)
+                .chain(implicit_importers.get(member).into_iter().flatten());
+            for importer in importers {
+                match entries.entry(*importer) {
+                    Entry::Occupied(mut seen) => {
+                        seen.get_mut().insert(entry);
+                    }
+                    Entry::Vacant(new) => {
+                        // A member's descendant only runs after that member, so it never enters first.
+                        if !members.contains(importer)
+                            && outermost_member_ancestor(importer.as_str(), &member_names).is_none()
+                        {
+                            new.insert(SmallSet::new()).insert(entry);
+                        }
+                    }
+                }
+            }
+        }
+        if entries.values().flatten().all_equal() {
+            return;
+        }
+        for (importer, entry_members) in entries {
+            if ctx.passing_modules.contains(&importer) {
+                ctx.lazy_eligible
+                    .entry(importer)
+                    .or_default()
+                    .extend(entry_members);
+            }
+        }
+    });
+}
+
+/// The outermost member among `module`'s packages: importing `module` runs it first. Matches
+/// name prefixes because `iter_parents` interns every parent, which dominated this pass.
+fn outermost_member_ancestor(
+    module: &str,
+    member_names: &AHashMap<&str, ModuleName>,
+) -> Option<ModuleName> {
+    module
+        .match_indices('.')
+        .find_map(|(i, _)| member_names.get(&module[..i]).copied())
 }
 
 #[cfg(test)]
