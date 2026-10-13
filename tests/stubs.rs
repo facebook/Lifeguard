@@ -448,4 +448,18 @@ IS_DC = dataclasses.is_dataclass(C)
 "#;
         check(code);
     }
+
+    #[test]
+    fn test_thread_and_context_getters_are_unsafe() {
+        // Deferred, these would see whichever thread first touches the module
+        let code = r#"
+import decimal
+import threading
+
+owner = threading.current_thread()  # E: unsafe-function-call
+decimal.getcontext().prec = 50  # E: unsafe-function-call
+MAIN = threading.main_thread()
+"#;
+        check(code);
+    }
 }

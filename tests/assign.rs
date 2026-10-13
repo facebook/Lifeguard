@@ -311,4 +311,38 @@ def uninstall():
 "#;
         check(code);
     }
+
+    #[test]
+    fn test_store_on_thread_local() {
+        // Only the importing thread sees the store; `__init__` reruns in every thread
+        let code = r#"
+import threading
+
+class State(threading.local):
+    def __init__(self):
+        self.stack = []
+
+class Custom(threading.local):
+    def __setattr__(self, name, value):
+        self.__dict__[name] = value
+
+_state = State()
+_state.depth = 0  # E: unsafe-method-call
+setattr(_state, "depth", 0)  # E: unsafe-method-call
+for _state.depth in [0]:  # E: unsafe-method-call
+    pass
+_state.note: str
+del _state.depth  # E: unsafe-method-call
+with _state as _state.depth:  # E: unsafe-method-call
+    pass
+_custom = Custom()
+_custom.depth = 0  # E: unsafe-method-call
+
+def init():
+    _state.stack = []
+
+init()  # E: unsafe-function-call
+"#;
+        check(code);
+    }
 }

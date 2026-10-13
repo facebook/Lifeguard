@@ -44,8 +44,9 @@ MIN_ETINY: Final[int]
 if sys.version_info >= (3, 14):
     IEEE_CONTEXT_MAX_BITS: Final[int]
 
-def setcontext(context: Context, /) -> None: ...
-def getcontext() -> Context: ...
+# The context belongs to the calling thread or task, which a deferred import does not preserve.
+def setcontext(context: Context, /) -> None: unsafe()
+def getcontext() -> Context: unsafe()
 
 if sys.version_info >= (3, 11):
     def localcontext(
