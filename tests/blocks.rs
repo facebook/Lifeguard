@@ -112,11 +112,8 @@ class C(f(), metaclass=g()):  # E: imported-function-call  # E: imported-functio
         check_effects(code);
     }
 
-    /// Looking up a name has no side effect, so a bare base contributes no call
-    /// of its own. Declaring one still creates the class, which runs
-    /// `__init_subclass__`.
     #[test]
-    fn test_class_base_name_is_not_an_effect() {
+    fn test_class_base_name_records_only_class_creation() {
         let code = r#"
 from foo import Base
 class C(Base):  # E: class-creation

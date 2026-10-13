@@ -1384,20 +1384,16 @@ impl ProjectInfo {
         self.resolve_inherited(&class, method.as_str())
     }
 
-    /// The metaclass a `class` statement calls: the class's own `metaclass=`,
-    /// else the first one declared along its MRO.
+    /// The metaclass a `class` statement calls: the first `metaclass=` declared
+    /// along its MRO, which starts with the class itself.
     fn creation_metaclass(&self, class: &ModuleName) -> Option<ModuleName> {
-        let declared = |cls: &ModuleName| self.classes.lookup(cls).and_then(|info| info.metaclass);
-        if let Some(own) = declared(class) {
-            return Some(own);
-        }
+        // skip linearizing a class without bases, as `resolve_inherited` does
         if !self.class_bases.contains_key(class) {
-            return None;
+            return self.classes.lookup(class)?.metaclass;
         }
         c3_linearize(&self.class_bases, class)
             .iter()
-            .skip(1)
-            .find_map(declared)
+            .find_map(|cls| self.classes.lookup(cls)?.metaclass)
     }
 
     /// The metaclass methods a `class` statement runs. `name` is the
