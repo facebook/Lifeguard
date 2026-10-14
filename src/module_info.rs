@@ -39,6 +39,7 @@ use crate::pyrefly::definitions::DefinitionStyle;
 use crate::pyrefly::definitions::DefinitionVisibility;
 use crate::pyrefly::definitions::Definitions;
 use crate::pyrefly::definitions::MutableCaptureKind;
+use crate::pyrefly::definitions::ScopedDefinition;
 use crate::stubs::Stubs;
 use crate::traits::DefinitionExt;
 use crate::traits::DefinitionsExt;
@@ -146,10 +147,14 @@ impl<'a> ScopeResolver<'a> {
                 continue;
             };
             let position_bounded = kind == ScopeKind::Class && !self.is_stub;
-            let Some(definition) = scope_definitions
-                .definitions
-                .get(&name)
-                .filter(|d| !position_bounded || visible_in_class_body(d, read_at))
+            let Some(definition) = self
+                .alias_in_effect(scope_definitions, &name, read_at, position_bounded)
+                .or_else(|| {
+                    scope_definitions
+                        .definitions
+                        .get(&name)
+                        .filter(|d| !position_bounded || visible_in_class_body(d, read_at))
+                })
                 .or_else(|| comp_target_at(scope_definitions, &name, read_at))
             else {
                 continue;
@@ -164,6 +169,26 @@ impl<'a> ScopeResolver<'a> {
         }
         None
     }
+
+    // Class bodies bound aliases by position; other scopes keep the last binding
+    fn alias_in_effect(
+        self,
+        definitions: &'a Definitions,
+        name: &Name,
+        read_at: TextRange,
+        position_bounded: bool,
+    ) -> Option<&'a Definition> {
+        definitions
+            .scoped_definitions
+            .get(name)?
+            .iter()
+            .rev()
+            .find(|site| {
+                matches!(site.visibility, DefinitionVisibility::ImportAlias)
+                    && (!position_bounded || site.definition.range.start() <= read_at.start())
+            })
+            .map(|site| &site.definition)
+    }
 }
 
 fn comp_target_at<'a>(
@@ -175,7 +200,9 @@ fn comp_target_at<'a>(
         .get(name)?
         .iter()
         .find_map(|target| {
-            let DefinitionVisibility::Comprehension(range) = target.visibility;
+            let DefinitionVisibility::Comprehension(range) = target.visibility else {
+                return None;
+            };
             range.contains_range(read_at).then_some(&target.definition)
         })
 }
@@ -470,20 +497,30 @@ impl<'a> CombinedDefinitionClassBuilder<'a> {
             let Expr::Name(target_name) = target else {
                 continue;
             };
-            let Some(def) = self.definitions_map.get_mut(&scope) else {
+            let Some(module_name) = import_module_state.match_call(call) else {
                 continue;
             };
-            // `Definitions::make` has already recorded every target in this scope,
-            // so rebinding keeps the earliest binding site rather than moving it
-            // to this statement.
-            if let Some(module_name) = import_module_state.match_call(call)
-                && let Some(existing) = def.definitions.get_mut(&target_name.id)
-            {
-                existing.rebind(
-                    DefinitionStyle::ImportAs(module_name, target_name.id.clone()),
-                    target_name.range,
-                );
+            let Some(definitions) = self.definitions_map.get_mut(&scope) else {
+                continue;
+            };
+            if !definitions.definitions.contains_key(&target_name.id) {
+                continue;
             }
+            let alias_at = target_name.range.start();
+            definitions
+                .scoped_definitions
+                .entry(target_name.id.clone())
+                .or_default()
+                .push(ScopedDefinition {
+                    definition: Definition {
+                        style: DefinitionStyle::ImportAs(module_name, target_name.id.clone()),
+                        range: target_name.range,
+                        first_binding: alias_at,
+                        needs_anywhere: false,
+                        docstring_range: None,
+                    },
+                    visibility: DefinitionVisibility::ImportAlias,
+                });
         }
     }
 
@@ -780,29 +817,37 @@ import pkg.sub
     }
 
     #[test]
-    fn test_import_module_rebind_keeps_first_binding_site() {
-        // `process_assign` rewrites the definition of an `import_module` target,
-        // and must leave `first_binding` at the earliest binding site so a read
-        // between the two bindings still sees the class attribute. `importlib` is
-        // imported in the class body because that is the scope whose importlib
-        // state `process_assign` reads.
+    fn test_import_module_alias_is_recorded_at_its_own_site() {
         let code = r#"
 class C:
     import importlib
     x = 1
     x = importlib.import_module("m")
 "#;
+        let scope = ModuleName::from_str("test.C");
         let (definitions, _classes) = build_definitions(code);
-        let def = definitions
-            .get(&ModuleName::from_str("test.C"), &Name::new("x"))
-            .unwrap();
+
+        let def = definitions.get(&scope, &Name::new("x")).unwrap();
         assert!(
-            matches!(def.style, DefinitionStyle::ImportAs(..)),
-            "the last binding should still win for `style`, got {:?}",
+            !def.is_import(),
+            "the alias must not replace the earlier definition, got {:?}",
             def.style
         );
-        let first_binding = TextSize::try_from(code.find("x = 1").unwrap()).unwrap();
-        assert_eq!(def.first_binding, first_binding);
+
+        let aliases = definitions
+            .definitions
+            .get(&scope)
+            .and_then(|scope_defs| scope_defs.scoped_definitions.get(&Name::new("x")))
+            .expect("`x` should have an import alias");
+        let [alias] = aliases.as_slice() else {
+            panic!("expected exactly one alias, got {}", aliases.len());
+        };
+        assert!(matches!(
+            alias.definition.style,
+            DefinitionStyle::ImportAs(..)
+        ));
+        let alias_at = TextSize::try_from(code.find("x = importlib").unwrap()).unwrap();
+        assert_eq!(alias.definition.range.start(), alias_at);
     }
 
     /// Resolve `name` from inside `test.C`'s body, reading at the first

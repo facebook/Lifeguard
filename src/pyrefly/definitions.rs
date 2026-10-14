@@ -186,6 +186,7 @@ pub struct ScopedDefinition {
 /// Visibility bounds for entries kept outside the ordinary name table.
 pub enum DefinitionVisibility {
     Comprehension(TextRange),
+    ImportAlias,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

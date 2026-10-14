@@ -862,6 +862,52 @@ class Question:
         );
     }
 
+    #[test]
+    fn test_class_attribute_read_above_an_import_alias_is_not_the_alias() {
+        check_field(
+            r#"
+from helpers import field
+
+class Question:
+    import importlib
+
+    field: str = ""
+    choices = field(default=[])  # E: function-call
+    field = importlib.import_module("helpers")
+"#,
+        );
+    }
+
+    #[test]
+    fn test_class_attribute_read_below_an_import_alias_is_the_alias() {
+        check_field(
+            r#"
+from helpers import field
+
+class Question:
+    import importlib
+
+    field: str = ""
+    field = importlib.import_module("helpers")
+    choices = field.field(default=[])  # E: imported-function-call
+"#,
+        );
+    }
+
+    #[test]
+    fn test_module_scope_is_not_positional_for_import_aliases() {
+        check_field(
+            r#"
+from helpers import field
+import importlib
+
+field: str = ""  # E: imported-var-mutation
+choices = field(default=[])  # E: imported-function-call
+field = importlib.import_module("helpers")
+"#,
+        );
+    }
+
     // Text position stands in for execution order. These two are where they part
     // company: a binding's own initializer runs before the target it is
     // positioned after, and a loop back-edge re-runs a read above a binding.
