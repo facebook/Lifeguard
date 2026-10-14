@@ -153,10 +153,9 @@ pub struct Definitions {
     /// All the names defined in this scope, including mutable captures
     /// (`global` and `nonlocal` declarations)
     pub definitions: SmallMap<Name, Definition>,
-    /// Comprehension generator targets (e.g. `x` in `[... for x in xs]`), kept
-    /// out of `definitions` so they don't leak into the enclosing scope but stay
-    /// resolvable within the comprehension's range.
-    pub comp_targets: SmallMap<Name, Vec<CompTarget>>,
+    /// Keep definitions with limited visibility outside the ordinary name table
+    /// so they cannot shadow reads outside their valid region.
+    pub scoped_definitions: SmallMap<Name, Vec<ScopedDefinition>>,
     /// All the modules that are imported with `from x import *`.
     pub import_all: SmallMap<ModuleName, TextRange>,
     /// The `__all__` variable contents.
@@ -177,9 +176,16 @@ pub struct Definitions {
 }
 
 #[derive(Debug, Clone)]
-pub struct CompTarget {
+/// A definition whose visibility cannot be summarized for the whole scope.
+pub struct ScopedDefinition {
     pub definition: Definition,
-    pub comp_range: TextRange,
+    pub visibility: DefinitionVisibility,
+}
+
+#[derive(Debug, Clone, Copy)]
+/// Visibility bounds for entries kept outside the ordinary name table.
+pub enum DefinitionVisibility {
+    Comprehension(TextRange),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -466,12 +472,12 @@ impl<'a> DefinitionsBuilder<'a> {
                 docstring_range: None,
             };
             self.inner
-                .comp_targets
+                .scoped_definitions
                 .entry(x.id.clone())
                 .or_default()
-                .push(CompTarget {
+                .push(ScopedDefinition {
                     definition,
-                    comp_range,
+                    visibility: DefinitionVisibility::Comprehension(comp_range),
                 });
         });
     }

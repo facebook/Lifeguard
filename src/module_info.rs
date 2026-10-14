@@ -36,6 +36,7 @@ use crate::module_parser::ParsedModule;
 use crate::module_safety::ParamPosition;
 use crate::pyrefly::definitions::Definition;
 use crate::pyrefly::definitions::DefinitionStyle;
+use crate::pyrefly::definitions::DefinitionVisibility;
 use crate::pyrefly::definitions::Definitions;
 use crate::pyrefly::definitions::MutableCaptureKind;
 use crate::stubs::Stubs;
@@ -170,12 +171,13 @@ fn comp_target_at<'a>(
     name: &Name,
     read_at: TextRange,
 ) -> Option<&'a Definition> {
-    defs.comp_targets.get(name)?.iter().find_map(|target| {
-        target
-            .comp_range
-            .contains_range(read_at)
-            .then_some(&target.definition)
-    })
+    defs.scoped_definitions
+        .get(name)?
+        .iter()
+        .find_map(|target| {
+            let DefinitionVisibility::Comprehension(range) = target.visibility;
+            range.contains_range(read_at).then_some(&target.definition)
+        })
 }
 
 /// A class namespace fills as the body runs, so `x = f()` above `def f()` calls
