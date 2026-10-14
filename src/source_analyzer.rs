@@ -1409,6 +1409,8 @@ impl<'a> SourceAnalyzer<'a> {
             Expr::Tuple(e) => return self.check_assign_targets(&e.elts, output),
             Expr::List(e) => return self.check_assign_targets(&e.elts, output),
             Expr::Starred(e) => return self.check_assign_target(&e.value, output),
+            // `del x` only unbinds the name
+            Expr::Name(e) if e.ctx == ExprContext::Del => return,
             _ => {}
         }
 
@@ -1520,10 +1522,8 @@ impl<'a> SourceAnalyzer<'a> {
 
     fn delete(&self, x: &StmtDelete, output: &mut ModuleEffects) {
         for target in &x.targets {
-            if matches!(target, Expr::Subscript(_) | Expr::Attribute(_)) {
-                self.check_assign_target(target, output);
-                self.check_target_operands(target, output);
-            }
+            self.check_assign_target(target, output);
+            self.check_target_operands(target, output);
         }
     }
 
