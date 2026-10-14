@@ -19,6 +19,7 @@ use ruff_python_ast::StmtIf;
 use ruff_python_ast::StmtImport;
 use ruff_python_ast::StmtImportFrom;
 use ruff_python_ast::name::Name;
+use ruff_text_size::TextRange;
 
 use crate::config::AnalysisConfig;
 use crate::exports::Exports;
@@ -31,6 +32,61 @@ use crate::module_parser::ParsedModule;
 use crate::source_map::ModuleProvider;
 use crate::tracing::time;
 use crate::traits::ModuleNameExt;
+
+/// One `import` / `from ... import` statement, as the import graph saw it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportSite {
+    pub range: TextRange,
+    pub is_lazy: bool,
+    pub lazy_syntax: LazySyntax,
+    /// The names the graph builder collected for this statement, in order and
+    /// with repeats: parents for `import a.b.c`, the parent and submodule (or
+    /// ambiguous candidate) for `from a import b`. Names outside the graph are
+    /// kept, though the graph stores them as missing imports instead of edges.
+    pub targets: Vec<ImportTarget>,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct ImportTarget {
+    pub module: ModuleName,
+    pub ambiguous: bool,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum LazySyntax {
+    Allowed,
+    NotAllowed(NotAllowedReason),
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum NotAllowedReason {
+    Function,
+    Class,
+    Try,
+    Star,
+    Future,
+}
+
+/// The import statements of `parsed` that the graph builder visits, in source
+/// order. Statements in statically pruned `if` branches are skipped. `graph`
+/// must come from the builder: a graph rebuilt from a cache lacks the
+/// unparseable modules, so ambiguity would not match the build.
+pub fn import_sites(
+    parsed: &ParsedModule,
+    graph: &ImportGraph,
+    config: &AnalysisConfig,
+) -> Vec<ImportSite> {
+    let mut collector = ModuleImportCollector::new(
+        parsed.name,
+        parsed.is_init,
+        &graph.graph,
+        &graph.unparseable,
+        config,
+    );
+    collector.sites = Some(Vec::new());
+    collector.stmts(&parsed.ast.body);
+    collector.sites.unwrap()
+}
 
 #[derive(Debug, Copy, Clone)]
 pub struct ImportlibState {
@@ -191,6 +247,9 @@ pub struct ImportGraph {
     /// run in the module the binary starts from and nowhere else, but the map
     /// does not know which module that is, so the tag travels to the reduce.
     main_guard_only: AHashMap<ModuleName, AHashSet<ModuleName>>,
+    /// Modules dropped from the graph after import collection because they
+    /// failed to parse. Collection still saw them as nodes.
+    unparseable: AHashSet<ModuleName>,
 }
 
 impl ImportGraph {
@@ -200,6 +259,7 @@ impl ImportGraph {
             missing: AHashMap::new(),
             ambiguous: AHashMap::new(),
             main_guard_only: AHashMap::new(),
+            unparseable: AHashSet::new(),
         }
     }
 
@@ -329,6 +389,7 @@ struct ModuleImportCollector<'a> {
     module: ModuleName,
     is_init: bool,
     graph: &'a Graph,
+    unparseable: &'a AHashSet<ModuleName>,
     config: &'a AnalysisConfig,
     imports: Imports,
     ambiguous_imports: Imports,
@@ -344,6 +405,9 @@ struct ModuleImportCollector<'a> {
     main_guard_depth: usize,
     has_importlib: bool,
     has_import_module: bool,
+    sites: Option<Vec<ImportSite>>,
+    current_site: Option<ImportSite>,
+    lazy_context: Option<NotAllowedReason>,
 }
 
 impl<'a> ModuleImportCollector<'a> {
@@ -351,12 +415,14 @@ impl<'a> ModuleImportCollector<'a> {
         module: ModuleName,
         is_init: bool,
         graph: &'a Graph,
+        unparseable: &'a AHashSet<ModuleName>,
         config: &'a AnalysisConfig,
     ) -> Self {
         Self {
             module,
             is_init,
             graph,
+            unparseable,
             config,
             imports: Imports::new(),
             ambiguous_imports: Imports::new(),
@@ -365,6 +431,9 @@ impl<'a> ModuleImportCollector<'a> {
             main_guard_depth: 0,
             has_importlib: false,
             has_import_module: false,
+            sites: None,
+            current_site: None,
+            lazy_context: None,
         }
     }
 
@@ -391,10 +460,50 @@ impl<'a> ModuleImportCollector<'a> {
     /// guard. Every insertion into `imports` goes through here so the two sets
     /// cannot drift.
     fn record(&mut self, m: ModuleName) {
+        self.push_target(m, false);
         self.imports.insert(m);
         if self.main_guard_depth == 0 {
             self.unguarded_imports.insert(m);
         }
+    }
+
+    fn push_target(&mut self, module: ModuleName, ambiguous: bool) {
+        if let Some(site) = &mut self.current_site {
+            site.targets.push(ImportTarget { module, ambiguous });
+        }
+    }
+
+    /// Whether `m` was a node while the graph builder collected imports.
+    fn contains(&self, m: &ModuleName) -> bool {
+        self.graph.contains(m) || self.unparseable.contains(m)
+    }
+
+    fn start_site(
+        &mut self,
+        range: TextRange,
+        is_lazy: bool,
+        not_allowed: Option<NotAllowedReason>,
+    ) {
+        if self.sites.is_some() {
+            self.current_site = Some(ImportSite {
+                range,
+                is_lazy,
+                lazy_syntax: not_allowed.map_or(LazySyntax::Allowed, LazySyntax::NotAllowed),
+                targets: Vec::new(),
+            });
+        }
+    }
+
+    fn finish_site(&mut self) {
+        if let Some(site) = self.current_site.take() {
+            self.sites.as_mut().unwrap().push(site);
+        }
+    }
+
+    fn in_lazy_context(&mut self, reason: NotAllowedReason, visit: impl FnOnce(&mut Self)) {
+        let outer = self.lazy_context.replace(reason);
+        visit(self);
+        self.lazy_context = outer;
     }
 
     fn if_(&mut self, s: &StmtIf) {
@@ -422,13 +531,20 @@ impl<'a> ModuleImportCollector<'a> {
             Stmt::ImportFrom(x) => self.import_from(x),
             // `if` is separate because its branches may be pruned
             Stmt::If(x) => self.if_(x),
-            Stmt::Try(_) | Stmt::With(_) | Stmt::For(_) | Stmt::While(_) | Stmt::Match(_) => {
+            Stmt::Try(_) => self.in_lazy_context(NotAllowedReason::Try, |collector| {
+                s.recurse(&mut |stmt| collector.stmt(stmt))
+            }),
+            Stmt::With(_) | Stmt::For(_) | Stmt::While(_) | Stmt::Match(_) => {
                 s.recurse(&mut |stmt| self.stmt(stmt))
             }
             Stmt::Expr(x) => self.expr(&x.value),
             Stmt::Assign(x) => self.assign(x),
-            Stmt::FunctionDef(x) => self.stmts(&x.body),
-            Stmt::ClassDef(x) => self.stmts(&x.body),
+            Stmt::FunctionDef(x) => self.in_lazy_context(NotAllowedReason::Function, |collector| {
+                collector.stmts(&x.body)
+            }),
+            Stmt::ClassDef(x) => self.in_lazy_context(NotAllowedReason::Class, |collector| {
+                collector.stmts(&x.body)
+            }),
             _ => {}
         }
     }
@@ -457,6 +573,7 @@ impl<'a> ModuleImportCollector<'a> {
     }
 
     fn import(&mut self, import: &StmtImport) {
+        self.start_site(import.range, import.is_lazy, self.lazy_context);
         for name in &import.names {
             let imp = ModuleName::from_name(&name.name.id);
             let imp_str = imp.as_str();
@@ -471,10 +588,24 @@ impl<'a> ModuleImportCollector<'a> {
             }
             self.record(imp);
         }
+        self.finish_site();
     }
 
     // from parent import a, b, c, ...
     fn import_from(&mut self, import: &StmtImportFrom) {
+        let not_allowed =
+            if import.level == 0 && import.module.as_ref().is_some_and(|m| m.id == "__future__") {
+                Some(NotAllowedReason::Future)
+            } else {
+                self.lazy_context.or_else(|| {
+                    import
+                        .names
+                        .iter()
+                        .any(|name| name.name.id == "*")
+                        .then_some(NotAllowedReason::Star)
+                })
+            };
+        self.start_site(import.range, import.is_lazy, not_allowed);
         // `parent` is a potentially relative name, we need to resolve it with the current module
         let rel = import.module.as_ref().map(|x| &x.id);
         if let Some(parent) = self
@@ -489,6 +620,7 @@ impl<'a> ModuleImportCollector<'a> {
                 self.import_from_single(parent, &name.name.id);
             }
         }
+        self.finish_site();
     }
 
     // Helper for `import_from`, handles a single import in `from parent import a, b, ...`
@@ -507,13 +639,14 @@ impl<'a> ModuleImportCollector<'a> {
             parent.append(name)
         };
 
-        if self.graph.contains(&maybe_sub) || !self.graph.contains(&parent) {
+        if self.contains(&maybe_sub) || !self.contains(&parent) {
             self.record(maybe_sub);
         } else {
             // Parent is in graph but child is not. Could be an attribute
             // of the parent or a submodule defined in a different library.
             // Record as ambiguous for cross-library resolution.
             self.ambiguous_imports.insert(maybe_sub);
+            self.push_target(maybe_sub, true);
             if self.main_guard_depth == 0 {
                 self.unguarded_ambiguous.insert(maybe_sub);
             }
@@ -533,6 +666,7 @@ struct ImportGraphBuilder<'a> {
     main_guard_only: AHashMap<ModuleName, AHashSet<ModuleName>>,
     missing: AHashMap<ModuleName, AHashSet<ModuleName>>,
     ambiguous: AHashMap<ModuleName, AHashSet<ModuleName>>,
+    unparseable: AHashSet<ModuleName>,
     config: &'a AnalysisConfig,
 }
 
@@ -545,6 +679,7 @@ impl<'a> ImportGraphBuilder<'a> {
             main_guard_only: AHashMap::new(),
             missing: AHashMap::new(),
             ambiguous: AHashMap::new(),
+            unparseable: AHashSet::new(),
             config,
         }
     }
@@ -558,7 +693,13 @@ impl<'a> ImportGraphBuilder<'a> {
     }
 
     fn collect_imports(&self, name: ModuleName, module: &ParsedModule) -> CollectedImports {
-        let collector = ModuleImportCollector::new(name, module.is_init, &self.graph, self.config);
+        let collector = ModuleImportCollector::new(
+            name,
+            module.is_init,
+            &self.graph,
+            &self.unparseable,
+            self.config,
+        );
         let (imports, ambiguous, main_guard_only) = collector.collect(&module.ast);
         CollectedImports {
             module: name,
@@ -571,6 +712,7 @@ impl<'a> ImportGraphBuilder<'a> {
     fn remove_unparseable_nodes(&mut self, failures: Vec<ModuleName>) {
         for name in failures {
             self.graph.remove_node(&name);
+            self.unparseable.insert(name);
         }
     }
 
@@ -602,6 +744,7 @@ impl<'a> ImportGraphBuilder<'a> {
             missing: self.missing,
             ambiguous: self.ambiguous,
             main_guard_only: self.main_guard_only,
+            unparseable: self.unparseable,
         }
     }
 
