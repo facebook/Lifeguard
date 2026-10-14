@@ -274,13 +274,9 @@ fn sys_modules_key(e: &ExprSubscript) -> Option<ModuleName> {
 /// reordered past such a delete, and these keys are read from function bodies.
 const EXPECTED_IN_SYS_MODULES: &[&str] = &["__main__", "builtins", "sys"];
 
-/// Classes whose instances hold per-thread state, each paired with the class defining
-/// its `__setattr__`. A store on one reaches only the thread that makes it.
-const THREAD_LOCAL_CLASSES: &[(&str, &str)] = &[
-    ("threading.local", "_thread._local"),
-    ("_thread._local", "_thread._local"),
-    ("_threading_local.local", "_threading_local.local"),
-];
+/// Classes whose instances hold per-thread state; `_thread._local` defines their
+/// `__setattr__`. A store on one reaches only the thread that makes it.
+const THREAD_LOCAL_CLASSES: &[&str] = &["threading.local", "_thread._local"];
 
 fn is_builtin_literal(expr: &Expr) -> bool {
     matches!(
@@ -429,11 +425,8 @@ impl<'a> SourceAnalyzer<'a> {
         let mut pending = vec![*typ];
         let mut seen = AHashSet::new();
         while let Some(typ) = pending.pop() {
-            if let Some((_, owner)) = THREAD_LOCAL_CLASSES
-                .iter()
-                .find(|(c, _)| *c == typ.as_str())
-            {
-                return Some(ModuleName::from_str(owner));
+            if THREAD_LOCAL_CLASSES.contains(&typ.as_str()) {
+                return Some(ModuleName::from_str("_thread._local"));
             }
             if seen.insert(typ)
                 && let Some(cls) = self.info.classes.lookup(&typ)
@@ -446,8 +439,9 @@ impl<'a> SourceAnalyzer<'a> {
 
     /// A store on a thread-local is invisible to every other thread, so it runs the
     /// base class's `__setattr__` (or `__delattr__`) as a call and lets the stub decide.
-    /// A subclass override is not trusted: it almost always stores per-thread too. The
-    /// same holds for `__slots__` attributes, although their values are shared.
+    /// A subclass override is not trusted: it almost always stores per-thread too.
+    /// Stores to `__slots__` attributes are flagged as well, although slot values are
+    /// shared across threads.
     fn check_thread_local_store(
         &self,
         obj: &Expr,
@@ -461,9 +455,6 @@ impl<'a> SourceAnalyzer<'a> {
         let Some(res) = self.info.resolve(&self.cursor, obj) else {
             return;
         };
-        if res.is_import() {
-            return;
-        }
         let Some(base) = self
             .info
             .bindings

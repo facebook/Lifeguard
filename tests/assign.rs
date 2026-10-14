@@ -345,4 +345,24 @@ init()  # E: unsafe-function-call
 "#;
         check(code);
     }
+
+    #[test]
+    fn test_store_on_thread_local_instance() {
+        let code = r#"
+import _thread
+import threading
+import threading as t
+from threading import local
+
+a = threading.local()
+a.x = 0  # E: unsafe-method-call
+b = local()
+b.x = 0  # E: unsafe-method-call
+c = t.local()
+c.x = 0  # E: unsafe-method-call
+d = _thread._local()
+d.x = 0  # E: unsafe-method-call
+"#;
+        check(code);
+    }
 }
