@@ -112,17 +112,6 @@ impl Definition {
         self.first_binding = self.first_binding.min(range.start());
     }
 
-    /// LIFEGUARD: replace this definition outright, for the callers whose style
-    /// must win over the lower-ordered one `merge` would keep. Only
-    /// `first_binding` survives.
-    pub fn rebind(&mut self, style: DefinitionStyle, range: TextRange) {
-        self.update_first_binding(range);
-        self.style = style;
-        self.range = range;
-        self.needs_anywhere = false;
-        self.docstring_range = None;
-    }
-
     fn merge(&mut self, other: DefinitionStyle, range: TextRange) {
         // To ensure binding code cannot produce invalid lookups, we ensure that
         // `self.style` and `self.range` always match.
