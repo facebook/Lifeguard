@@ -1118,6 +1118,42 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_failing_consumer_implicit_import_guards_chain() {
+        // A failing consumer loads eagerly, but the provider's `from pkg import leaf`
+        // still defers unless the chain and the target are guarded.
+        let consumer = r#"
+            import pkg.mid
+            pkg.mid.registry = {}
+
+            def read():
+                return pkg.leaf.AmeLocation
+        "#;
+        let modules = vec![
+            ("pkg.__init__", ""),
+            ("pkg.leaf", "class AmeLocation:\n    pass"),
+            ("pkg.provider", "from pkg import leaf"),
+            ("pkg.mid", "import pkg.provider"),
+            ("consumer", consumer),
+        ];
+
+        let result = run_lifeguard_analysis(&modules);
+
+        assert!(
+            result
+                .summary
+                .failing_modules
+                .contains(&ModuleName::from_str("consumer")),
+            "consumer should be failing"
+        );
+        for module in ["pkg.leaf", "pkg.mid", "pkg.provider"] {
+            assert!(
+                has_lazy_eligible_dep(&result, module, "pkg.leaf"),
+                "{module} should have pkg.leaf in its guard list"
+            );
+        }
+    }
+
     fn run_lifeguard_analysis_verbose(modules: &Vec<(&str, &str)>) -> LifeGuardAnalysis {
         run_lifeguard_analysis_with(modules, &verbose_test_options())
     }

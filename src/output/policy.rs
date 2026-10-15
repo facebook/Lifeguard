@@ -451,16 +451,15 @@ fn propagate_implicit_imports_along_chains(
     classified: &ClassifiedModules,
     lazy_eligible: &DashMap<ModuleName, SmallSet<ModuleName>>,
 ) {
-    // Group by target so each is walked once, not once per consumer.
+    // Group by target so each is walked once, not once per consumer. Failing consumers
+    // count too: they load eagerly, but the imports that provide `target` can still defer.
     let mut consumers_by_target: AHashMap<ModuleName, Vec<ModuleName>> = AHashMap::new();
     for (consumer, targets) in &classified.implicit_imports {
-        if classified.passing_modules.contains(consumer) {
-            for target in targets {
-                consumers_by_target
-                    .entry(*target)
-                    .or_default()
-                    .push(*consumer);
-            }
+        for target in targets {
+            consumers_by_target
+                .entry(*target)
+                .or_default()
+                .push(*consumer);
         }
     }
 
