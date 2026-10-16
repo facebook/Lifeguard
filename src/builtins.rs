@@ -184,12 +184,13 @@ mod tests {
 
     #[test]
     fn test_unsafe_builtins() {
-        // Check that everything we mark in UNSAFE_BUILTINS has an effect added in builtins.pyi
         let stubs = Stubs::new();
         let builtins = stubs.builtins();
         for b in &*UNSAFE_BUILTINS {
-            let name = Name::new(b);
-            assert!(builtins.check_call_effects(&name, |_| true))
+            assert!(
+                builtins.is_prohibited_call(&Name::new(b)),
+                "`{b}` should be a prohibited call",
+            );
         }
     }
 
