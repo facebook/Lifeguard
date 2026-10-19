@@ -554,6 +554,47 @@ async def g():
     }
 
     #[test]
+    fn test_safelist_holds_through_re_exports() {
+        let wait = r#"
+def wait_exponential(*args, **kwargs):
+    raise()
+
+def wait_chain(*args):
+    raise()
+"#;
+        let artillery = r#"
+def trace_block(f):
+    raise()
+"#;
+        let tenacity = r#"
+from tenacity.wait import wait_chain, wait_exponential
+"#;
+        let api = r#"
+from artillery2.api.decorators import trace_block
+"#;
+        let main = r#"
+import tenacity
+from artillery2.api import trace_block
+from tenacity import wait_exponential
+
+A = tenacity.wait_exponential(min=1)
+B = wait_exponential(max=10)
+C = tenacity.wait_chain()  # E: unsafe-function-call
+
+@trace_block
+def f():
+    return 1
+"#;
+        check_all(vec![
+            ("tenacity.wait", wait),
+            ("tenacity", tenacity),
+            ("artillery2.api.decorators", artillery),
+            ("artillery2.api", api),
+            ("__main__", main),
+        ]);
+    }
+
+    #[test]
     fn test_thread_and_context_getters_are_unsafe() {
         // Deferred, these would see whichever thread first touches the module
         let code = r#"

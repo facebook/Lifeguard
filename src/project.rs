@@ -50,6 +50,7 @@ use crate::hasher::HashMapExt;
 use crate::hasher::HashSetExt;
 use crate::hasher::union_larger;
 use crate::imports::ImportGraph;
+use crate::manual_override;
 use crate::module_effects::ModuleEffects;
 use crate::module_effects::ModuleImportsMap;
 use crate::module_parser::ParsedModule;
@@ -1444,6 +1445,7 @@ impl ProjectInfo {
         time("    Marking recursive functions", || {
             self.mark_recursive_functions_unsafe(&call_graph, &state)
         });
+        self.mark_declared_safe(&call_graph, &state);
         time("    Precompute safety in dependency order", || {
             self.precompute_safety_in_dependency_order(&call_graph, &state)
         });
@@ -1853,6 +1855,17 @@ impl ProjectInfo {
         }
     }
 
+    /// Seed safelisted definitions so cached verdicts agree with `check_call`.
+    fn mark_declared_safe(&self, graph: &CallGraph, state: &GlobalAnalysisState) {
+        for name in graph
+            .names
+            .iter()
+            .filter(|n| manual_override::declared_safe(n))
+        {
+            state.mark_safe(name);
+        }
+    }
+
     /// Compute every function and class verdict in dependency order.
     ///
     /// A node is visited only once every callee it reaches has a final verdict.
@@ -2202,6 +2215,10 @@ impl ProjectInfo {
     }
 
     fn check_call(&self, call: &mut Call, state: &GlobalAnalysisState) -> Result<bool> {
+        // the call site saw a re-export name, so the safelist missed it there
+        if manual_override::declared_safe(&call.func) {
+            return Ok(true);
+        }
         let mut ret = if self.classes.contains(&call.func) {
             // This is a class constructor
             self.check_constructor_call(call, state)?
