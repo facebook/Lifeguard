@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+use std::hash::Hash;
 
 use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
@@ -33,7 +34,6 @@ use crate::hasher::HashMapExt;
 use crate::hasher::HashSetExt;
 use crate::module_safety::FunctionSafetyInfo;
 use crate::module_safety::ModuleSafety;
-use crate::module_safety::MutationCandidate;
 use crate::module_safety::SafetyResult;
 
 /// Working map used to dedup re-exports during the reduce, keyed by the exported
@@ -270,14 +270,28 @@ pub fn dedupe_implicit_imports(implicit_imports: &mut Vec<ModuleName>) {
 impl CachedModule {
     /// Merge another CachedModule (same name) into this one.
     pub(crate) fn merge(&mut self, other: CachedModule) {
-        self.imports.extend(other.imports);
-        self.missing_imports
-            .retain(|m| other.missing_imports.contains(m));
-        self.main_guard.merge(other.main_guard);
-        self.ambiguous_imports.extend(other.ambiguous_imports);
-        self.side_effect_imports.extend(other.side_effect_imports);
-        self.safety.merge(other.safety);
-        for (name, info) in other.function_safety {
+        // Named exhaustively so that a new fact on `CachedModule` is a compile
+        // error until it has a merge strategy added.
+        let CachedModule {
+            name: _,
+            safety,
+            imports,
+            missing_imports,
+            ambiguous_imports,
+            side_effect_imports,
+            function_safety,
+            mutation_candidates,
+            property_candidates,
+            main_guard,
+        } = other;
+
+        self.imports.extend(imports);
+        self.missing_imports.retain(|m| missing_imports.contains(m));
+        self.main_guard.merge(main_guard);
+        self.ambiguous_imports.extend(ambiguous_imports);
+        self.side_effect_imports.extend(side_effect_imports);
+        self.safety.merge(safety);
+        for (name, info) in function_safety {
             match self.function_safety.entry(name) {
                 Entry::Occupied(mut entry) => {
                     entry.get_mut().merge(info);
@@ -287,28 +301,30 @@ impl CachedModule {
                 }
             }
         }
-        let mut seen: AHashSet<&MutationCandidate> = self.mutation_candidates.iter().collect();
-        let keep: Vec<bool> = other
-            .mutation_candidates
-            .iter()
-            .map(|candidate| seen.insert(candidate))
-            .collect();
-        // Release the borrowed candidates before moving the retained values.
-        drop(seen);
-        self.mutation_candidates.extend(
-            other
-                .mutation_candidates
-                .into_iter()
-                .zip(keep)
-                .filter_map(|(candidate, keep)| keep.then_some(candidate)),
-        );
+        extend_deduped(&mut self.mutation_candidates, mutation_candidates);
         // Unlike mutation candidates, property candidates are resolved independently of
         // each other, so they can simply be sorted and deduped.
-        self.property_candidates.extend(other.property_candidates);
+        self.property_candidates.extend(property_candidates);
         self.property_candidates.sort_unstable();
         self.property_candidates.dedup();
     }
 }
+
+/// Append the items of `other` that `target` does not already hold, in order.
+fn extend_deduped<T: Eq + Hash>(target: &mut Vec<T>, other: Vec<T>) {
+    // A set of `&T` borrows `target`, so decide first and append second. Hashes
+    // as keys would drop a collision; owned keys would clone every element.
+    let mut seen: AHashSet<&T> = target.iter().collect();
+    let keep: Vec<bool> = other.iter().map(|item| seen.insert(item)).collect();
+    drop(seen);
+    target.extend(
+        other
+            .into_iter()
+            .zip(keep)
+            .filter_map(|(item, keep)| keep.then_some(item)),
+    );
+}
+
 impl CachedSafety {
     /// Merge another safety result, keeping the more conservative outcome.
     /// AnalysisError always wins. Between two Ok results, keep the union of errors.
@@ -465,5 +481,29 @@ mod tests {
             Some(&vec![base_a, base_b]),
             "duplicate FQN base lists union preserving first-seen order, not last-wins",
         );
+    }
+
+    #[test]
+    fn extend_deduped_appends_novel_items_in_order() {
+        let mut target = vec![3, 1, 2];
+        extend_deduped(&mut target, vec![2, 4, 1, 4, 5]);
+        assert_eq!(
+            target,
+            vec![3, 1, 2, 4, 5],
+            "only items absent from target are appended, in the order `other` gave them",
+        );
+    }
+
+    #[test]
+    fn extend_deduped_leaves_existing_duplicates_alone() {
+        // `target` is appended to, never rebuilt: deduping it would drop a
+        // candidate the caller recorded, changing per-call-site multiplicity.
+        let mut target = vec![1, 1, 2];
+        extend_deduped(&mut target, vec![2, 3]);
+        assert_eq!(target, vec![1, 1, 2, 3], "pre-existing duplicates survive");
+
+        let mut untouched = vec![5, 5];
+        extend_deduped(&mut untouched, vec![]);
+        assert_eq!(untouched, vec![5, 5], "an empty `other` changes nothing");
     }
 }
