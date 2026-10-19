@@ -5,6 +5,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::mem;
+
 use pyrefly_python::module_name::ModuleName;
 use ruff_python_ast::StmtClassDef;
 use ruff_python_ast::StmtFunctionDef;
@@ -45,6 +47,8 @@ impl Scope {
 #[derive(Debug, Clone)]
 pub struct Cursor {
     block_stack: BlockStack,
+    // One saved block stack per enclosing function scope.
+    outer_block_stacks: Vec<BlockStack>,
     scopes: Vec<Scope>,
     // Fully-qualified ModuleName at each scope depth.
     // qualified_scopes[i] == ModuleName::from_parts(scopes[0..=i].map(|s| &s.name))
@@ -55,6 +59,7 @@ impl Cursor {
     pub fn new() -> Self {
         Self {
             block_stack: BlockStack::new(),
+            outer_block_stacks: Vec::new(),
             scopes: Vec::new(),
             qualified_scopes: Vec::new(),
         }
@@ -96,7 +101,11 @@ impl Cursor {
         self.enter_function_scope_name(func.name.id.clone());
     }
 
+    /// A function body runs where the function is called, so the blocks around
+    /// its `def` do not enclose the body.
     pub fn enter_function_scope_name(&mut self, name: Name) {
+        let outer = mem::replace(&mut self.block_stack, BlockStack::new());
+        self.outer_block_stacks.push(outer);
         self.push_scope(ScopeKind::Function, name);
     }
 
@@ -118,7 +127,14 @@ impl Cursor {
     }
 
     pub fn exit_scope(&mut self) {
-        self.scopes.pop();
+        if let Some(scope) = self.scopes.pop()
+            && scope.kind == ScopeKind::Function
+        {
+            self.block_stack = self
+                .outer_block_stacks
+                .pop()
+                .expect("should have saved the blocks when entering the function scope");
+        }
         self.qualified_scopes.pop();
     }
 

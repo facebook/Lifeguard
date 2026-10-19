@@ -134,6 +134,33 @@ except TypeError:
     }
 
     #[test]
+    fn test_raise_in_function_defined_in_try() {
+        let code = r#"
+try:
+    def f():
+        raise ValueError("bye!")
+    raise ValueError("caught")
+except ValueError:
+    ...
+
+f()  # E: unsafe-function-call
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_raise_in_class_body_in_try() {
+        let code = r#"
+try:
+    class C:
+        raise ValueError("bye!")
+except ValueError:
+    ...
+"#;
+        check(code);
+    }
+
+    #[test]
     fn test_raise_in_handler() {
         let code = r#"
 try:
