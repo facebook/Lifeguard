@@ -12,3 +12,61 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
+# ctors only set attributes, decorators return update_wrapper closures
+
+from collections.abc import Callable, MutableMapping
+from typing import Any
+
+class Cache(MutableMapping[Any, Any]):
+    def __init__(self, maxsize: float, getsizeof: Callable[[Any], float] | None = None) -> None: no_effects()
+
+class FIFOCache(Cache):
+    def __init__(self, maxsize: float, getsizeof: Callable[[Any], float] | None = None) -> None: no_effects()
+
+class LFUCache(Cache):
+    def __init__(self, maxsize: float, getsizeof: Callable[[Any], float] | None = None) -> None: no_effects()
+
+class LRUCache(Cache):
+    def __init__(self, maxsize: float, getsizeof: Callable[[Any], float] | None = None) -> None: no_effects()
+
+class RRCache(Cache):
+    def __init__(
+        self,
+        maxsize: float,
+        choice: Callable[[Any], Any] = ...,
+        getsizeof: Callable[[Any], float] | None = None,
+    ) -> None: no_effects()
+
+class TTLCache(Cache):
+    def __init__(
+        self,
+        maxsize: float,
+        ttl: float,
+        timer: Callable[[], float] = ...,
+        getsizeof: Callable[[Any], float] | None = None,
+    ) -> None: no_effects()
+
+class TLRUCache(Cache):
+    def __init__(
+        self,
+        maxsize: float,
+        ttu: Callable[[Any, Any, float], float],
+        timer: Callable[[], float] = ...,
+        getsizeof: Callable[[Any], float] | None = None,
+    ) -> None: no_effects()
+
+def cached(
+    cache: MutableMapping[Any, Any] | None,
+    key: Callable[..., Any] = ...,
+    lock: Any = None,
+    condition: Any = None,
+    info: bool = False,
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]: no_effects()
+
+def cachedmethod(
+    cache: Callable[[Any], MutableMapping[Any, Any] | None],
+    key: Callable[..., Any] = ...,
+    lock: Callable[[Any], Any] | None = None,
+    condition: Callable[[Any], Any] | None = None,
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]: no_effects()

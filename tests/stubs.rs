@@ -450,6 +450,34 @@ IS_DC = dataclasses.is_dataclass(C)
     }
 
     #[test]
+    fn test_cachetools_caches_and_decorators_safe() {
+        let code = r#"
+import cachetools
+from cachetools import LRUCache, TTLCache, cached, cachedmethod
+from cachetools.keys import hashkey
+
+_log_cache = LRUCache(256)
+_lfu = cachetools.LFUCache(maxsize=8)
+_fifo = cachetools.FIFOCache(8)
+_tlru = cachetools.TLRUCache(8, lambda k, v, now: now + 1)
+
+@cached(TTLCache(maxsize=1, ttl=600))
+def get_config():
+    return {}
+
+@cachetools.cached(cachetools.TTLCache(maxsize=1, ttl=600), key=hashkey)
+def get_values():
+    return {}
+
+class C:
+    @cachedmethod(lambda self: self.cache)
+    def m(self):
+        return 1
+"#;
+        check(code);
+    }
+
+    #[test]
     fn test_thread_and_context_getters_are_unsafe() {
         // Deferred, these would see whichever thread first touches the module
         let code = r#"
