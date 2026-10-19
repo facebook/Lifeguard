@@ -150,6 +150,21 @@ const SAFE_FUNCTIONS_ARRAY: &[&str] = &[
     // functools.wraps wrapper (BaseRetrying.wraps). No global mutation, I/O, or
     // registration happens until the decorated function is actually called.
     "tenacity.retry",
+    // tenacity strategies, ctors only store float args
+    "tenacity.stop.stop_after_attempt",
+    "tenacity.stop.stop_after_delay",
+    "tenacity.wait.wait_exponential",
+    "tenacity.wait.wait_none",
+    "tenacity.wait.wait_random",
+    // resolved Future on a Mock loop, no callbacks to schedule
+    "later.task.TaskSentinel",
+    // descriptor ctors, store the getter and optional slot
+    "cinder.cached_property",
+    "cinder.cached_classproperty",
+    // descriptor, stores fget and a Lock until first access
+    "libfb.py.decorators.thread_safe_lazy_property",
+    // functools.wraps closure, block scope opens at call time
+    "artillery2.api.decorators.trace_block",
     // Pure logger factory: returns a memoized logging.getLogger(...). Reads
     // sys.argv/__file__ only; no module-state mutation, I/O, or registration.
     "datainfra.spark.common.logger.get_logger",

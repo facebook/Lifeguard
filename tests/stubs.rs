@@ -478,6 +478,82 @@ class C:
     }
 
     #[test]
+    fn test_tenacity_wait_and_stop_builders_safe() {
+        let code = r#"
+import tenacity
+from tenacity.stop import stop_after_attempt, stop_after_delay
+from tenacity.wait import wait_exponential, wait_none, wait_random
+
+@tenacity.retry(wait=wait_exponential(min=1, max=10), stop=stop_after_attempt(10))
+def f():
+    return 1
+
+@tenacity.retry(wait=wait_random(0, 2), stop=stop_after_delay(30))
+def g():
+    return 1
+
+@tenacity.retry(wait=wait_none())
+def h():
+    return 1
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_later_task_sentinel_safe() {
+        let code = r#"
+import asyncio
+from later.task import TaskSentinel
+
+START_TASK: asyncio.Task = TaskSentinel()
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_cinder_cached_property_safe() {
+        let code = r#"
+from cinder import cached_property
+
+class Node:
+    def _impl(self):
+        return 1
+
+Node.value = cached_property(Node._impl, None)
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_libfb_thread_safe_lazy_property_safe() {
+        let code = r#"
+from libfb.py.decorators import thread_safe_lazy_property
+
+class C:
+    @thread_safe_lazy_property
+    def initialize(self):
+        return 1
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_artillery_trace_block_safe() {
+        let code = r#"
+from artillery2.api.decorators import trace_block
+
+@trace_block
+def f():
+    return 1
+
+@trace_block(name="named")
+async def g():
+    return 1
+"#;
+        check(code);
+    }
+
+    #[test]
     fn test_thread_and_context_getters_are_unsafe() {
         // Deferred, these would see whichever thread first touches the module
         let code = r#"
