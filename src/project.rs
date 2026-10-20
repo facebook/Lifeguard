@@ -66,6 +66,7 @@ use crate::module_safety::SafetyResult;
 use crate::mro::c3_linearize;
 use crate::names::enclosing_module;
 use crate::names::enclosing_module_str;
+use crate::resolution::NameSearch;
 use crate::resolution::get_function_safety;
 use crate::resolution::resolve_program;
 use crate::source_map::AstResult;
@@ -1558,6 +1559,7 @@ impl ProjectInfo {
                 .iter()
                 .map(|(module, candidates)| (*module, candidates.as_slice())),
             AHashSet::new(),
+            NameSearch::Intern,
             // Never reached, which is why the index handed to promotion above can
             // be empty: `resolve_program` only indexes a name when a module-scope
             // candidate is *confirmed*, and none can be here. Asserted rather than

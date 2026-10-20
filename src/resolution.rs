@@ -20,6 +20,7 @@ use crate::module_safety::FunctionSafetyInfo;
 use crate::module_safety::MutationCandidate;
 use crate::module_safety::MutationCandidateSite;
 use crate::names::enclosing_module;
+use crate::names::enclosing_module_str;
 
 pub(crate) struct ResolutionOutcome {
     pub promoted: Vec<(ModuleName, String)>,
@@ -46,6 +47,7 @@ pub(crate) fn resolve_program<'a>(
     function_safety: &mut AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
     candidates: impl Iterator<Item = (ModuleName, &'a [MutationCandidate])>,
     mut needed_unqualified: AHashSet<String>,
+    search: NameSearch,
     mut module_scope_error: impl FnMut(ModuleName, String, TextRange),
 ) -> ResolutionOutcome {
     apply_mutation_candidates(
@@ -60,7 +62,7 @@ pub(crate) fn resolve_program<'a>(
         },
     );
     let (promoted, globally_safe) =
-        promote_fixpoint(module_names, function_safety, needed_unqualified);
+        promote_fixpoint(module_names, function_safety, needed_unqualified, search);
     ResolutionOutcome {
         promoted,
         globally_safe,
@@ -352,9 +354,16 @@ struct PromotionCandidate {
     callees: Vec<ResolvedCallee>,
 }
 
-/// Split a callee at its longest known module prefix.
-fn resolve_callee(func_name: &str, module_names: &AHashSet<ModuleName>) -> ResolvedCallee {
-    match enclosing_module(func_name, |m| module_names.contains(m)) {
+/// Search for module prefixes by `ModuleName` (interns) or `&str` (does not).
+#[derive(Clone, Copy)]
+pub(crate) enum NameSearch {
+    Intern,
+    ProbeStr,
+}
+
+/// Package a split callee, or the whole name when no prefix is a module.
+fn resolve_callee(func_name: &str, split: Option<(ModuleName, &str)>) -> ResolvedCallee {
+    match split {
         Some((module, local)) => ResolvedCallee::Qualified {
             module,
             local: local.to_owned(),
@@ -363,6 +372,44 @@ fn resolve_callee(func_name: &str, module_names: &AHashSet<ModuleName>) -> Resol
             name: func_name.to_owned(),
         },
     }
+}
+
+/// The `UnsafeMissingDep` functions promotion might clear, with their callees
+/// split once by `split` so the fixpoint rounds do not repeat it.
+fn collect_promotion_candidates<F>(
+    module_names: &AHashSet<ModuleName>,
+    function_safety: &AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
+    split: F,
+) -> Vec<PromotionCandidate>
+where
+    F: Fn(&str) -> ResolvedCallee + Sync,
+{
+    function_safety
+        .par_iter()
+        .filter(|(module, _)| module_names.contains(module))
+        .flat_map_iter(|(module, functions)| {
+            let split = &split;
+            functions.iter().filter_map(move |(name, info)| {
+                if info.verdict.has(FunctionSafety::UnsafeMissingDep)
+                    && !info.verdict.has(FunctionSafety::Unsafe)
+                    && !info.missing_dep_callees.is_empty()
+                {
+                    Some(PromotionCandidate {
+                        module: *module,
+                        name: name.clone(),
+                        base_verdict: info.verdict.without(FunctionSafety::UnsafeMissingDep),
+                        callees: info
+                            .missing_dep_callees
+                            .iter()
+                            .map(|callee| split(callee.as_str()))
+                            .collect(),
+                    })
+                } else {
+                    None
+                }
+            })
+        })
+        .collect()
 }
 
 /// Resolve to a non-blocking verdict, using the demanded-name global indices
@@ -397,34 +444,25 @@ fn promote_fixpoint(
     module_names: &AHashSet<ModuleName>,
     function_safety: &mut AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
     mut needed_unqualified: AHashSet<String>,
+    search: NameSearch,
 ) -> (Vec<(ModuleName, String)>, AHashSet<String>) {
     // The promotion guard is stable: promotion only removes
     // `UnsafeMissingDep`. Precompute candidates and split their callees once.
-    let candidates: Vec<PromotionCandidate> = function_safety
-        .par_iter()
-        .filter(|(module, _)| module_names.contains(module))
-        .flat_map_iter(|(module, functions)| {
-            functions.iter().filter_map(move |(name, info)| {
-                if info.verdict.has(FunctionSafety::UnsafeMissingDep)
-                    && !info.verdict.has(FunctionSafety::Unsafe)
-                    && !info.missing_dep_callees.is_empty()
-                {
-                    Some(PromotionCandidate {
-                        module: *module,
-                        name: name.clone(),
-                        base_verdict: info.verdict.without(FunctionSafety::UnsafeMissingDep),
-                        callees: info
-                            .missing_dep_callees
-                            .iter()
-                            .map(|callee| resolve_callee(callee.as_str(), module_names))
-                            .collect(),
-                    })
-                } else {
-                    None
-                }
+    let candidates: Vec<PromotionCandidate> = match search {
+        NameSearch::Intern => collect_promotion_candidates(module_names, function_safety, |name| {
+            resolve_callee(name, enclosing_module(name, |m| module_names.contains(m)))
+        }),
+        NameSearch::ProbeStr => {
+            // Built once for the whole split, not per callee.
+            let module_strs: AHashSet<&str> = module_names.iter().map(|m| m.as_str()).collect();
+            collect_promotion_candidates(module_names, function_safety, |name| {
+                resolve_callee(
+                    name,
+                    enclosing_module_str(name, |m| module_strs.contains(m)),
+                )
             })
-        })
-        .collect();
+        }
+    };
 
     // Only names used by unqualified callees or cached errors need a global
     // index; hashing every function name would not affect resolution.
@@ -596,6 +634,7 @@ mod tests {
             &mut function_safety,
             std::iter::once((caller, std::slice::from_ref(&candidate))),
             AHashSet::new(),
+            NameSearch::ProbeStr,
             |module, metadata, _range| errors.push((module, metadata)),
         );
 
@@ -697,6 +736,7 @@ mod tests {
                 &mut function_safety,
                 modules.into_iter(),
                 AHashSet::new(),
+                NameSearch::ProbeStr,
                 |_, _, _| {},
             );
             function_safety[&caller]["helper"].clone()

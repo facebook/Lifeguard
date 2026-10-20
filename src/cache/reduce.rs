@@ -52,6 +52,7 @@ use crate::imports::resolve_to_known_module;
 use crate::module_safety::FunctionSafety;
 use crate::module_safety::FunctionSafetyInfo;
 use crate::pyrefly::sys_info::PythonVersion;
+use crate::resolution::NameSearch;
 use crate::resolution::ResolutionOutcome;
 use crate::resolution::resolve_program;
 use crate::resolution::unqualified_index_key;
@@ -618,6 +619,7 @@ impl LibraryCache {
                 .iter()
                 .map(|module| (module.name, module.mutation_candidates.as_slice())),
             needed_unqualified,
+            NameSearch::ProbeStr,
             |module_name, metadata, range| {
                 module_errors
                     .entry(module_name)
