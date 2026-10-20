@@ -10,6 +10,7 @@ use rayon::prelude::*;
 use ruff_text_size::TextRange;
 
 use crate::cache::CONSTRUCTOR_METHODS;
+use crate::effects::ImportedArgs;
 use crate::hasher::AHashMap;
 use crate::hasher::AHashSet;
 use crate::hasher::HashSetExt;
@@ -19,7 +20,6 @@ use crate::module_safety::FunctionSafetyInfo;
 use crate::module_safety::MutationCandidate;
 use crate::module_safety::MutationCandidateSite;
 use crate::names::enclosing_module;
-use crate::traits::ModuleNameExt;
 
 pub(crate) struct ResolutionOutcome {
     pub promoted: Vec<(ModuleName, String)>,
@@ -85,18 +85,66 @@ fn get_function_safety_mut<'a>(
     map.get_mut(module)?.get_mut(name)
 }
 
-/// Resolve a callee FQN against the longest module prefix in the merged program.
-fn lookup_callee_info<'a>(
-    callee: &ModuleName,
-    module_names: &AHashSet<ModuleName>,
-    function_safety: &'a AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
-) -> Option<&'a FunctionSafetyInfo> {
-    for (parent, dot_pos) in callee.iter_parents() {
-        if module_names.contains(&parent) {
-            return get_function_safety(function_safety, &parent, &callee.as_str()[dot_pos + 1..]);
+/// The merged module set, keyed by name as a string.
+///
+/// Avoids interning every module ancestor when trying to resolve a name.
+struct ModuleView<'a> {
+    /// Every merged module, mapping to `None` where the module has no
+    /// verdicts. The key set is the module set, and [`ModuleView::split`]
+    /// stops at the first ancestor it finds there, so dropping the
+    /// verdict-less keys would let the walk run past a real module and answer
+    /// from a shorter one instead.
+    modules: AHashMap<&'a str, Option<&'a AHashMap<String, FunctionSafetyInfo>>>,
+}
+
+/// A name split at its longest ancestor that names a module.
+#[derive(Clone, Copy)]
+struct Split<'v, 'n> {
+    /// That ancestor's verdicts, `None` where it has none.
+    verdicts: Option<&'v AHashMap<String, FunctionSafetyInfo>>,
+    /// The rest of the name, past the ancestor and its dot.
+    local: &'n str,
+}
+
+impl<'a> ModuleView<'a> {
+    fn new(
+        module_names: &'a AHashSet<ModuleName>,
+        function_safety: &'a AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
+    ) -> Self {
+        Self {
+            modules: module_names
+                .iter()
+                .map(|module| (module.as_str(), function_safety.get(module)))
+                .collect(),
         }
     }
-    None
+
+    /// The verdicts of `name` itself, if `name` is one of the merged modules.
+    fn get(&self, name: &str) -> Option<Option<&'a AHashMap<String, FunctionSafetyInfo>>> {
+        self.modules.get(name).copied()
+    }
+
+    /// Strict ancestors only, longest first, matching `ModuleName::iter_parents`:
+    /// a `name` that is itself a module does not split.
+    fn split<'n>(&self, name: &'n str) -> Option<Split<'a, 'n>> {
+        let mut end = name.len();
+        while let Some(pos) = name[..end].rfind('.') {
+            end = pos;
+            if let Some(verdicts) = self.get(&name[..pos]) {
+                return Some(Split {
+                    verdicts,
+                    local: &name[pos + 1..],
+                });
+            }
+        }
+        None
+    }
+
+    /// The verdicts for `name`: the entry held by its longest module ancestor.
+    fn lookup_callee(&self, name: &str) -> Option<&'a FunctionSafetyInfo> {
+        let split = self.split(name)?;
+        split.verdicts?.get(split.local)
+    }
 }
 
 fn apply_confirmed_candidate(
@@ -167,10 +215,15 @@ fn apply_mutation_candidates<'a>(
 
     // Confirmation reads only `mutated_params`, which this phase never writes,
     // so all candidates can be checked against the same frozen state in parallel.
-    let confirmed: Vec<bool> = pairs
-        .par_iter()
-        .map(|(_, candidate)| candidate_mutates(candidate, module_names, function_safety))
-        .collect();
+    let confirmed: Vec<bool> = {
+        let view = ModuleView::new(module_names, function_safety);
+        pairs
+            .par_iter()
+            .map_init(String::new, |buf, (_, candidate)| {
+                candidate_mutates(candidate, &view, buf)
+            })
+            .collect()
+    };
 
     for (&(module, candidate), _) in pairs.iter().zip(&confirmed).filter(|(_, c)| **c) {
         apply_confirmed_candidate(module, candidate, function_safety, &mut module_scope_error);
@@ -183,60 +236,105 @@ fn apply_mutation_candidates<'a>(
     // against the same state, so one discharge cannot enable another within this
     // pass; `promote_fixpoint` runs straight after and iterates that cascade to a
     // fixpoint.
-    let discharges: Vec<bool> = pairs
-        .par_iter()
-        .zip(confirmed.par_iter())
-        .map(|(&(_, candidate), &confirmed)| {
-            !confirmed
-                && matches!(candidate.site, MutationCandidateSite::Function { .. })
-                && !callee_resolves_unsafe(&candidate.callee, module_names, function_safety)
-        })
-        .collect();
+    let discharges: Vec<bool> = {
+        let view = ModuleView::new(module_names, function_safety);
+        pairs
+            .par_iter()
+            .zip(confirmed.par_iter())
+            .map(|(&(_, candidate), &confirmed)| {
+                !confirmed
+                    && matches!(candidate.site, MutationCandidateSite::Function { .. })
+                    && !callee_resolves_unsafe(&candidate.callee, &view)
+            })
+            .collect()
+    };
 
     for (&(module, candidate), _) in pairs.iter().zip(&discharges).filter(|(_, d)| **d) {
         discharge_candidate(module, candidate, function_safety);
     }
 }
 
-/// Whether a candidate feeds imported state into a parameter its callee mutates.
-///
-/// Class-level calls record the class FQN, while mutation metadata lives on
-/// `__init__`/`__new__`. Those methods receive an implicit first argument that
-/// is absent at the call site, hence the `arg_offset + 1` probes below.
-fn candidate_mutates(
-    candidate: &MutationCandidate,
-    module_names: &AHashSet<ModuleName>,
-    function_safety: &AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
+/// Whether any argument position in `args` reaches a parameter that `callee`
+/// mutates.
+fn mutated_arg_reaches(
+    callee: &ModuleName,
+    arg_offset: usize,
+    args: &ImportedArgs,
+    view: &ModuleView<'_>,
+    buf: &mut String,
 ) -> bool {
-    let callee_mutates = |callee: &ModuleName, arg_offset: usize| {
-        lookup_callee_info(callee, module_names, function_safety).is_some_and(|info| {
-            candidate.imported_args.hits_any_param(
-                info.mutated_params
-                    .iter()
-                    .map(|param| (param.name.as_str(), param.position)),
-                arg_offset,
-            )
-        })
+    let name = callee.as_str();
+    let own = view.split(name);
+    let as_module = view.get(name);
+    if own.is_none() && as_module.is_none() {
+        return false;
+    }
+
+    let hit = |info: Option<&FunctionSafetyInfo>, arg_offset: usize| {
+        let Some(info) = info else {
+            return false;
+        };
+        args.hits_any_param(
+            info.mutated_params
+                .iter()
+                .map(|param| (param.name.as_str(), param.position)),
+            arg_offset,
+        )
     };
-    if callee_mutates(&candidate.callee, candidate.arg_offset) {
+
+    if let Some(split) = own
+        && hit(
+            split.verdicts.and_then(|fns| fns.get(split.local)),
+            arg_offset,
+        )
+    {
         return true;
     }
-    CONSTRUCTOR_METHODS.into_iter().any(|method| {
-        callee_mutates(
-            &candidate.callee.append_str(method),
-            candidate.arg_offset + 1,
-        )
-    })
+
+    // Probe the constructor methods as well as the callee.
+    let (ctor_map, ctor_prefix) = match as_module {
+        Some(verdicts) => (verdicts, ""),
+        None => {
+            let split = own.expect("checked above");
+            (split.verdicts, split.local)
+        }
+    };
+    for method in CONSTRUCTOR_METHODS {
+        buf.clear();
+        if !ctor_prefix.is_empty() {
+            buf.push_str(ctor_prefix);
+            buf.push('.');
+        }
+        buf.push_str(method);
+        if hit(
+            ctor_map.and_then(|fns| fns.get(buf.as_str())),
+            arg_offset + 1,
+        ) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether a candidate feeds imported state into a parameter its callee mutates.
+fn candidate_mutates(
+    candidate: &MutationCandidate,
+    view: &ModuleView<'_>,
+    buf: &mut String,
+) -> bool {
+    mutated_arg_reaches(
+        &candidate.callee,
+        candidate.arg_offset,
+        &candidate.imported_args,
+        view,
+        buf,
+    )
 }
 
 /// Whether a callee resolves to a verdict that must continue blocking its caller.
 /// Unresolved callees return false, matching whole-program unresolved-call handling.
-fn callee_resolves_unsafe(
-    callee: &ModuleName,
-    module_names: &AHashSet<ModuleName>,
-    function_safety: &AHashMap<ModuleName, AHashMap<String, FunctionSafetyInfo>>,
-) -> bool {
-    lookup_callee_info(callee, module_names, function_safety)
+fn callee_resolves_unsafe(callee: &ModuleName, view: &ModuleView<'_>) -> bool {
+    view.lookup_callee(callee.as_str())
         .is_some_and(|info| !info.verdict.is_safe())
 }
 
