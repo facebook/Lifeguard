@@ -91,7 +91,10 @@ impl<'a> Builtins<'a> {
             // A bare class name is a constructor call, so its `__new__` and
             // `__init__` count too.
             Some(name) => self.is_prohibited_call(&name),
-            None => self.effects_for(&qname).is_some_and(unsafe_stub_effects),
+            None => self
+                .declaring_method(&qname)
+                .and_then(|method| self.effects_for(&method))
+                .is_some_and(unsafe_stub_effects),
         };
         // Safe builtin or unknown call (treated as safe): emit no effect.
         prohibited.then(|| Effect::new(EffectKind::ProhibitedFunctionCall, qname, func.range()))
@@ -103,25 +106,24 @@ impl<'a> Builtins<'a> {
     pub fn is_known_builtin(&self, func: &Expr) -> bool {
         match func.as_var_name() {
             Some(name) => self.contains(&name) || self.is_prohibited_call(&name),
-            None => self.declares_method(func),
+            None => self
+                .qualified_name(func)
+                .is_some_and(|qname| self.declaring_method(&qname).is_some()),
         }
     }
 
-    /// Whether the stub declares this `<builtin class>.<method>`, either on the
-    /// class or on `object`, which every builtin class inherits from.
-    fn declares_method(&self, func: &Expr) -> bool {
-        let Some(qname) = self.qualified_name(func) else {
-            return false;
-        };
-        let Some((class, method)) = qname.split_attr() else {
-            return false;
-        };
-        self.builtins.definitions.get(&class, &method).is_some()
-            || self
-                .builtins
-                .definitions
-                .get(&ModuleName::builtins().append_str("object"), &method)
-                .is_some()
+    /// The stub method a `<builtin class>.<method>` runs: the class's own, else
+    /// the one on `object`, which every builtin class inherits from.
+    fn declaring_method(&self, qname: &ModuleName) -> Option<ModuleName> {
+        let (class, method) = qname.split_attr()?;
+        if self.builtins.definitions.get(&class, &method).is_some() {
+            return Some(*qname);
+        }
+        let object = ModuleName::builtins().append_str("object");
+        self.builtins
+            .definitions
+            .get(&object, &method)
+            .map(|_| object.append(&method))
     }
 }
 

@@ -743,6 +743,21 @@ x = int.__init__(0)
     }
 
     #[test]
+    fn test_mutating_builtin_method_inherited_from_object_through_its_class() {
+        // `type` declares no `__setattr__`; the one it runs is
+        // `object.__setattr__`, which the stub declares mutating.
+        let code = r#"
+class C:
+    pass
+
+c = C()
+type.__setattr__(C, "x", 1)  # E: prohibited-call
+int.__delattr__(c, "x")  # E: prohibited-call
+"#;
+        check(code);
+    }
+
+    #[test]
     fn test_aliased_function_call() {
         let code = r#"
 def f(x): pass
