@@ -31,27 +31,14 @@ impl ScopeKind {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Scope {
-    kind: ScopeKind,
-    name: Name,
-}
-
-impl Scope {
-    pub fn new(kind: ScopeKind, name: Name) -> Self {
-        Self { kind, name }
-    }
-}
-
 /// A cursor that moves through a Python module's AST and tracks block and scope information.
 #[derive(Debug, Clone)]
 pub struct Cursor {
     block_stack: BlockStack,
     // One saved block stack per enclosing function scope.
     outer_block_stacks: Vec<BlockStack>,
-    scopes: Vec<Scope>,
-    // Fully-qualified ModuleName at each scope depth.
-    // qualified_scopes[i] == ModuleName::from_parts(scopes[0..=i].map(|s| &s.name))
+    scopes: Vec<ScopeKind>,
+    // Fully-qualified ModuleName at each scope depth, in step with `scopes`.
     qualified_scopes: Vec<ModuleName>,
 }
 
@@ -92,8 +79,7 @@ impl Cursor {
     }
 
     pub fn enter_module_scope(&mut self, mod_name: &ModuleName) {
-        self.scopes
-            .push(Scope::new(ScopeKind::Module, Name::new(mod_name.as_str())));
+        self.scopes.push(ScopeKind::Module);
         self.qualified_scopes.push(*mod_name);
     }
 
@@ -122,27 +108,18 @@ impl Cursor {
             Some(parent) => parent.append(&name),
             None => ModuleName::from_name(&name),
         };
-        self.scopes.push(Scope::new(kind, name));
+        self.scopes.push(kind);
         self.qualified_scopes.push(cached_name);
     }
 
     pub fn exit_scope(&mut self) {
-        if let Some(scope) = self.scopes.pop()
-            && scope.kind == ScopeKind::Function
-        {
+        if self.scopes.pop() == Some(ScopeKind::Function) {
             self.block_stack = self
                 .outer_block_stacks
                 .pop()
                 .expect("should have saved the blocks when entering the function scope");
         }
         self.qualified_scopes.pop();
-    }
-
-    /// Get an iterator over the base name of each scope, starting with the outermost scope.
-    ///
-    /// e.g. "mod" -> "Class" -> "func"
-    pub fn descending_scope_base_names_iter(&self) -> impl Iterator<Item = &Name> {
-        self.scopes.iter().map(|s| &s.name)
     }
 
     /// Get an iterator over the fully qualified name of each scope, starting with the innermost.
@@ -163,17 +140,12 @@ impl Cursor {
             .rev()
             // A class body is not an enclosing scope for a function nested in it,
             // so once the walk is inside a function, outer class scopes are skipped.
-            .filter(move |(scope, _)| {
-                let keep = scope.kind != ScopeKind::Class || !in_function;
-                in_function |= scope.kind == ScopeKind::Function;
+            .filter(move |&(&kind, _)| {
+                let keep = kind != ScopeKind::Class || !in_function;
+                in_function |= kind == ScopeKind::Function;
                 keep
             })
-            .map(|(scope, qualified)| (*qualified, scope.kind))
-    }
-
-    /// Get a vector containing the base name of each scope, starting with the outermost scope.
-    pub fn scope_names(&self) -> Vec<&Name> {
-        self.descending_scope_base_names_iter().collect()
+            .map(|(&kind, &qualified)| (qualified, kind))
     }
 
     /// Get the name of the current scope.
@@ -188,13 +160,13 @@ impl Cursor {
     // classes and f is a method, mod.A.B is eager but mod.A.f.B is not, because the class
     // definition of B within A.f will not be executed at import time.
     pub fn in_eager_scope(&self) -> bool {
-        self.scopes.iter().all(|s| s.kind.is_eager())
+        self.scopes.iter().all(ScopeKind::is_eager)
     }
 
     /// First function scope among `indices` (positions into `self.scopes`).
     fn function_scope(&self, mut indices: impl Iterator<Item = usize>) -> Option<ModuleName> {
         indices
-            .find(|&i| self.scopes[i].kind == ScopeKind::Function)
+            .find(|&i| self.scopes[i] == ScopeKind::Function)
             .map(|i| self.qualified_scopes[i])
     }
 
@@ -225,7 +197,7 @@ impl Cursor {
     pub fn enclosing_class_scope(&self) -> Option<ModuleName> {
         (0..self.scopes.len())
             .rev()
-            .find(|&i| self.scopes[i].kind == ScopeKind::Class)
+            .find(|&i| self.scopes[i] == ScopeKind::Class)
             .map(|i| self.qualified_scopes[i])
     }
 }

@@ -307,11 +307,6 @@ impl Exports {
         self.is_class(&return_type).then_some(return_type)
     }
 
-    /// Get an iterator to all exported symbols and their export info.
-    pub fn get_exports(&self) -> impl Iterator<Item = (&ModuleName, &ExportType)> {
-        self.exports.iter()
-    }
-
     /// Get an iterator to all re-exported symbols and their definitions.
     pub fn get_re_exports(
         &self,
@@ -522,11 +517,6 @@ impl Exports {
 
     pub fn resolve_imported_name(&self, name: &Attribute) -> Option<Attribute> {
         self.get_re_export(name).map(|(imp, _)| imp).cloned()
-    }
-
-    /// Iterate over all `__all__` entries across modules.
-    pub fn iter_all(&self) -> impl Iterator<Item = (&ModuleName, &Vec<Name>)> {
-        self.all.iter()
     }
 
     /// Iterate over all return type mappings (function -> return type class).

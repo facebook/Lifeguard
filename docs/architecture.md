@@ -109,7 +109,7 @@ it means carrying guard-derived edges in the cache for the reduce to drop.
 - `config.rs` - Analysis configuration (`AnalysisConfig`)
 - `hasher.rs` - Fixed-seed hashing, avoiding per-map seed generation for the analyzer's many small maps
 - `tracing.rs` - Simple timing utility
-- `debug.rs` - Dump helpers for exports, import cycles, and the module imports map
+- `debug.rs` - Dump helper for the module imports map, and memory reporting
 - `traits.rs` - Extension traits bridging lifeguard with pyrefly types
 - `find_sources.rs` - Seeds from `.py` files under a directory and follows imports (optionally into site-packages); shared by `run-tree` and `gen-source-db`
 

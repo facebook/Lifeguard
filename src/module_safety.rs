@@ -330,13 +330,6 @@ impl SafetyResult {
             _ => None,
         }
     }
-
-    pub fn as_safety_mut(&mut self) -> Option<&mut ModuleSafety> {
-        match self {
-            SafetyResult::Ok(safety) => Some(safety),
-            _ => None,
-        }
-    }
 }
 
 #[cfg(test)]

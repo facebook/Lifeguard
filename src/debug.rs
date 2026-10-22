@@ -8,45 +8,7 @@
 use itertools::Itertools;
 use tracing::debug;
 
-use crate::exports::ExportType;
-use crate::exports::Exports;
-use crate::imports::ImportGraph;
 use crate::module_effects::ModuleImportsMap;
-use crate::traits::ModuleNameExt;
-
-/// Print exports table in sorted format for debugging.
-/// Outputs one line per export in format:
-///   class | global | re_export: <module_name>
-pub fn print_exports(exports: &Exports) {
-    let formatted_exports = exports.get_exports().map(|(name, export)| {
-        let prefix = match export {
-            ExportType::Class => "class",
-            ExportType::Function => "function",
-            ExportType::Global => "global",
-        };
-        format!("{}: {}", prefix, name.as_str())
-    });
-    let formatted_re_exports = exports.get_re_exports().map(|(module, attr, _)| {
-        format!("re-export: {}", module.append_str(attr.as_str()).as_str())
-    });
-
-    for line in formatted_exports.chain(formatted_re_exports).sorted() {
-        println!("{}", line);
-    }
-}
-
-pub fn print_import_cycles(imports: &ImportGraph) {
-    let cycles = imports
-        .graph
-        .find_cycles(&imports.implicit_parent_imports());
-    for c in cycles {
-        println!("cycle {{");
-        for m in imports.graph.cycle_names(&c) {
-            println!("  {}", m);
-        }
-        println!("}}");
-    }
-}
 
 /// Print the called_imports / pending_imports map from the ModuleEffects struct
 pub fn print_module_imports_map(imports_map: &ModuleImportsMap) {

@@ -33,7 +33,6 @@ use crate::hasher::AHashSet;
 use crate::hasher::HashMapExt;
 use crate::hasher::HashSetExt;
 use crate::module_safety::FunctionSafetyInfo;
-use crate::module_safety::ModuleSafety;
 use crate::module_safety::SafetyResult;
 
 /// Working map used to dedup re-exports during the reduce, keyed by the exported
@@ -344,26 +343,6 @@ impl CachedSafety {
                 this.implicit_imports.extend(other.implicit_imports);
                 this.implicit_imports.sort();
                 this.implicit_imports.dedup();
-            }
-        }
-    }
-
-    /// Convert back to a SafetyResult for pipeline reconstruction.
-    pub fn to_safety_result(&self) -> SafetyResult {
-        match self {
-            CachedSafety::Ok(safety) => {
-                let mut module_safety = ModuleSafety::new();
-                for error in &safety.errors {
-                    module_safety.add_error(*error);
-                }
-                for override_err in &safety.force_imports_eager_overrides {
-                    module_safety.add_force_import_override(*override_err);
-                }
-                module_safety.implicit_imports = safety.implicit_imports.clone();
-                SafetyResult::Ok(module_safety)
-            }
-            CachedSafety::AnalysisError { message } => {
-                SafetyResult::AnalysisError(anyhow::anyhow!("{}", message))
             }
         }
     }
