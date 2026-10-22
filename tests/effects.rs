@@ -7,6 +7,8 @@
 
 #[cfg(test)]
 mod tests {
+    use lifeguard::effects::EffectKind;
+    use lifeguard::pyrefly::module_name::ModuleName;
     use lifeguard::test_lib::*;
 
     #[test]
@@ -129,5 +131,40 @@ register("x")  # E: unsafe-function-call
 a = (x + y)(z)  # E: unknown-function-call
 "#;
         check_effects(code);
+    }
+
+    /// A walk names its receiver when it resolves to a class, so later passes can tell
+    /// which base it reads; a parameter or local alias names nothing.
+    #[test]
+    fn test_subclasses_walk_names_a_resolved_receiver() {
+        let walker = r#"
+from base import Base
+
+class Local: pass
+
+def walk(cls):
+    alias = Local
+    return [Base.__subclasses__(), Local.__subclasses__(), cls.__subclasses__(), alias.__subclasses__()]
+"#;
+        let modules = vec![("base", "class Base: pass"), ("walker", walker)];
+        let analysis = analyze_tree(&modules);
+        let mut names: Vec<&str> = analysis[&ModuleName::from_str("walker")]
+            .module_effects
+            .effects
+            .values()
+            .flatten()
+            .filter(|effect| effect.kind == EffectKind::SubclassesAccess)
+            .map(|effect| effect.name.as_str())
+            .collect();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            vec![
+                "__subclasses__",
+                "__subclasses__",
+                "base.Base.__subclasses__",
+                "walker.Local.__subclasses__",
+            ]
+        );
     }
 }

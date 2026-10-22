@@ -1082,14 +1082,22 @@ impl<'a> SourceAnalyzer<'a> {
         }
     }
 
-    /// Matched on the attribute name alone: the receiver is routinely a parameter
-    /// (`def walk(cls): cls.__subclasses__()`), which resolves to nothing.
+    /// Matched on the attribute name: the receiver is routinely a parameter
+    /// (`def walk(cls): cls.__subclasses__()`), and is named only when it resolves to a class.
     fn check_subclasses_access(&self, func: &Expr, output: &mut ModuleEffects) {
         let Expr::Attribute(attr) = func else { return };
         if attr.attr.id.as_str() != "__subclasses__" {
             return;
         }
-        let name = ModuleName::from_str("__subclasses__");
+        let name = self
+            .info
+            .resolve(&self.cursor, &attr.value)
+            .filter(|res| res.definition.is_class() || res.is_import())
+            .and_then(|res| res.try_qualified_name())
+            .map_or_else(
+                || ModuleName::from_str("__subclasses__"),
+                |base| base.append_str("__subclasses__"),
+            );
         self.add_effect(
             Effect::new(EffectKind::SubclassesAccess, name, attr.range()),
             output,
