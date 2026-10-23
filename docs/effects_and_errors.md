@@ -110,6 +110,7 @@ pub struct SafetyError {
 | `ImportedVarArgument` | Passing imported var to a function that mutates params |
 | `UnknownEffects` | Stub declares unknown effects |
 | `TooManyArgs` | Call exceeds `MAX_ARGS` (64) positional args, overflowing the tracking bitset — unless the callee resolves and a stub supplies its effect, which then governs |
+| `SubclassRegistration` | Module-scope subclass of a walked base, in a module its walker neither is nor imports |
 
 ### ModuleSafety (`module_safety.rs`)
 

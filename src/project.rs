@@ -68,6 +68,7 @@ use crate::mro::c3_linearize;
 use crate::names::enclosing_module;
 use crate::names::enclosing_module_str;
 use crate::resolution::NameSearch;
+use crate::resolution::WalkedBases;
 use crate::resolution::get_function_safety;
 use crate::resolution::resolve_program;
 use crate::source_map::AstResult;
@@ -1491,6 +1492,9 @@ impl ProjectInfo {
 
         let safety_map = state.into_safety_map(mode, self);
 
+        if mode == ExecutionMode::WholeProgram {
+            self.apply_subclass_registrations(&safety_map, import_graph);
+        }
         if mode == ExecutionMode::Incremental {
             for (module, candidates) in self.collect_mutation_candidates(import_graph) {
                 if let Some(mut entry) = safety_map.get_mut(&module) {
@@ -1501,6 +1505,32 @@ impl ProjectInfo {
             }
         }
         safety_map
+    }
+
+    /// The incremental path defers this to the reduce, where every walked base is known.
+    fn apply_subclass_registrations(&self, safety_map: &SafetyMap, import_graph: &ImportGraph) {
+        let mut walked = WalkedBases::default();
+        for entry in safety_map.iter() {
+            if let Some(safety) = entry.value().as_safety() {
+                walked.record(*entry.key(), &safety.force_imports_eager_overrides);
+            }
+        }
+        if walked.is_empty() {
+            return;
+        }
+        safety_map.par_iter_mut().for_each(|mut entry| {
+            let module = *entry.key();
+            let SafetyResult::Ok(safety) = entry.value_mut() else {
+                return;
+            };
+            let candidates = std::mem::take(&mut safety.subclass_candidates);
+            safety.errors.extend(walked.registration_errors(
+                module,
+                &candidates,
+                &self.class_bases,
+                |walker, imported| import_graph.get_imports(walker).any(|m| m == imported),
+            ));
+        });
     }
 
     /// Single-pass (whole-program) resolution of recoverable `UnsafeMissingDep`

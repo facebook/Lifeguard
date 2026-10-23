@@ -97,6 +97,10 @@ def _all_subclasses(cls):
 REGISTRY = {c.__name__: c for c in Plugin.__subclasses__()}
 ```
 
+Eager imports only reach the subclasses the walking module imports. So when the receiver
+resolves to a class (here `Plugin`), a module-scope subclass in a module the walker neither
+is nor imports fails with `SubclassRegistration`, and the imports that reach it run eagerly.
+
 ### 5. builtins.__import__ Override
 
 **Trigger**: A store to `builtins.__import__` anywhere in the module, written directly, through `setattr(builtins, "__import__", ...)`, or as `del builtins.__import__`. Removing the hook breaks deferred resolution as thoroughly as replacing it.

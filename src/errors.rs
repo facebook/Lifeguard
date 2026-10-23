@@ -115,6 +115,10 @@ pub enum ErrorKind {
     /// The module's own `.pyi` declares public names and its source binds none of them: the
     /// module is a loader whose imports fill it at import time, so those imports must run.
     NamesOnlyInStub,
+
+    /// A module-scope class inherits from a base whose `__subclasses__()` some module walks,
+    /// so the registry built from that walk is missing it until this module runs.
+    SubclassRegistration,
 }
 
 impl ErrorKind {

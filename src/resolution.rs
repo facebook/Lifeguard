@@ -5,12 +5,16 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::collections::HashMap;
+
 use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
 use ruff_text_size::TextRange;
 
 use crate::cache::CONSTRUCTOR_METHODS;
 use crate::effects::ImportedArgs;
+use crate::errors::ErrorKind;
+use crate::errors::SafetyError;
 use crate::hasher::AHashMap;
 use crate::hasher::AHashSet;
 use crate::hasher::HashSetExt;
@@ -19,6 +23,7 @@ use crate::module_safety::FunctionSafety;
 use crate::module_safety::FunctionSafetyInfo;
 use crate::module_safety::MutationCandidate;
 use crate::module_safety::MutationCandidateSite;
+use crate::module_safety::SubclassCandidate;
 use crate::names::enclosing_module;
 use crate::names::enclosing_module_str;
 
@@ -39,6 +44,98 @@ pub(crate) struct ResolutionOutcome {
 pub(crate) fn unqualified_index_key(metadata: &str) -> Option<&str> {
     let name = metadata.trim_end_matches("()");
     (!name.contains('.')).then_some(name)
+}
+
+/// Each walked base, with the modules whose `__subclasses__()` call names it.
+#[derive(Default)]
+pub(crate) struct WalkedBases(AHashMap<ModuleName, AHashSet<ModuleName>>);
+
+impl WalkedBases {
+    /// Records the bases `module`'s overrides walk, returning whether there were any.
+    pub(crate) fn record<'a>(
+        &mut self,
+        module: ModuleName,
+        overrides: impl IntoIterator<Item = &'a SafetyError>,
+    ) -> bool {
+        let mut walks = false;
+        for base in overrides.into_iter().filter_map(walked_base) {
+            self.0.entry(base).or_default().insert(module);
+            walks = true;
+        }
+        walks
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// An error for each of `module`'s candidates inheriting from a base walked by a module
+    /// that neither is nor `imports` it; a walker's own imports are already eager.
+    pub(crate) fn registration_errors<'a>(
+        &'a self,
+        module: ModuleName,
+        candidates: &'a [SubclassCandidate],
+        class_bases: &'a HashMap<ModuleName, Vec<ModuleName>>,
+        imports: impl Fn(&ModuleName, &ModuleName) -> bool + 'a,
+    ) -> impl Iterator<Item = SafetyError> + 'a {
+        let walked_elsewhere = move |base: &ModuleName| {
+            self.0.get(base).is_some_and(|walkers| {
+                walkers
+                    .iter()
+                    .any(|walker| *walker != module && !imports(walker, &module))
+            })
+        };
+        candidates
+            .iter()
+            .filter(move |candidate| {
+                inherits_from(class_bases, &candidate.class, &walked_elsewhere)
+            })
+            .map(|candidate| {
+                let error = SafetyError::new(
+                    ErrorKind::SubclassRegistration,
+                    candidate.class.as_str().to_owned(),
+                    candidate.range,
+                );
+                if candidate.from_main_guard {
+                    error.from_main_guard()
+                } else {
+                    error
+                }
+            })
+    }
+}
+
+fn walked_base(error: &SafetyError) -> Option<ModuleName> {
+    if error.kind != ErrorKind::SubclassesAccess {
+        return None;
+    }
+    let base = error.metadata.as_str().strip_suffix(".__subclasses__")?;
+    Some(ModuleName::from_str(base))
+}
+
+fn inherits_from(
+    class_bases: &HashMap<ModuleName, Vec<ModuleName>>,
+    class: &ModuleName,
+    is_target: impl Fn(&ModuleName) -> bool,
+) -> bool {
+    let mut seen = AHashSet::new();
+    let mut stack: Vec<ModuleName> = class_bases
+        .get(class)
+        .into_iter()
+        .flatten()
+        .copied()
+        .collect();
+    while let Some(base) = stack.pop() {
+        if is_target(&base) {
+            return true;
+        }
+        if seen.insert(base)
+            && let Some(bases) = class_bases.get(&base)
+        {
+            stack.extend(bases.iter().copied());
+        }
+    }
+    false
 }
 
 /// Run the cross-library semantic resolution phases in their canonical order.

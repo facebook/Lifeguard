@@ -54,6 +54,7 @@ use crate::module_safety::FunctionSafetyInfo;
 use crate::pyrefly::sys_info::PythonVersion;
 use crate::resolution::NameSearch;
 use crate::resolution::ResolutionOutcome;
+use crate::resolution::WalkedBases;
 use crate::resolution::resolve_program;
 use crate::resolution::unqualified_index_key;
 use crate::runner::warn_unknown_main_module;
@@ -525,6 +526,37 @@ impl LibraryCache {
             .reduce(AHashSet::new, union_larger)
     }
 
+    /// Mirrors the whole-program pass, which this library-by-library cache could not run.
+    fn apply_subclass_registrations(&mut self, class_bases: &HashMap<ModuleName, Vec<ModuleName>>) {
+        let mut walked = WalkedBases::default();
+        let mut walker_imports: AHashMap<ModuleName, AHashSet<ModuleName>> = AHashMap::default();
+        for module in &self.modules {
+            if let CachedSafety::Ok(safety) = &module.safety
+                && walked.record(module.name, &safety.force_imports_eager_overrides)
+            {
+                walker_imports.insert(module.name, module.imports.clone());
+            }
+        }
+        if walked.is_empty() {
+            return;
+        }
+        self.modules.par_iter_mut().for_each(|module| {
+            let candidates = std::mem::take(&mut module.subclass_candidates);
+            if let CachedSafety::Ok(ref mut safety) = module.safety {
+                safety.errors.extend(walked.registration_errors(
+                    module.name,
+                    &candidates,
+                    class_bases,
+                    |walker, imported| {
+                        walker_imports
+                            .get(walker)
+                            .is_some_and(|imports| imports.contains(imported))
+                    },
+                ));
+            }
+        });
+    }
+
     /// Resolve missing imports against the merged cache and selectively clear
     /// false errors using per-function safety verdicts.
     fn resolve_cross_library_errors(&mut self, merged: MergedClassFacts) {
@@ -637,6 +669,7 @@ impl LibraryCache {
                 }));
             }
         }
+        self.apply_subclass_registrations(&class_bases);
 
         self.finalize_resolution(
             &ResolutionContext {
