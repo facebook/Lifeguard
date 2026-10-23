@@ -73,6 +73,28 @@ a.f  # E: unsafe-method-call
     }
 
     #[test]
+    fn test_unsafe_reexported_inherited_property() {
+        let code1 = r#"
+class Base:
+    @property
+    def f(self):
+        raise()
+
+class A(Base):
+    pass
+"#;
+        let code2 = r#"
+from m1 import A
+"#;
+        let code3 = r#"
+from m2 import A
+a = A()
+a.f  # E: unsafe-method-call
+"#;
+        check_all(vec![("m1", code1), ("m2", code2), ("m3", code3)]);
+    }
+
+    #[test]
     fn test_indirect_import() {
         let code0 = r#"
 class A:
