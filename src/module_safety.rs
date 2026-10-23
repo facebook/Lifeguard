@@ -209,6 +209,17 @@ pub struct PropertyCandidate {
     pub from_main_guard: bool,
 }
 
+/// A module-scope class with bases, held until every walked base is known: in the
+/// reduce for the incremental path, after error collection for the whole program.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SubclassCandidate {
+    pub class: ModuleName,
+    /// In process only: a cache carries no positions.
+    pub range: TextRange,
+    /// Recorded inside an `if __name__ == "__main__":` body.
+    pub from_main_guard: bool,
+}
+
 impl Ord for MutationCandidate {
     /// Over the fields a cache carries, and only those. Two candidates that tie
     /// here are identical on the wire, so the order this sorts into is one the
@@ -240,6 +251,21 @@ impl Ord for PropertyCandidate {
 }
 
 impl PartialOrd for PropertyCandidate {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for SubclassCandidate {
+    /// Over the fields a cache carries, and only those.
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.class
+            .cmp(&other.class)
+            .then_with(|| self.from_main_guard.cmp(&other.from_main_guard))
+    }
+}
+
+impl PartialOrd for SubclassCandidate {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
@@ -277,6 +303,8 @@ pub struct ModuleSafety {
     pub mutation_candidates: Vec<MutationCandidate>,
     /// Attribute accesses whose receiver type this library could not resolve.
     pub property_candidates: Vec<PropertyCandidate>,
+    /// Module-scope classes with bases, settled once every walked base is known.
+    pub subclass_candidates: Vec<SubclassCandidate>,
 }
 
 impl ModuleSafety {
@@ -288,6 +316,7 @@ impl ModuleSafety {
             function_safety: AHashMap::new(),
             mutation_candidates: Vec::new(),
             property_candidates: Vec::new(),
+            subclass_candidates: Vec::new(),
         }
     }
 

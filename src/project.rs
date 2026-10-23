@@ -63,6 +63,7 @@ use crate::module_safety::MutationCandidateSite;
 use crate::module_safety::ParamPosition;
 use crate::module_safety::PropertyCandidate;
 use crate::module_safety::SafetyResult;
+use crate::module_safety::SubclassCandidate;
 use crate::mro::c3_linearize;
 use crate::names::enclosing_module;
 use crate::names::enclosing_module_str;
@@ -397,6 +398,16 @@ impl GlobalAnalysisState {
     ) {
         self.update_module_safety(mod_name, |safety| {
             safety.property_candidates.push(candidate)
+        });
+    }
+
+    fn add_subclass_candidate_to_module(
+        &self,
+        mod_name: &ModuleName,
+        candidate: SubclassCandidate,
+    ) {
+        self.update_module_safety(mod_name, |safety| {
+            safety.subclass_candidates.push(candidate)
         });
     }
 
@@ -2027,6 +2038,19 @@ impl ProjectInfo {
             if let Some(err) = SafetyError::from_effect(eff) {
                 state.add_error_to_module(mod_name, err);
             } else if eff.kind.is_runnable() {
+                // Only eager scopes reach here, so this is a class created at import
+                if eff.kind == EffectKind::ClassCreation
+                    && let Some((class, _)) = eff.name.split_attr()
+                {
+                    state.add_subclass_candidate_to_module(
+                        mod_name,
+                        SubclassCandidate {
+                            class,
+                            range: eff.range,
+                            from_main_guard: eff.from_main_guard,
+                        },
+                    );
+                }
                 let mut call = Call {
                     caller_module: mod_name,
                     effect: eff,

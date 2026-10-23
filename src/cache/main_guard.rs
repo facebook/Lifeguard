@@ -71,6 +71,7 @@ pub(super) fn drop_main_guarded(module: &mut CachedModule) -> usize {
         function_safety: _,
         mutation_candidates,
         property_candidates,
+        subclass_candidates,
         main_guard,
     } = module;
 
@@ -105,6 +106,7 @@ pub(super) fn drop_main_guarded(module: &mut CachedModule) -> usize {
     // filtered whether or not the module's own analysis succeeded.
     dropped += retain_unguarded(mutation_candidates, |c| c.from_main_guard);
     dropped += retain_unguarded(property_candidates, |c| c.from_main_guard);
+    dropped += retain_unguarded(subclass_candidates, |c| c.from_main_guard);
 
     let CachedSafety::Ok(safety) = safety else {
         return dropped;

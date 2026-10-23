@@ -32,6 +32,7 @@ use crate::module_safety::FunctionSafetyInfo;
 use crate::module_safety::MutationCandidate;
 use crate::module_safety::PropertyCandidate;
 use crate::module_safety::SafetyResult;
+use crate::module_safety::SubclassCandidate;
 use crate::project::SafetyMap;
 use crate::project::SideEffectMap;
 use crate::tracing::time;
@@ -248,6 +249,9 @@ pub struct CachedModule {
     /// Attribute accesses on a receiver whose class this library could not see,
     /// resolved against the merged class facts in the reduce step.
     pub property_candidates: Vec<PropertyCandidate>,
+    /// Module-scope classes with bases, checked against the merged walked bases in
+    /// the reduce step.
+    pub subclass_candidates: Vec<SubclassCandidate>,
     /// The edges only an `if __name__ == "__main__"` body writes. Dropped by
     /// the reduce for every module that is not the binary's entry point, which
     /// is the only place that knows which one that is.
@@ -350,15 +354,20 @@ impl LibraryCache {
                     .map(|s| s.iter().copied().collect())
                     .unwrap_or_default();
 
-                let (function_safety, mutation_candidates, property_candidates) =
-                    match safety_result {
-                        SafetyResult::Ok(ms) => (
-                            ms.function_safety.clone(),
-                            ms.mutation_candidates.clone(),
-                            ms.property_candidates.clone(),
-                        ),
-                        _ => (AHashMap::new(), Vec::new(), Vec::new()),
-                    };
+                let (
+                    function_safety,
+                    mutation_candidates,
+                    property_candidates,
+                    subclass_candidates,
+                ) = match safety_result {
+                    SafetyResult::Ok(ms) => (
+                        ms.function_safety.clone(),
+                        ms.mutation_candidates.clone(),
+                        ms.property_candidates.clone(),
+                        ms.subclass_candidates.clone(),
+                    ),
+                    _ => (AHashMap::new(), Vec::new(), Vec::new(), Vec::new()),
+                };
 
                 let safety = CachedSafety::from_safety_result(safety_result);
 
@@ -372,6 +381,7 @@ impl LibraryCache {
                     function_safety,
                     mutation_candidates,
                     property_candidates,
+                    subclass_candidates,
                     main_guard: MainGuardFacts::new(main_guard_imports),
                 }
             })
@@ -441,6 +451,7 @@ impl CachedModule {
             function_safety: AHashMap::new(),
             mutation_candidates: Vec::new(),
             property_candidates: Vec::new(),
+            subclass_candidates: Vec::new(),
             main_guard: MainGuardFacts::default(),
         }
     }

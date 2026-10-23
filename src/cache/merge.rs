@@ -281,6 +281,7 @@ impl CachedModule {
             function_safety,
             mutation_candidates,
             property_candidates,
+            subclass_candidates,
             main_guard,
         } = other;
 
@@ -306,6 +307,9 @@ impl CachedModule {
         self.property_candidates.extend(property_candidates);
         self.property_candidates.sort_unstable();
         self.property_candidates.dedup();
+        self.subclass_candidates.extend(subclass_candidates);
+        self.subclass_candidates.sort_unstable();
+        self.subclass_candidates.dedup();
     }
 }
 

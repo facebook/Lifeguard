@@ -52,6 +52,7 @@ mod tests {
     use lifeguard::runner::default_python_version;
     use lifeguard::safety_resolver::is_call_verified_safe;
     use lifeguard::test_lib::TestSources;
+    use lifeguard::test_lib::build_library_cache;
     use lifeguard::test_lib::reduce_workspace_from_merged;
     use ruff_text_size::TextRange;
 
@@ -201,6 +202,7 @@ mod tests {
             function_safety: AHashMap::new(),
             mutation_candidates: Vec::new(),
             property_candidates: Vec::new(),
+            subclass_candidates: Vec::new(),
             main_guard: MainGuardFacts::default(),
         })
     }
@@ -311,7 +313,7 @@ mod tests {
             std::mem::size_of::<lifeguard::cache::ConstructorCallees>(),
             40,
         );
-        assert_eq!(std::mem::size_of::<CachedModule>(), 320);
+        assert_eq!(std::mem::size_of::<CachedModule>(), 344);
         assert_eq!(std::mem::size_of::<CachedSafety>(), 72);
         assert_eq!(std::mem::size_of::<CachedModuleSafety>(), 72);
         assert_eq!(std::mem::size_of::<MainGuardFacts>(), 32);
@@ -2777,6 +2779,43 @@ mod tests {
         assert!(
             !provider_deps.value().contains(&mn("torch.nn")),
             "real source ancestors should not receive propagated implicit-import guards",
+        );
+    }
+
+    /// Only a class created at import is a candidate: one in a function or method body
+    /// runs with that function, and a `__main__` guard is tagged for the reduce to drop.
+    #[test]
+    fn test_subclass_candidates_are_the_classes_created_at_import() {
+        let code = r#"
+class Base: pass
+
+class Top(Base):
+    class Nested(Base): pass
+
+    def method(self):
+        class InMethod(Base): pass
+
+def factory():
+    class InFunction(Base): pass
+
+if __name__ == "__main__":
+    class Guarded(Base): pass
+"#;
+        let cache = build_library_cache(&TestSources::new(&[("m", code)]));
+        let mut candidates: Vec<(&str, bool)> = cache
+            .modules
+            .iter()
+            .flat_map(|module| &module.subclass_candidates)
+            .map(|candidate| (candidate.class.as_str(), candidate.from_main_guard))
+            .collect();
+        candidates.sort_unstable();
+        assert_eq!(
+            candidates,
+            vec![
+                ("m.Guarded", true),
+                ("m.Top", false),
+                ("m.Top.Nested", false)
+            ]
         );
     }
 }

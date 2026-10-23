@@ -624,6 +624,7 @@ mod tests {
                     function_safety: AHashMap::new(),
                     mutation_candidates: Vec::new(),
                     property_candidates: Vec::new(),
+                    subclass_candidates: Vec::new(),
                     main_guard: MainGuardFacts::default(),
                 },
                 CachedModule {
@@ -641,6 +642,7 @@ mod tests {
                     .collect(),
                     mutation_candidates: Vec::new(),
                     property_candidates: Vec::new(),
+                    subclass_candidates: Vec::new(),
                     main_guard: MainGuardFacts::default(),
                 },
             ],

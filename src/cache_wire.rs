@@ -52,6 +52,7 @@ use crate::module_safety::MutationCandidate;
 use crate::module_safety::MutationCandidateSite;
 use crate::module_safety::ParamPosition;
 use crate::module_safety::PropertyCandidate;
+use crate::module_safety::SubclassCandidate;
 
 type NameId = u32;
 
@@ -84,6 +85,7 @@ struct WireModule {
     function_safety: Vec<(String, WireFunctionSafetyInfo)>,
     mutation_candidates: Vec<WireMutationCandidate>,
     property_candidates: Vec<WirePropertyCandidate>,
+    subclass_candidates: Vec<WireSubclassCandidate>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -114,6 +116,12 @@ struct WireMutatedParam {
 #[derive(Serialize, Deserialize)]
 struct WirePropertyCandidate {
     attribute: NameId,
+    from_main_guard: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+struct WireSubclassCandidate {
+    class: NameId,
     from_main_guard: bool,
 }
 
@@ -253,6 +261,12 @@ fn collect_module_names(module: &CachedModule, names: &mut AHashSet<ModuleName>)
             .property_candidates
             .iter()
             .map(|candidate| candidate.attribute),
+    );
+    names.extend(
+        module
+            .subclass_candidates
+            .iter()
+            .map(|candidate| candidate.class),
     );
 }
 
@@ -499,6 +513,9 @@ impl WireModule {
         let mut property_candidates: Vec<&PropertyCandidate> =
             module.property_candidates.iter().collect();
         property_candidates.sort_unstable();
+        let mut subclass_candidates: Vec<&SubclassCandidate> =
+            module.subclass_candidates.iter().collect();
+        subclass_candidates.sort_unstable();
 
         Self {
             name: table.id(module.name),
@@ -524,6 +541,10 @@ impl WireModule {
             property_candidates: property_candidates
                 .into_iter()
                 .map(|candidate| WirePropertyCandidate::encode(candidate, table))
+                .collect(),
+            subclass_candidates: subclass_candidates
+                .into_iter()
+                .map(|candidate| WireSubclassCandidate::encode(candidate, table))
                 .collect(),
         }
     }
@@ -552,6 +573,11 @@ impl WireModule {
                 .into_iter()
                 .map(|candidate| candidate.decode(names))
                 .collect::<Result<_>>()?,
+            subclass_candidates: self
+                .subclass_candidates
+                .into_iter()
+                .map(|candidate| candidate.decode(names))
+                .collect::<Result<_>>()?,
         })
     }
 }
@@ -569,6 +595,23 @@ impl WirePropertyCandidate {
             attribute: decode_name(names, self.attribute)?,
             // Not carried: a cached offset would tie the bytes to where in the
             // file the access sits.
+            range: TextRange::default(),
+            from_main_guard: self.from_main_guard,
+        })
+    }
+}
+
+impl WireSubclassCandidate {
+    fn encode(candidate: &SubclassCandidate, table: &NameTable) -> Self {
+        Self {
+            class: table.id(candidate.class),
+            from_main_guard: candidate.from_main_guard,
+        }
+    }
+
+    fn decode(self, names: &[ModuleName]) -> Result<SubclassCandidate> {
+        Ok(SubclassCandidate {
+            class: decode_name(names, self.class)?,
             range: TextRange::default(),
             from_main_guard: self.from_main_guard,
         })
@@ -794,6 +837,14 @@ mod tests {
         }
     }
 
+    fn subclass(class: &str) -> SubclassCandidate {
+        SubclassCandidate {
+            class: mn(class),
+            range: TextRange::default(),
+            from_main_guard: false,
+        }
+    }
+
     fn fixture_cache(reversed: bool) -> LibraryCache {
         let mut function_safety = AHashMap::new();
         let mut zeta_func = FunctionSafetyInfo::new(FunctionSafety::UnsafeMissingDep);
@@ -826,6 +877,10 @@ mod tests {
                 reversed,
                 vec![property("pkg.Zeta.attr"), property("pkg.Alpha.attr")],
             ),
+            subclass_candidates: arrange(
+                reversed,
+                vec![subclass("pkg.zeta.Zeta"), subclass("pkg.zeta.Alpha")],
+            ),
             safety: CachedSafety::Ok(CachedModuleSafety {
                 errors: arrange(reversed, vec![error("zeta.call()"), error("alpha.call()")]),
                 force_imports_eager_overrides: Vec::new(),
@@ -854,6 +909,7 @@ mod tests {
             name: mn("pkg.alpha"),
             main_guard: MainGuardFacts::default(),
             property_candidates: Vec::new(),
+            subclass_candidates: Vec::new(),
             safety: CachedSafety::AnalysisError {
                 message: "parse error".to_owned(),
             },
@@ -951,6 +1007,11 @@ mod tests {
             "property candidates must encode in attribute order",
         );
         assert!(
+            wire.subclass_candidates
+                .is_sorted_by_key(|candidate| candidate.class),
+            "subclass candidates must encode in class order",
+        );
+        assert!(
             wire.function_safety
                 .is_sorted_by_key(|(name, _)| name.as_str()),
             "function safety must encode in local-name order",
@@ -1015,6 +1076,7 @@ mod tests {
                 name: mn("pkg.duplicated"),
                 main_guard: MainGuardFacts::default(),
                 property_candidates: Vec::new(),
+                subclass_candidates: Vec::new(),
                 safety: CachedSafety::Ok(CachedModuleSafety::default()),
                 imports: [mn(import)].into_iter().collect(),
                 missing_imports: AHashSet::new(),
