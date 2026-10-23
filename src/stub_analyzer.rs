@@ -76,7 +76,7 @@ impl<'a> StubAnalyzer<'a> {
         let mut out = ModuleEffects::new();
         self.cursor.enter_function_scope(func_def);
         self.stmts(&func_def.body, &mut out);
-        if out.effects.is_empty() {
+        if out.effects.is_empty() && !self.parsed_module.is_thrift_generated {
             let kind = EffectKind::UnknownEffects;
             let name = ModuleName::empty();
             out.add_effect(self.cursor.scope(), Effect::new(kind, name, func_def.range));
