@@ -95,6 +95,74 @@ except BaseException:
     }
 
     #[test]
+    fn test_catch_all_exception_misses_base_exception_only_builtins() {
+        for exc in [
+            "BaseException",
+            "BaseExceptionGroup",
+            "GeneratorExit",
+            "KeyboardInterrupt",
+            "SystemExit",
+            "builtins.SystemExit",
+        ] {
+            check(&format!(
+                r#"
+import builtins
+try:
+    raise {exc}()  # E: unhandled-exception
+except (ValueError, Exception):
+    ...
+"#
+            ));
+        }
+    }
+
+    // Builtin exceptions other than BaseException and Exception don't yet support the "builtins."
+    // prefix, when used in a handler.  This should not report any effects but today it still does.
+    #[test]
+    fn test_qualified_handler() {
+        let code = r#"
+try:
+    raise RuntimeError("bye!") # E: unhandled-exception
+except builtins.RuntimeError:
+    ...
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_qualified_handler_exception() {
+        let code = r#"
+try:
+    raise RuntimeError("bye!")
+except builtins.Exception:
+    ...
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_qualified_handler_not_exception() {
+        let code = r#"
+try:
+    raise SystemExit() # E: unhandled-exception
+except builtins.Exception:
+    ...
+"#;
+        check(code);
+    }
+
+    #[test]
+    fn test_qualified_handler_base_exception() {
+        let code = r#"
+try:
+    raise SystemExit()
+except builtins.BaseException:
+    ...
+"#;
+        check(code);
+    }
+
+    #[test]
     fn test_handled_exception_nested_try_outer_catches() {
         let code = r#"
 try:

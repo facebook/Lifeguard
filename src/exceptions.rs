@@ -29,11 +29,37 @@ pub enum TryHandler {
     Multiple(Vec<ModuleName>),
 }
 
-/// Well-known exception base classes that act as catch-alls.
-const CATCH_ALL_EXCEPTIONS: &[&str] = &["Exception", "BaseException"];
+/// Builtins that derive from `BaseException` but not `Exception`, so `except Exception` misses them.
+const BASE_EXCEPTION_ONLY: &[&str] = &[
+    "BaseException",
+    "BaseExceptionGroup",
+    "GeneratorExit",
+    "KeyboardInterrupt",
+    "SystemExit",
+];
+
+fn strip_builtins(s: &str) -> &str {
+    s.strip_prefix("builtins.").unwrap_or(s)
+}
 
 fn exception_matches(name: &ModuleName, exc_name: &ModuleName) -> bool {
-    name == exc_name || CATCH_ALL_EXCEPTIONS.contains(&name.as_str())
+    let exc = exc_name.as_str();
+    match strip_builtins(name.as_str()) {
+        "BaseException" => {
+            // All exceptions are subclasses of BaseException.
+            true
+        }
+        "Exception" => {
+            // There's only a handful of builtin exceptions that are not subclasses of Exception.
+            !BASE_EXCEPTION_ONLY.contains(&strip_builtins(exc))
+        }
+        _ => {
+            // Does not handle "builtins." prefix for exception handlers like
+            // "builtins.RuntimeError" yet.  This would have to handle users redefining builtin
+            // symbols in their module.
+            name.as_str() == exc
+        }
+    }
 }
 
 impl TryHandler {
@@ -136,6 +162,7 @@ mod tests {
         let handler = TryHandler::typed(vec![ModuleName::from_str("Exception")]);
         assert!(handler.catches(&ModuleName::from_str("ValueError")));
         assert!(handler.catches(&ModuleName::from_str("Exception")));
+        assert!(!handler.catches(&ModuleName::from_str("KeyboardInterrupt")));
 
         let handler = TryHandler::typed(vec![ModuleName::from_str("BaseException")]);
         assert!(handler.catches(&ModuleName::from_str("KeyboardInterrupt")));
