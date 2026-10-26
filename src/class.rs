@@ -187,6 +187,33 @@ class Outer:
     }
 
     #[test]
+    fn test_aliased_from_import_base_resolves_to_its_original_name() {
+        let code = r#"
+from m import B as Alias, Meta as M
+
+class A(Alias, metaclass=M):
+    pass
+"#;
+        let cls_table = make_class_table(code);
+        let cls = cls_table.lookup_str("test.A").unwrap();
+        assert_eq!(cls.bases, vec![ModuleName::from_str("m.B")]);
+        assert_eq!(cls.metaclass, Some(ModuleName::from_str("m.Meta")));
+    }
+
+    #[test]
+    fn test_aliased_module_import_base_resolves_through_the_module() {
+        let code = r#"
+import m.sub as s
+
+class A(s.B):
+    pass
+"#;
+        let cls_table = make_class_table(code);
+        let cls = cls_table.lookup_str("test.A").unwrap();
+        assert_eq!(cls.bases, vec![ModuleName::from_str("m.sub.B")]);
+    }
+
+    #[test]
     fn test_basic() {
         let code = r#"
 class B:

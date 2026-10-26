@@ -655,6 +655,9 @@ impl<'a> CombinedDefinitionClassBuilder<'a> {
 
     fn get_class_name(&self, expr: &Expr) -> Option<ModuleName> {
         let res = self.resolve_expr(expr)?;
+        if res.is_import() {
+            return res.qualify_import_access(&res.expr_full_name?);
+        }
         res.try_qualified_name()
     }
 
