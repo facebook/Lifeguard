@@ -28,8 +28,8 @@ use crate::hasher::AHashSet;
 use crate::hasher::HashMapExt;
 use crate::mro::c3_linearize;
 use crate::names::enclosing_module;
-use crate::project::AnalysisMap;
 use crate::project::mutations::compute_mutated_params;
+use crate::project::types::AnalysisMap;
 use crate::tracing::time;
 use crate::traits::ModuleNameExt;
 

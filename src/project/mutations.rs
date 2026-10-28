@@ -29,12 +29,12 @@ use crate::module_safety::MutatedParam;
 use crate::module_safety::MutationCandidate;
 use crate::module_safety::MutationCandidateSite;
 use crate::module_safety::ParamPosition;
-use crate::project::AnalysisMap;
 use crate::project::calls::Call;
 use crate::project::info::ProjectInfo;
 use crate::project::info::constructor_method_names;
 use crate::project::info::resolve_enclosing_module;
 use crate::project::state::GlobalAnalysisState;
+use crate::project::types::AnalysisMap;
 use crate::traits::ModuleNameExt;
 
 /// Per-scope context for mutation-candidate detection

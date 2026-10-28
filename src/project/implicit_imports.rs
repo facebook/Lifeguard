@@ -20,8 +20,8 @@ use crate::hasher::HashSetExt;
 use crate::imports::ImportGraph;
 use crate::module_effects::ModuleEffects;
 use crate::module_effects::ModuleImportsMap;
-use crate::project::AnalysisMap;
-use crate::project::SideEffectMap;
+use crate::project::types::AnalysisMap;
+use crate::project::types::SideEffectMap;
 use crate::traits::ModuleNameExt;
 
 /// Per module, the extra imports transitively loaded by functions it calls.

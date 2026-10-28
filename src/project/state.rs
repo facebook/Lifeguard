@@ -20,10 +20,10 @@ use crate::module_safety::PropertyCandidate;
 use crate::module_safety::SafetyResult;
 use crate::module_safety::SubclassCandidate;
 use crate::names::enclosing_module_str;
-use crate::project::AnalysisMap;
-use crate::project::ExecutionMode;
-use crate::project::SafetyMap;
 use crate::project::info::ProjectInfo;
+use crate::project::types::AnalysisMap;
+use crate::project::types::ExecutionMode;
+use crate::project::types::SafetyMap;
 
 // Collects whole-project analysis output, as well as any global state that is required while
 // traversing the analysis map. Uses DashMap for concurrent access from multiple threads.

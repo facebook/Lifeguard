@@ -7,22 +7,18 @@
 
 //! Parallel per-module analysis and the project analysis pipeline.
 
-use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::sync::mpsc;
 use std::sync::mpsc::Sender;
 
-use dashmap::DashMap;
 use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
 use tracing::warn;
 
 use crate::analyzer;
 use crate::analyzer::AnalyzedModule;
-use crate::cache::ConstructorCallees;
 use crate::config::AnalysisConfig;
 use crate::exports::Exports;
-use crate::hasher::AHashMap;
 use crate::hasher::AHashSet;
 use crate::imports::ImportGraph;
 use crate::module_parser::ParsedModule;
@@ -32,24 +28,15 @@ use crate::project::implicit_imports::compute_side_effect_imports;
 use crate::project::info::ProjectInfo;
 use crate::project::info::resolve_enclosing_module;
 use crate::project::state::GlobalAnalysisState;
+use crate::project::types::AnalysisMap;
+use crate::project::types::AnalysisOutput;
+use crate::project::types::ExecutionMode;
+use crate::project::types::ParseErrors;
+use crate::project::types::SafetyMap;
 use crate::source_map::AstResult;
 use crate::source_map::ModuleProvider;
 use crate::stubs::Stubs;
 use crate::tracing::time;
-
-pub type AnalysisMap = HashMap<ModuleName, AnalyzedModule, ahash::RandomState>;
-pub type SafetyMap = DashMap<ModuleName, SafetyResult>;
-pub type SideEffectMap = AHashMap<ModuleName, AHashSet<ModuleName>>;
-pub type ParseErrors = DashMap<ModuleName, String>;
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum ExecutionMode {
-    /// Runs a map/reduce pipeline with per-library results cached in the map phase,
-    /// so that we can perform an incremental analysis when something changes.
-    Incremental,
-    /// Single-pass whole-program analysis, does not cache anything.
-    WholeProgram,
-}
 
 /// Shared immutable context for per-module analysis.
 struct AnalysisContext<'a> {
@@ -57,21 +44,6 @@ struct AnalysisContext<'a> {
     import_graph: &'a ImportGraph,
     stubs: &'a Stubs,
     config: &'a AnalysisConfig,
-}
-
-/// Collected output from the analysis pipeline.
-pub struct AnalysisOutput {
-    pub safety_map: SafetyMap,
-    pub side_effect_imports: SideEffectMap,
-    pub parse_errors: ParseErrors,
-    /// Class FQN -> base-class FQNs, for reduce-time MRO resolution of inherited
-    /// `Class.method` calls.
-    pub class_bases: Vec<(ModuleName, Vec<ModuleName>)>,
-    /// Class FQN -> the functions a constructor call to it dispatches to,
-    /// resolved here where the class table is complete.
-    pub constructor_callees: Vec<(ModuleName, ConstructorCallees)>,
-    /// Class FQN -> property field names, for resolving property candidates.
-    pub class_properties: Vec<(ModuleName, Vec<String>)>,
 }
 
 /// Run the full analysis pipeline.
