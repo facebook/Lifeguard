@@ -23,6 +23,7 @@ use crate::hasher::AHashSet;
 use crate::imports::ImportGraph;
 use crate::module_parser::ParsedModule;
 use crate::module_safety::SafetyResult;
+use crate::names::enclosing_module_str;
 use crate::project::implicit_imports::compute_implicit_imports;
 use crate::project::implicit_imports::compute_side_effect_imports;
 use crate::project::info::ProjectInfo;
@@ -191,13 +192,43 @@ pub fn analyze_all(
 }
 
 impl ProjectInfo {
+    /// Decompose FQN-keyed function safety verdicts into per-module local-name
+    /// maps and embed them in the corresponding ModuleSafety entries.
+    fn finalize_safety_map(&self, state: GlobalAnalysisState, mode: ExecutionMode) -> SafetyMap {
+        let (safety_map, function_safety) = state.into_parts();
+        if mode == ExecutionMode::Incremental {
+            let modules: Vec<ModuleName> = safety_map.iter().map(|entry| *entry.key()).collect();
+            let module_strs: AHashSet<&str> = modules.iter().map(|m| m.as_str()).collect();
+
+            // Consumed rather than iterated by reference: every verdict is moved
+            // into the module that owns it, so none of them is cloned.
+            function_safety.into_par_iter().for_each(|(fqn, mut info)| {
+                let Some((module, local_name)) =
+                    enclosing_module_str(fqn.as_str(), |p| module_strs.contains(p))
+                else {
+                    return;
+                };
+                if let Some(mut safety_entry) = safety_map.get_mut(&module) {
+                    if let SafetyResult::Ok(module_safety) = safety_entry.value_mut() {
+                        if let Some(mutated) = self.resolve_cached_mutated_params_for(&fqn) {
+                            info.mutated_params = mutated;
+                        }
+                        module_safety
+                            .function_safety
+                            .insert(local_name.to_string(), info);
+                    }
+                }
+            });
+        }
+        safety_map
+    }
+
     fn collect_errors_from_project(
         &self,
         mode: ExecutionMode,
         import_graph: &ImportGraph,
     ) -> SafetyMap {
-        let state = GlobalAnalysisState::new();
-        state.init_safety_map(&self.analysis_map);
+        let state = GlobalAnalysisState::new(&self.analysis_map);
 
         // Determinism fix: compute all function/constructor safety verdicts up
         // front, BEFORE the module-scope error pass, so that pass only ever reads
@@ -224,21 +255,17 @@ impl ProjectInfo {
             let defs = &result.definitions;
             for scope in &defs.eager_scopes {
                 if let Err(e) = self.collect_errors_from_scope(mod_name, scope, mode, &state) {
-                    state
-                        .safety_map
-                        .insert(*mod_name, SafetyResult::AnalysisError(e));
+                    state.set_analysis_error(mod_name, e);
                     return;
                 }
             }
             self.check_load_imports_eagerly(mod_name, result, &state);
             if let Err(e) = self.collect_implicit_imports(mod_name, result, &state) {
-                state
-                    .safety_map
-                    .insert(*mod_name, SafetyResult::AnalysisError(e));
+                state.set_analysis_error(mod_name, e);
             }
         });
 
-        let safety_map = state.into_safety_map(mode, self);
+        let safety_map = self.finalize_safety_map(state, mode);
 
         if mode == ExecutionMode::WholeProgram {
             self.apply_subclass_registrations(&safety_map, import_graph);

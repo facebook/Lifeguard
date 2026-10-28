@@ -7,9 +7,9 @@
 
 //! Shared concurrent storage for module diagnostics and callable safety verdicts.
 
+use anyhow::Error;
 use dashmap::DashMap;
 use pyrefly_python::module_name::ModuleName;
-use rayon::prelude::*;
 
 use crate::errors::SafetyError;
 use crate::hasher::AHashSet;
@@ -19,67 +19,41 @@ use crate::module_safety::ModuleSafety;
 use crate::module_safety::PropertyCandidate;
 use crate::module_safety::SafetyResult;
 use crate::module_safety::SubclassCandidate;
-use crate::names::enclosing_module_str;
-use crate::project::info::ProjectInfo;
 use crate::project::types::AnalysisMap;
-use crate::project::types::ExecutionMode;
 use crate::project::types::SafetyMap;
 
 // Collects whole-project analysis output, as well as any global state that is required while
 // traversing the analysis map. Uses DashMap for concurrent access from multiple threads.
 pub(super) struct GlobalAnalysisState {
-    pub(super) safety_map: SafetyMap,
+    safety_map: SafetyMap,
     pub(super) function_safety: DashMap<ModuleName, FunctionSafetyInfo>,
 }
 
 impl GlobalAnalysisState {
-    pub(super) fn new() -> Self {
-        Self {
+    pub(super) fn new(analysis_map: &AnalysisMap) -> Self {
+        let state = Self {
             safety_map: SafetyMap::new(),
             function_safety: DashMap::new(),
-        }
+        };
+        state.init_safety_map(analysis_map);
+        state
     }
 
     /// Pre-populate the safety_map with empty ModuleSafety for each module
-    pub(super) fn init_safety_map(&self, analysis_map: &AnalysisMap) {
+    fn init_safety_map(&self, analysis_map: &AnalysisMap) {
         for mod_name in analysis_map.keys() {
             self.safety_map
                 .insert(*mod_name, SafetyResult::Ok(ModuleSafety::new()));
         }
     }
 
-    /// Decompose FQN-keyed function safety verdicts into per-module local-name
-    /// maps and embed them in the corresponding ModuleSafety entries.
-    pub(super) fn into_safety_map(self, mode: ExecutionMode, project: &ProjectInfo) -> SafetyMap {
-        let Self {
-            safety_map,
-            function_safety,
-        } = self;
-        if mode == ExecutionMode::Incremental {
-            let modules: Vec<ModuleName> = safety_map.iter().map(|entry| *entry.key()).collect();
-            let module_strs: AHashSet<&str> = modules.iter().map(|m| m.as_str()).collect();
+    pub(super) fn into_parts(self) -> (SafetyMap, DashMap<ModuleName, FunctionSafetyInfo>) {
+        (self.safety_map, self.function_safety)
+    }
 
-            // Consumed rather than iterated by reference: every verdict is moved
-            // into the module that owns it, so none of them is cloned.
-            function_safety.into_par_iter().for_each(|(fqn, mut info)| {
-                let Some((module, local_name)) =
-                    enclosing_module_str(fqn.as_str(), |p| module_strs.contains(p))
-                else {
-                    return;
-                };
-                if let Some(mut safety_entry) = safety_map.get_mut(&module) {
-                    if let SafetyResult::Ok(module_safety) = safety_entry.value_mut() {
-                        if let Some(mutated) = project.resolve_cached_mutated_params_for(&fqn) {
-                            info.mutated_params = mutated;
-                        }
-                        module_safety
-                            .function_safety
-                            .insert(local_name.to_string(), info);
-                    }
-                }
-            });
-        }
-        safety_map
+    pub(super) fn set_analysis_error(&self, mod_name: &ModuleName, error: Error) {
+        self.safety_map
+            .insert(*mod_name, SafetyResult::AnalysisError(error));
     }
 
     pub(super) fn add_error_to_module(&self, mod_name: &ModuleName, err: SafetyError) {
