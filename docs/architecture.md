@@ -15,7 +15,7 @@ AST parsing is on-demand — modules are parsed as needed during import graph co
 
 - `source_map.rs` loads the source DB and provides the `ModuleProvider` trait for on-demand parsing
 - `imports.rs` builds the `ImportGraph` and collects `Exports` in a single pass over all modules
-- `project.rs` runs parallel per-module analysis (dispatching through `analyzer.rs` to `source_analyzer.rs` or `stub_analyzer.rs`), then merges results into `ProjectInfo` and computes safety verdicts
+- `project.rs` exposes the whole-project analysis API; `project/analysis.rs` dispatches parallel per-module analysis, `project/info.rs` merges the facts into `ProjectInfo`, and the other `project/` submodules compute imports and safety verdicts
 - `output/policy.rs` walks the import graph to build the final `LifeGuardOutput` (lazy_eligible dict + load_imports_eagerly set)
 
 ### Incremental (map/reduce) Analysis
@@ -59,7 +59,15 @@ it means carrying guard-derived edges in the cache for the reduce to drop.
 - `source_analyzer.rs` - Main analysis engine for `.py` files, side-effect detection
 - `stub_analyzer.rs` - Analyzer for `.pyi` stub files, parses effect annotations
 - `analyzer.rs` - Dispatches a module to the source or stub analyzer (`AnalyzedModule`)
-- `project.rs` - Global analysis coordination, call graph traversal, safety verdicts
+- `project.rs` - Declares the project submodules and re-exports the analysis API
+- `project/analysis.rs` - Parallel per-module analysis and project-wide safety orchestration (`run_analysis`, `collect_errors_from_project`)
+- `project/implicit_imports.rs` - Implicit-import computation and side-effect import detection
+- `project/info.rs` - Immutable merged project facts and callable/MRO resolution
+- `project/call_graph.rs` - Call graph construction, cycle marking, and dependency-ordered verdict precomputation
+- `project/calls.rs` - Call-site safety checks and recursive effect traversal
+- `project/mutations.rs` - Parameter-mutation propagation and deferred cross-library mutation candidates
+- `project/safety.rs` - Eager-scope diagnostics and whole-program resolution
+- `project/state.rs` - Shared concurrent module diagnostics and callable verdicts
 - `module_info.rs` - Combined DefinitionTable + ClassTable construction (single AST pass optimization)
 - `mro.rs` - C3 linearization, so an inherited method resolves to the same definition CPython would pick
 
@@ -97,7 +105,7 @@ it means carrying guard-derived edges in the cache for the reduce to drop.
 - `cache/merge.rs` - Merges library records and propagates facts independent of final safety resolution
 - `cache/reduce.rs` - Resolves merged caches into final analysis results
 - `cache_wire.rs` - On-disk cache format, read and write
-- `resolution.rs` - Function-safety resolution (`resolve_program`); used by the reduce and by the whole-program path in `project.rs`
+- `resolution.rs` - Function-safety resolution (`resolve_program`); used by the reduce and by the whole-program path in `project/safety.rs`
 
 **Utilities**:
 - `builtins.rs` - Builtin function resolution (e.g., `list`, `open`, `eval`)

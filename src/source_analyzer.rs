@@ -1143,8 +1143,8 @@ impl<'a> SourceAnalyzer<'a> {
                     }
                 }
             } else if self.info.exports.is_class(typ) {
-                // typ is a class but isn't in the current module's ClassTable, so mark this as an
-                // imported attr access, and we will check in project.rs if it is a property.
+                // The class is defined in another module, so property detection is deferred
+                // to project/safety.rs.
                 if !typ.as_str().starts_with("builtins.") {
                     let fname = typ.append(&attr.id);
                     let eff = Effect::new(EffectKind::ImportedTypeAttr, fname, obj.range());

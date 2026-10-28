@@ -29,7 +29,7 @@ arguments by positional index and keyword name, uncertainty from `*args` and
 
 ### Key EffectKind Methods
 
-- **`is_runnable()`** — Returns true for call effects where the analyzer can recurse into the called function body: `FunctionCall`, `ImportedFunctionCall`, `DecoratorCall`, `ImportedDecoratorCall`, `MethodCall`, `UnboundMethodCall`. These trigger call graph traversal in `project.rs`.
+- **`is_runnable()`** — Returns true for call effects where the analyzer can recurse into the called function body: `FunctionCall`, `ImportedFunctionCall`, `DecoratorCall`, `ImportedDecoratorCall`, `MethodCall`, `UnboundMethodCall`. These trigger call graph traversal in `project/calls.rs`.
 
 - **`requires_eager_loading_imports()`** — On `ErrorKind`; true for the errors of `CustomFinalizer`, `ExecCall`, `SysModulesAccess`, `SubclassesAccess`, `BuiltinsImportOverride`, and for `NamesOnlyInStub`, which no effect produces. These cause the module to be added to the `load_imports_eagerly` set regardless of scope.
 
@@ -132,13 +132,14 @@ pub struct ModuleSafety {
 - `function_safety` and `mutation_candidates` carry per-function safety and
   unresolved-callee mutation candidates for `resolve_program` to settle. This matters most
   incrementally, where a library analyzed on its own cannot see into its dependencies, but
-  the whole-program path in `project.rs` populates and resolves them too.
+  the whole-program pipeline in `project/analysis.rs` populates them and
+  `project/safety.rs` resolves them too.
 
 `SafetyResult` wraps either `Ok(ModuleSafety)` or `AnalysisError(anyhow::Error)`.
 
 ## The Effect-to-Error Conversion Pipeline
 
-The conversion from effects to errors happens in `project.rs` and is the heart of Lifeguard's analysis.
+The conversion from effects to errors is orchestrated in `project/analysis.rs`, with eager-scope diagnostics in `project/safety.rs` and call-body checks in `project/calls.rs`.
 
 ### Step 1: Merge Effects
 
@@ -232,7 +233,7 @@ if let Some(typ) = self.info.bindings.get_type(&res.scope, &res.name) {
     if let Some(cls) = self.info.classes.lookup(typ) {
         // class in this module: emit MethodCall if `attr` is a property
     } else if self.info.exports.is_class(typ) {
-        // class elsewhere: emit ImportedTypeAttr, resolved later in project.rs
+        // class elsewhere: emit ImportedTypeAttr, resolved later in project/safety.rs
     }
 } else if let Some(typ) = self.info.bindings.get_unconfirmed_type(...) {
     // the receiver came from calling an imported name whose module is absent:
@@ -273,7 +274,7 @@ Python AST
     ▼  [source_analyzer.rs / stub_analyzer.rs]
 Effects (EffectTable: scope → Vec<Effect>)
     │
-    ▼  [project.rs: collect_errors_from_project()]
+    ▼  [project/analysis.rs: collect_errors_from_project()]
     │
     ├── Direct effects (UnknownFunctionCall, Raise, etc.) ──→ SafetyError
     ├── Runnable effects (FunctionCall, etc.) ──→ Call graph traversal ──→ Safe or SafetyError
@@ -297,7 +298,10 @@ LifeGuardOutput (lazy_eligible dict + load_imports_eagerly set)
 | `module_safety.rs` | `ModuleSafety`, `SafetyResult` — per-module safety verdict |
 | `source_analyzer.rs` | Generates effects from `.py` AST traversal |
 | `stub_analyzer.rs` | Parses effect declarations from `.pyi` stub files |
-| `project.rs` | Converts effects to errors via call graph analysis |
+| `project/analysis.rs` | Orchestrates project-wide error collection |
+| `project/safety.rs` | Converts eager-scope effects to module diagnostics and resolves whole-program verdicts |
+| `project/calls.rs` | Checks callable effects through call graph traversal |
+| `project/state.rs` | Stores concurrent module diagnostics and callable verdicts |
 | `output.rs` | Converts safety map to final output |
 | `cursor.rs` | Tracks scope during AST traversal (determines where effects are recorded) |
 | `commands/show_effects.rs` | `show-effects` subcommand — dumps effects for a single file |

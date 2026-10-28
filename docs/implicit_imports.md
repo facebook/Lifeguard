@@ -40,7 +40,7 @@ During AST traversal of each module (`source_analyzer.rs`), three data structure
 
 ### Phase 2: Cross-Module Detection
 
-After all modules are analyzed in parallel, `compute_implicit_imports()` in `project.rs` runs the detection algorithm. It orchestrates three steps:
+After all modules are analyzed in parallel, `compute_implicit_imports()` in `project/implicit_imports.rs` runs the detection algorithm. It orchestrates three steps:
 
 1. **`build_init_module_map()`** — Pre-computes a mapping from base module names to their `__init__` modules (e.g., `foo` → `foo/__init__`).
 
@@ -181,7 +181,7 @@ Implicit because `foo.bar`'s import of `foo.bar.baz` is a top-level import that 
 |---|---|
 | `src/module_effects.rs` | `ModuleEffects` struct with `pending_imports`, `called_imports`, `called_functions` |
 | `src/source_analyzer.rs` | Per-module AST traversal that populates `ModuleEffects` |
-| `src/project.rs` | `compute_implicit_imports()` and `compute_implicit_imports_for_module()` — core detection |
+| `src/project/implicit_imports.rs` | `compute_implicit_imports()` and `compute_implicit_imports_for_module()` — core detection |
 | `src/module_safety.rs` | `ModuleSafety` struct storing detected `implicit_imports` per module |
 | `src/output.rs` | Integration of implicit imports into the `lazy_eligible` output dict |
 | `tests/port_test_catch_implicit_imports.rs` | Unit tests |
