@@ -290,7 +290,15 @@ mod tests {
     fn deep_graphs_do_not_overflow_the_stack() {
         let n = 100_000;
         let chain: Vec<(u32, u32)> = (1..n as u32).map(|v| (v - 1, v)).collect();
-        assert_eq!(levels(n, &chain).len(), n);
+        let chain_levels = levels(n, &chain);
+        assert_eq!(chain_levels.len(), n);
+        for (index, level) in chain_levels.iter().enumerate() {
+            assert_eq!(level.as_slice(), &[(n - index - 1) as u32]);
+        }
+        assert_eq!(
+            CsrGraph::from_edges(n, &chain).nodes_in_cycles(),
+            vec![false; n],
+        );
 
         let mut ring = chain;
         ring.push((n as u32 - 1, 0));
