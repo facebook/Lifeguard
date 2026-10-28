@@ -20,8 +20,8 @@ use crate::hasher::AHashSet;
 use crate::hasher::HashSetExt;
 use crate::manual_override;
 use crate::module_safety::FunctionSafety;
+use crate::project::dispatch::iter_callees;
 use crate::project::info::ProjectInfo;
-use crate::project::mutations::iter_callees;
 use crate::project::state::GlobalAnalysisState;
 
 #[derive(Debug)]

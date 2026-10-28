@@ -39,23 +39,6 @@ pub(super) struct CallGraph {
 }
 
 impl ProjectInfo {
-    /// The callee a call effect dispatches to, or `None` when the project view
-    /// cannot name one. A `super()` call or a class statement resolves through the
-    /// MRO above the name it was recorded under, which is never the callee.
-    fn call_graph_target(
-        &self,
-        eff: &Effect,
-        is_node: impl Fn(&ModuleName) -> bool,
-    ) -> Option<ModuleName> {
-        match eff.kind {
-            EffectKind::SuperMethodCall | EffectKind::ClassCreation => {
-                self.resolve_dispatch_above(&eff.name)
-            }
-            _ if is_node(&eff.name) => Some(eff.name),
-            _ => self.resolve_callable(&eff.name),
-        }
-    }
-
     /// Build the call graph over every function and class, and identify the nodes
     /// that participate in a cycle.
     ///

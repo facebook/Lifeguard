@@ -12,7 +12,6 @@ use pyrefly_python::module_name::ModuleName;
 use rayon::prelude::*;
 
 use crate::class::ClassTable;
-use crate::class::FieldKind;
 use crate::effects::ArgSlot;
 use crate::effects::CallData;
 use crate::effects::Effect;
@@ -30,8 +29,8 @@ use crate::module_safety::MutationCandidate;
 use crate::module_safety::MutationCandidateSite;
 use crate::module_safety::ParamPosition;
 use crate::project::calls::Call;
+use crate::project::dispatch::iter_callees;
 use crate::project::info::ProjectInfo;
-use crate::project::info::constructor_method_names;
 use crate::project::info::resolve_enclosing_module;
 use crate::project::state::GlobalAnalysisState;
 use crate::project::types::AnalysisMap;
@@ -63,70 +62,6 @@ fn callee_is_unresolved(
         || callee
             .iter_parents()
             .any(|(parent, _)| is_unresolved(&parent))
-}
-
-/// Number of implicit leading parameters (the receiver) for a method call.
-/// Returns `None` when the method's kind is unknown (e.g. class could not be resolved).
-fn method_receiver_offset(method: &ModuleName, classes: &ClassTable, bound: bool) -> Option<usize> {
-    let (class, leaf) = method.split_attr()?;
-    Some(match classes.lookup(&class)?.get_field(&leaf)?.kind {
-        FieldKind::StaticMethod => 0,
-        FieldKind::ClassMethod => 1,
-        FieldKind::InstanceMethod => usize::from(bound),
-        _ => return None,
-    })
-}
-
-/// Yield each `(callee, arg_offset)` a call binds to: the function(s) whose
-/// parameters the call's explicit arguments map to, paired with the number of
-/// implicit leading parameters (the receiver) to skip.
-pub(super) fn iter_callees<'a>(
-    eff: &'a Effect,
-    classes: &'a ClassTable,
-) -> impl Iterator<Item = (ModuleName, usize)> + 'a {
-    let is_method = matches!(
-        eff.kind,
-        EffectKind::MethodCall | EffectKind::UnboundMethodCall | EffectKind::SuperMethodCall
-    );
-    let is_constructor = !is_method && classes.contains(&eff.name);
-
-    // Constructor calls dispatch to each constructor method (offset 1); empty
-    // for non-constructor calls.
-    let constructors = is_constructor
-        .then(|| constructor_method_names(eff.name, classes))
-        .into_iter()
-        .flatten()
-        .map(|method| (method, 1));
-
-    // Method / plain function calls resolve to a single callee (`eff.name`) at
-    // one or two offsets; empty for constructor calls.
-    let (offset, extra_offset) = match eff.kind {
-        _ if is_constructor => (None, None),
-        // A `super()` call is bound, and its recorded name is the caller's own
-        // method, whose signature an override mirrors.
-        EffectKind::MethodCall | EffectKind::SuperMethodCall => {
-            match method_receiver_offset(&eff.name, classes, true) {
-                Some(offset) => (Some(offset), None),
-                // Unknown kind (e.g. a builtin / third-party class): assume an
-                // implicit receiver, as bound calls usually have one.
-                None => (Some(1), None),
-            }
-        }
-        EffectKind::UnboundMethodCall => match method_receiver_offset(&eff.name, classes, false) {
-            Some(offset) => (Some(offset), None),
-            // Unknown kind: the receiver may be explicit (0) or implicit (1), so
-            // consider both to avoid missing a mutated parameter.
-            None => (Some(0), Some(1)),
-        },
-        _ => (Some(0), None),
-    };
-    let name = eff.name;
-    let single = offset
-        .into_iter()
-        .chain(extra_offset)
-        .map(move |offset| (name, offset));
-
-    constructors.chain(single)
 }
 
 /// Per function, the set of parameters that are method-mutated either directly or transitively via

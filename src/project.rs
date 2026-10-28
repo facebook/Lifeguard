@@ -20,6 +20,7 @@ mod analysis;
 mod builder;
 mod call_graph;
 mod calls;
+mod dispatch;
 mod implicit_imports;
 mod info;
 mod mutations;
