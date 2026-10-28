@@ -7,14 +7,17 @@
 
 //! Whole-project analysis, from per-module effects to safety verdicts.
 //!
-//! - [`analysis`] owns parallel module analysis and the pipeline entry points.
+//! - [`analysis`] owns parallel module analysis, orchestration, and final projection.
+//! - [`types`] defines shared analysis data and execution mode.
 //! - [`implicit_imports`] computes implicit and side-effect imports.
-//! - [`info`] merges immutable project facts and resolves callable names.
+//! - [`info`] stores immutable project facts and provides enclosing-module lookup.
+//! - [`builder`] constructs facts and computes derived mutation data.
+//! - [`dispatch`] enumerates syntactic candidates and resolves callable/MRO dispatch.
 //! - [`call_graph`] orders safety precomputation by callee dependencies.
-//! - [`calls`] checks call-site safety and traverses callable effects.
-//! - [`mutations`] propagates parameter mutations and records deferred candidates.
+//! - [`calls`] evaluates callable effects and call-site mutation diagnostics.
+//! - [`mutations`] queries mutations, propagates parameters, and collects candidates.
 //! - [`safety`] collects module diagnostics and resolves whole-program verdicts.
-//! - [`state`] stores shared concurrent diagnostics and callable verdicts.
+//! - [`state`] stores concurrent records and exposes consuming owned maps.
 
 mod analysis;
 mod builder;

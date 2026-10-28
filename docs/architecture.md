@@ -15,8 +15,39 @@ AST parsing is on-demand — modules are parsed as needed during import graph co
 
 - `source_map.rs` loads the source DB and provides the `ModuleProvider` trait for on-demand parsing
 - `imports.rs` builds the `ImportGraph` and collects `Exports` in a single pass over all modules
-- `project.rs` exposes the whole-project analysis API; `project/analysis.rs` dispatches parallel per-module analysis, `project/info.rs` merges the facts into `ProjectInfo`, and the other `project/` submodules compute imports and safety verdicts
+- `project.rs` exposes the whole-project analysis API; `project/analysis.rs` dispatches parallel per-module analysis and finalizes safety, `project/builder.rs` constructs immutable `ProjectInfo` facts, and the other `project/` submodules compute imports and safety verdicts
 - `output/policy.rs` walks the import graph to build the final `LifeGuardOutput` (lazy_eligible dict + load_imports_eagerly set)
+
+### Project dependency layers
+
+Arrows mean “depends on”; imports and cross-module `ProjectInfo` helper calls both count.
+The facade only declares modules and re-exports the public API.
+
+```text
+analysis → builder, call_graph, safety, dispatch, mutations, implicit_imports, info, state, types
+builder → mutations, info, types
+call_graph → calls, dispatch, info, state
+safety → calls, mutations, info, state, types
+calls → mutations, dispatch, info, state
+mutations → dispatch, info, types
+dispatch → info
+info → types
+state → types
+implicit_imports → types
+types → leaf model types
+```
+
+Existing leaf utilities (`class`, `effects`, `module_safety`, `names`, `mro`, etc.) are
+omitted. `ProjectInfo::new` is implemented in `builder`, while its data type lives in
+`info`. Call-graph fixtures use analysis and builder setup; production scheduling does
+not depend on construction.
+
+`dispatch` keeps syntactic constructor/argument candidates separate from resolved
+callable/MRO lookup. `analysis::finalize_safety_map` consumes the store's tuple and moves
+callable verdicts into module-local maps only for incremental output, resolving cached
+mutated parameters there. Whole-program resolution precedes eager diagnostics and does
+not embed these callable maps in output. The `function_safety` map remains shared with
+scheduling, evaluation, and whole-program resolution; module records are private.
 
 ### Incremental (map/reduce) Analysis
 
@@ -60,14 +91,17 @@ it means carrying guard-derived edges in the cache for the reduce to drop.
 - `stub_analyzer.rs` - Analyzer for `.pyi` stub files, parses effect annotations
 - `analyzer.rs` - Dispatches a module to the source or stub analyzer (`AnalyzedModule`)
 - `project.rs` - Declares the project submodules and re-exports the analysis API
-- `project/analysis.rs` - Parallel per-module analysis and project-wide safety orchestration (`run_analysis`, `collect_errors_from_project`)
+- `project/analysis.rs` - Parallel per-module analysis, project-wide safety orchestration, and consuming verdict projection (`run_analysis`, `collect_errors_from_project`, `finalize_safety_map`)
+- `project/types.rs` - Shared map aliases, execution mode, and analysis output; re-exported unchanged through `project.rs`
 - `project/implicit_imports.rs` - Implicit-import computation and side-effect import detection
-- `project/info.rs` - Immutable merged project facts and callable/MRO resolution
-- `project/call_graph.rs` - Call graph construction, cycle marking, and dependency-ordered verdict precomputation
-- `project/calls.rs` - Call-site safety checks and recursive effect traversal
-- `project/mutations.rs` - Parameter-mutation propagation and deferred cross-library mutation candidates
+- `project/info.rs` - Immutable project facts and enclosing-module name lookup
+- `project/builder.rs` - Effect/class/function merging, re-export collection, nested-function indexing, and derived mutation computation (`ProjectInfo::new`)
+- `project/dispatch.rs` - Syntactic constructor candidates, receiver offsets, callable/MRO dispatch, constructor recording, and call-graph target lookup
+- `project/call_graph.rs` - Call graph construction, cycle marking, and dependency-ordered verdict precomputation through the evaluator
+- `project/calls.rs` - Call-site safety checks, mutation diagnostics (`check_call_params`), and recursive effect traversal
+- `project/mutations.rs` - Immutable mutation queries, parameter-mutation fixpoints, and deferred cross-library candidates; no evaluator or verdict storage dependency
 - `project/safety.rs` - Eager-scope diagnostics and whole-program resolution
-- `project/state.rs` - Shared concurrent module diagnostics and callable verdicts
+- `project/state.rs` - Concurrent records and updates; `into_parts` returns owned module/callable maps without fact lookup or final projection
 - `module_info.rs` - Combined DefinitionTable + ClassTable construction (single AST pass optimization)
 - `mro.rs` - C3 linearization, so an inherited method resolves to the same definition CPython would pick
 

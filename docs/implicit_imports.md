@@ -40,7 +40,7 @@ During AST traversal of each module (`source_analyzer.rs`), three data structure
 
 ### Phase 2: Cross-Module Detection
 
-After all modules are analyzed in parallel, `compute_implicit_imports()` in `project/implicit_imports.rs` runs the detection algorithm. It orchestrates three steps:
+After parallel per-module analysis, `analysis::analyze_all` calls `compute_implicit_imports()` in `project/implicit_imports.rs` over the shared `types::AnalysisMap`, before `ProjectInfo::new` in `builder.rs` constructs the immutable project facts. Detection orchestrates three steps:
 
 1. **`build_init_module_map()`** — Pre-computes a mapping from base module names to their `__init__` modules (e.g., `foo` → `foo/__init__`).
 
@@ -69,7 +69,7 @@ The final result is: `called_imports − non_implicit_imports = implicit_imports
 
 ### Phase 3: Output Integration
 
-In `output.rs`, implicit imports are added to the `lazy_eligible` dict for passing modules. If module A is otherwise safe but has an implicit import of B, then B is added to A's `lazy_eligible` set.
+`project/safety.rs::collect_implicit_imports` records each module's implicit imports in the concurrent `project/state.rs` store. `project/analysis.rs` consumes that store through `into_parts` and finalizes the safety map. `output/policy.rs` adds implicit imports to the `lazy_eligible` dict for passing modules: if module A is otherwise safe but has an implicit import of B, B is added to A's `lazy_eligible` set.
 
 ## Examples
 
@@ -182,6 +182,9 @@ Implicit because `foo.bar`'s import of `foo.bar.baz` is a top-level import that 
 | `src/module_effects.rs` | `ModuleEffects` struct with `pending_imports`, `called_imports`, `called_functions` |
 | `src/source_analyzer.rs` | Per-module AST traversal that populates `ModuleEffects` |
 | `src/project/implicit_imports.rs` | `compute_implicit_imports()` and `compute_implicit_imports_for_module()` — core detection |
+| `src/project/types.rs` / `src/project/builder.rs` | Shared analysis map and construction of immutable project facts after detection |
+| `src/project/safety.rs` / `src/project/state.rs` | Record implicit imports in concurrent module diagnostics |
+| `src/project/analysis.rs` | Sequence detection and consume/finalize the store |
 | `src/module_safety.rs` | `ModuleSafety` struct storing detected `implicit_imports` per module |
-| `src/output.rs` | Integration of implicit imports into the `lazy_eligible` output dict |
+| `src/output/policy.rs` | Integration of implicit imports into the `lazy_eligible` output dict |
 | `tests/port_test_catch_implicit_imports.rs` | Unit tests |

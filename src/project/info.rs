@@ -5,7 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! Immutable project facts and callable resolution through re-exports and the MRO.
+//! Immutable project facts and enclosing-module name lookup.
 
 use std::collections::HashMap;
 

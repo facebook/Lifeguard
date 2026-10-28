@@ -130,10 +130,11 @@ pub struct ModuleSafety {
 - A module `should_load_imports_eagerly()` when `force_imports_eager_overrides` is non-empty (only `CustomFinalizer`, `ExecCall`, `SysModulesAccess`, `SubclassesAccess`,
   `BuiltinsImportOverride`, `NamesOnlyInStub`).
 - `function_safety` and `mutation_candidates` carry per-function safety and
-  unresolved-callee mutation candidates for `resolve_program` to settle. This matters most
-  incrementally, where a library analyzed on its own cannot see into its dependencies, but
-  the whole-program pipeline in `project/analysis.rs` populates them and
-  `project/safety.rs` resolves them too.
+  unresolved-callee mutation candidates for `resolve_program` to settle. In incremental
+  output, `project/analysis.rs::finalize_safety_map` projects owned callable verdicts and
+  resolves cached mutated parameters after consuming `project/state.rs::into_parts`.
+  The whole-program path instead resolves a transient callable view in `project/safety.rs`
+  before eager diagnostics; it does not embed callable maps in its output.
 
 `SafetyResult` wraps either `Ok(ModuleSafety)` or `AnalysisError(anyhow::Error)`.
 
@@ -143,15 +144,15 @@ The conversion from effects to errors is orchestrated in `project/analysis.rs`, 
 
 ### Step 1: Merge Effects
 
-All per-module `EffectTable`s are merged into a single global table
-(`merge_all_effects`). Class-body effects inside a function are propagated to
+All per-module `EffectTable`s are merged in `project/builder.rs`
+(`merge_all_effects`) into a single global table. Class-body effects inside a function are propagated to
 that enclosing function. Nested function bodies are not propagated here; the
 call graph handles their execution. Parameterized decorators have additional
 call-site handling for the returned wrapper's effects.
 
 ### Step 2: Build ProjectInfo
 
-`ProjectInfo` aggregates the global effect table, class table, function-to-module mappings, and re-export information.
+`ProjectInfo::new` in `project/builder.rs` constructs the immutable `ProjectInfo` in `project/info.rs`: global effects, classes, function-to-module mappings, re-exports, nested functions, and derived mutation facts. `project/mutations.rs` computes parameter fixpoints over effects and facts; it does not evaluate calls or write diagnostics. `project/dispatch.rs` separately owns syntactic argument/constructor candidates and resolved callable/MRO lookup, preserving their distinct policies.
 
 ### Step 3: Collect Errors
 
@@ -178,7 +179,7 @@ call-site handling for the returned wrapper's effects.
 3. **Special handling**:
    - `ImportedVarMutation` at module scope → `ImportedModuleAssignment` error
    - `ImportedTypeAttr` → checked for property access, treated as a call
-   - Imported arguments matched to directly or transitively mutated parameters → `ImportedVarArgument` error
+   - Imported arguments matched by immutable `project/mutations.rs` queries to directly or transitively mutated parameters → `ImportedVarArgument` error via `project/calls.rs::check_call_params`
    - Effects with `requires_eager_loading_imports()` → added to `force_imports_eager_overrides`
    - A module whose companion `.pyi` declares public names, none of which its source binds → `NamesOnlyInStub`, added to `force_imports_eager_overrides` only; it is recorded by the analyzer rather than as an effect
 
@@ -298,10 +299,16 @@ LifeGuardOutput (lazy_eligible dict + load_imports_eagerly set)
 | `module_safety.rs` | `ModuleSafety`, `SafetyResult` — per-module safety verdict |
 | `source_analyzer.rs` | Generates effects from `.py` AST traversal |
 | `stub_analyzer.rs` | Parses effect declarations from `.pyi` stub files |
-| `project/analysis.rs` | Orchestrates project-wide error collection |
+| `project/types.rs` | Shared map aliases, execution mode, and analysis output |
+| `project/info.rs` | Immutable facts and enclosing-module lookup |
+| `project/builder.rs` | Constructs facts and computes derived parameter mutations |
+| `project/dispatch.rs` | Syntactic candidates, argument offsets, and resolved callable/MRO dispatch |
+| `project/analysis.rs` | Orchestrates project-wide error collection and consuming verdict projection |
+| `project/call_graph.rs` | Schedules verdict precomputation through the evaluator |
 | `project/safety.rs` | Converts eager-scope effects to module diagnostics and resolves whole-program verdicts |
-| `project/calls.rs` | Checks callable effects through call graph traversal |
-| `project/state.rs` | Stores concurrent module diagnostics and callable verdicts |
+| `project/calls.rs` | Evaluates callable effects and call-site mutation diagnostics |
+| `project/mutations.rs` | Immutable mutation queries, fixpoints, and deferred candidates |
+| `project/state.rs` | Stores concurrent records and updates; returns owned maps via `into_parts` |
 | `output.rs` | Converts safety map to final output |
 | `cursor.rs` | Tracks scope during AST traversal (determines where effects are recorded) |
 | `commands/show_effects.rs` | `show-effects` subcommand — dumps effects for a single file |

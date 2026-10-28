@@ -5,7 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! Parameter mutation propagation and deferred cross-library mutation candidates.
+//! Immutable mutation queries, parameter fixpoints, and deferred cross-library candidates.
 
 use dashmap::DashMap;
 use pyrefly_python::module_name::ModuleName;

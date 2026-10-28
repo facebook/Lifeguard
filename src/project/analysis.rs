@@ -5,7 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! Parallel per-module analysis and the project analysis pipeline.
+//! Parallel module analysis, project orchestration, and consuming verdict projection.
 
 use std::sync::OnceLock;
 use std::sync::mpsc;

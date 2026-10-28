@@ -5,7 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! Shared concurrent storage for module diagnostics and callable safety verdicts.
+//! Concurrent module/callable records and updates, consumed as owned maps by analysis.
 
 use anyhow::Error;
 use dashmap::DashMap;
@@ -22,8 +22,7 @@ use crate::module_safety::SubclassCandidate;
 use crate::project::types::AnalysisMap;
 use crate::project::types::SafetyMap;
 
-// Collects whole-project analysis output, as well as any global state that is required while
-// traversing the analysis map. Uses DashMap for concurrent access from multiple threads.
+// Concurrent records shared by evaluation, scheduling, and eager diagnostics.
 pub(super) struct GlobalAnalysisState {
     safety_map: SafetyMap,
     pub(super) function_safety: DashMap<ModuleName, FunctionSafetyInfo>,
