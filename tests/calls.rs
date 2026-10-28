@@ -496,6 +496,146 @@ import os
     }
 
     #[test]
+    fn test_reexported_mutator_matches_direct_import() {
+        let origin = r#"
+registry = []
+
+def mutate(value):
+    value["seen"] = True
+    return lambda f: f
+"#;
+        let consumer = |module: &str| {
+            format!(
+                r#"
+from {module} import mutate
+from origin import registry
+
+@mutate(registry)  # E: imported-var-argument
+def e():
+    ...
+
+def forward(value):
+    mutate(value)
+
+forward(registry)  # E: imported-var-argument
+"#
+            )
+        };
+        check_all(vec![
+            ("origin", origin),
+            ("facade", "from origin import mutate"),
+            ("direct", &consumer("origin")),
+            ("consumer", &consumer("facade")),
+        ]);
+    }
+
+    #[test]
+    fn test_methods_through_reexported_class_match_direct_import() {
+        let origin = r#"
+registry = []
+
+class Base:
+    @staticmethod
+    def inherited(x):
+        return x
+
+    @staticmethod
+    def inherited_mutate(value):
+        value["seen"] = True
+
+class C(Base):
+    @staticmethod
+    def pure(x):
+        return x
+
+    @staticmethod
+    def unsafe(x):
+        registry.append(x)
+
+    @staticmethod
+    def mutate(value):
+        value["seen"] = True
+
+    @classmethod
+    def class_mutate(cls, value):
+        value["seen"] = True
+
+    @classmethod
+    def from_value(cls, value):
+        return cls.build(value)
+"#;
+        let body = r#"
+from origin import registry
+
+C.pure(1)
+C.inherited(1)
+C.unsafe(1)  # E: unsafe-function-call
+C.mutate(registry)  # E: imported-var-argument
+C.inherited_mutate(registry)  # E: imported-var-argument
+C.class_mutate(registry)  # E: imported-var-argument
+C.from_value(1)  # E: unsafe-function-call
+"#;
+        let direct = format!("import origin\n{body}").replace("\nC.", "\norigin.C.");
+        let consumer = format!("import facade\n{body}").replace("\nC.", "\nfacade.C.");
+        check_all(vec![
+            ("origin", origin),
+            ("facade", "from origin import C"),
+            ("direct", &direct),
+            ("consumer", &consumer),
+        ]);
+    }
+
+    #[test]
+    fn test_inherited_method_through_reexported_or_shadowed_names() {
+        check_all(vec![
+            ("pkg", "from pkg.foo import foo\n"),
+            (
+                "pkg.foo",
+                "def foo():\n pass\nclass A:\n @staticmethod\n def m():\n  raise Exception()\nclass Base(A):\n pass\n",
+            ),
+            ("facade", "from pkg.foo import Base\n"),
+            (
+                "app",
+                "import pkg.foo\nimport facade\nclass Sub(facade.Base):\n pass\npkg.foo.Base.m()  # E: unsafe-function-call\nSub.m()  # E: unsafe-method-call\n",
+            ),
+        ]);
+    }
+
+    #[test]
+    fn test_annotation_without_value_does_not_shadow_inherited_method() {
+        for body in [
+            "method: object",
+            "if True:\n  method: object\n else:\n  method: object",
+            "method: object\n del method",
+            "global method\n method = None",
+            "from typing import TYPE_CHECKING\n if TYPE_CHECKING:\n  method = None",
+        ] {
+            let origin = format!(
+                "class Base:\n @staticmethod\n def method():\n  pass\nclass Sub(Base):\n {body}\n"
+            );
+            check_all(vec![
+                ("origin", &origin),
+                ("facade", "from origin import Sub\n"),
+                ("app", "from facade import Sub\nSub.method()\n"),
+            ]);
+        }
+    }
+
+    #[test]
+    fn test_conditional_method_kind_stays_conservative() {
+        check_all(vec![
+            (
+                "origin",
+                "registry = {}\nclass C:\n if False:\n  @staticmethod\n  def mutate(value): pass\n else:\n  @classmethod\n  def mutate(cls, value):\n   value['seen'] = True\n",
+            ),
+            (
+                "app",
+                "from origin import C, registry\nC().mutate(registry)  # E: imported-var-argument\n",
+            ),
+        ]);
+    }
+
+    #[test]
     fn test_method_call_on_constructor_result() {
         let code = r#"
 class Widget:
