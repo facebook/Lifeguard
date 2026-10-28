@@ -17,6 +17,7 @@
 //! - [`state`] stores shared concurrent diagnostics and callable verdicts.
 
 mod analysis;
+mod builder;
 mod call_graph;
 mod calls;
 mod implicit_imports;
