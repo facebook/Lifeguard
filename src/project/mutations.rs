@@ -18,8 +18,6 @@ use crate::effects::Effect;
 use crate::effects::EffectData;
 use crate::effects::EffectKind;
 use crate::effects::EffectTable;
-use crate::errors::ErrorKind;
-use crate::errors::SafetyError;
 use crate::hasher::AHashMap;
 use crate::hasher::AHashSet;
 use crate::hasher::HashMapExt;
@@ -28,11 +26,9 @@ use crate::module_safety::MutatedParam;
 use crate::module_safety::MutationCandidate;
 use crate::module_safety::MutationCandidateSite;
 use crate::module_safety::ParamPosition;
-use crate::project::calls::Call;
 use crate::project::dispatch::iter_callees;
 use crate::project::info::ProjectInfo;
 use crate::project::info::resolve_enclosing_module;
-use crate::project::state::GlobalAnalysisState;
 use crate::project::types::AnalysisMap;
 use crate::traits::ModuleNameExt;
 
@@ -396,12 +392,5 @@ impl ProjectInfo {
         call_effect
             .call_data()
             .is_some_and(|data| data.has_unsafe_args())
-    }
-
-    pub(super) fn check_call_params(&self, call: &Call, state: &GlobalAnalysisState) {
-        if self.call_mutates_imported_arg(call.effect) {
-            let err = SafetyError::new_from_effect(ErrorKind::ImportedVarArgument, call.effect);
-            state.add_error_to_module(call.caller_module, err);
-        }
     }
 }

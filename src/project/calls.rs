@@ -83,6 +83,13 @@ impl CallStack {
 }
 
 impl ProjectInfo {
+    fn check_call_params(&self, call: &Call, state: &GlobalAnalysisState) {
+        if self.call_mutates_imported_arg(call.effect) {
+            let err = SafetyError::new_from_effect(ErrorKind::ImportedVarArgument, call.effect);
+            state.add_error_to_module(call.caller_module, err);
+        }
+    }
+
     fn can_resolve_call(&self, call: &Call, state: &GlobalAnalysisState) -> bool {
         self.contains_callable(&call.func) || state.function_safety.contains_key(&call.func)
     }
