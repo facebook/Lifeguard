@@ -92,7 +92,7 @@ impl AnalysisConfig {
         let mut done = false;
         self.sys_info
             .pruned_if_branches(x)
-            .filter_map(move |(test, body)| {
+            .filter_map(move |(_, test, body)| {
                 if done {
                     return None;
                 }
