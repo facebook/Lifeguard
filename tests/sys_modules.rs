@@ -238,6 +238,58 @@ mod tests {
         );
     }
 
+    /// An aliased `sys` is still `sys.modules`.
+    #[test]
+    fn test_aliased_sys_modules_access_stays_eager() {
+        let code = r#"
+            import sys as s
+            x = s.modules["loud"] # E: sys-modules-access
+        "#;
+        let modules = vec![("test", code), ("loud", "")];
+        check_all(modules.clone());
+
+        let result = run_lifeguard_analysis(&modules);
+        assert!(
+            loads_imports_eagerly(&result, "test"),
+            "the alias does not change which modules object is read"
+        );
+    }
+
+    /// `import sys as sys` is recorded as its own style, not as a plain import.
+    #[test]
+    fn test_self_aliased_sys_modules_access_stays_eager() {
+        let code = r#"
+            import sys as sys
+            x = sys.modules["loud"] # E: sys-modules-access
+        "#;
+        let modules = vec![("test", code), ("loud", "")];
+        check_all(modules.clone());
+
+        let result = run_lifeguard_analysis(&modules);
+        assert!(
+            loads_imports_eagerly(&result, "test"),
+            "the alias does not change which modules object is read"
+        );
+    }
+
+    /// The guard scan must follow the same alias the read does.
+    #[test]
+    fn test_membership_test_through_an_alias_makes_the_read_a_probe() {
+        let reader = r#"
+            import sys as s
+
+            def get():
+                if "loud" in s.modules:
+                    return s.modules["loud"]
+                return None
+        "#;
+        let result = run_lifeguard_analysis(&vec![("reader", reader), ("loud", "")]);
+        assert!(
+            !loads_imports_eagerly(&result, "reader"),
+            "the code checks first, so the read cannot fail"
+        );
+    }
+
     #[test]
     fn test_computed_key_stays_eager() {
         let code = r#"

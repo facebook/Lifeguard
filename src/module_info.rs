@@ -219,7 +219,7 @@ fn visible_in_class_body(definition: &Definition, read_at: TextRange) -> bool {
 
 /// pyrefly records `import a.b as c` as `ImportAs(a.b, "a.b")` and `from a import b as c`
 /// as `ImportAs(a, "b")`; `from x import x as c` is indistinguishable from the first.
-fn alias_target(module: &ModuleName, original_name: &Name) -> ModuleName {
+pub(crate) fn alias_target(module: &ModuleName, original_name: &Name) -> ModuleName {
     if original_name.as_str() == module.as_str() {
         *module
     } else {
@@ -251,9 +251,10 @@ impl<'a> ResolvedName<'a> {
     pub fn imported_target(&self) -> Option<ModuleName> {
         match &self.definition.style {
             DefinitionStyle::ImportModule(module) => Some(*module),
-            DefinitionStyle::Import(parent) | DefinitionStyle::ImportAsEq(parent) => {
-                Some(parent.append(&self.name))
-            }
+            DefinitionStyle::Import(parent) => Some(parent.append(&self.name)),
+            // `import X as X` records no original name of its own, so the bound
+            // name stands in for it: `import sys as sys` targets `sys`, not `sys.sys`.
+            DefinitionStyle::ImportAsEq(parent) => Some(alias_target(parent, &self.name)),
             DefinitionStyle::ImportAs(parent, original_name) => {
                 Some(alias_target(parent, original_name))
             }
@@ -276,21 +277,26 @@ impl<'a> ResolvedName<'a> {
     pub fn qualify_import_access(&self, access: &ModuleName) -> Option<ModuleName> {
         match &self.definition.style {
             DefinitionStyle::ImportModule(_) => Some(*access),
-            DefinitionStyle::Import(parent) | DefinitionStyle::ImportAsEq(parent) => {
-                Some(parent.concat(access))
+            DefinitionStyle::Import(parent) => Some(parent.concat(access)),
+            DefinitionStyle::ImportAsEq(parent) => {
+                Some(self.rebase_access(alias_target(parent, &self.name), access))
             }
             DefinitionStyle::ImportAs(parent, original_name) => {
-                let target = alias_target(parent, original_name);
-                let suffix = access
-                    .as_str()
-                    .strip_prefix(self.name.as_str())
-                    .and_then(|rest| rest.strip_prefix('.'));
-                Some(match suffix {
-                    Some(suffix) => target.append_str(suffix),
-                    None => target,
-                })
+                Some(self.rebase_access(alias_target(parent, original_name), access))
             }
             _ => None,
+        }
+    }
+
+    /// Re-root an attribute chain written through the bound name onto `target`.
+    fn rebase_access(&self, target: ModuleName, access: &ModuleName) -> ModuleName {
+        let suffix = access
+            .as_str()
+            .strip_prefix(self.name.as_str())
+            .and_then(|rest| rest.strip_prefix('.'));
+        match suffix {
+            Some(suffix) => target.append_str(suffix),
+            None => target,
         }
     }
 
@@ -305,11 +311,22 @@ impl<'a> ResolvedName<'a> {
         let name = self
             .expr_full_name
             .unwrap_or_else(|| ModuleName::from_name(&self.name));
-        self.qualify_name(&name)
+        self.recorded_name(&name)
     }
 
     pub fn try_qualified_name(&self) -> Option<ModuleName> {
-        Some(self.qualify_name(&self.expr_full_name?))
+        Some(self.recorded_name(&self.expr_full_name?))
+    }
+
+    /// The name this resolution records. An import binding resolves through to
+    /// its original module path, so an alias never leaks into the recorded name.
+    fn recorded_name(&self, access: &ModuleName) -> ModuleName {
+        if self.is_import()
+            && let Some(original) = self.qualify_import_access(access)
+        {
+            return original;
+        }
+        self.qualify_name(access)
     }
 
     // Qualify a possibly dotted name with the scope of this name.
@@ -655,9 +672,6 @@ impl<'a> CombinedDefinitionClassBuilder<'a> {
 
     fn get_class_name(&self, expr: &Expr) -> Option<ModuleName> {
         let res = self.resolve_expr(expr)?;
-        if res.is_import() {
-            return res.qualify_import_access(&res.expr_full_name?);
-        }
         res.try_qualified_name()
     }
 
@@ -955,7 +969,7 @@ class C:
         code: &str,
         scopes: &[&str],
         name: &str,
-    ) -> Option<(ModuleName, bool)> {
+    ) -> Option<(ModuleName, bool, Option<ModuleName>)> {
         // Resolve `name` as if written on the last line, so its range is a real
         // position in the module rather than an offset into a second source.
         let appended_at = TextSize::try_from(code.len() + 1).unwrap();
@@ -988,7 +1002,11 @@ class C:
             expr_stmt.value
         );
         let res = info.resolve(&cursor, &expr_stmt.value)?;
-        Some((res.scope, res.definition.is_import()))
+        Some((
+            res.scope,
+            res.definition.is_import(),
+            res.try_qualified_name(),
+        ))
     }
 
     #[test]
@@ -997,7 +1015,7 @@ class C:
         let code = "x = 1\n";
         let result = make_module_info_and_resolve(code, &["test"], "list");
         assert!(result.is_some(), "builtin 'list' should resolve");
-        let (scope, is_import) = result.unwrap();
+        let (scope, is_import, _) = result.unwrap();
         assert_eq!(scope, ModuleName::builtins());
         assert!(!is_import);
     }
@@ -1008,7 +1026,7 @@ class C:
         let code = "list = [1, 2, 3]\n";
         let result = make_module_info_and_resolve(code, &["test"], "list");
         assert!(result.is_some(), "'list' should resolve");
-        let (scope, _) = result.unwrap();
+        let (scope, _, _) = result.unwrap();
         assert_eq!(
             scope,
             ModuleName::from_str("test"),
@@ -1022,7 +1040,7 @@ class C:
         let code = "from foo import bar\n";
         let result = make_module_info_and_resolve(code, &["test"], "bar");
         assert!(result.is_some());
-        let (scope, is_import) = result.unwrap();
+        let (scope, is_import, _) = result.unwrap();
         assert_eq!(scope, ModuleName::from_str("test"));
         assert!(is_import, "'bar' should be an import");
     }
@@ -1033,5 +1051,25 @@ class C:
         let code = "x = 1\n";
         let result = make_module_info_and_resolve(code, &["test"], "not_a_real_name");
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_aliased_import_qualifies_to_its_original_name() {
+        let code = "from m import B as Alias\n";
+        let result = make_module_info_and_resolve(code, &["test"], "Alias");
+        assert!(result.is_some());
+        let (_, is_import, qualified) = result.unwrap();
+        assert!(is_import);
+        assert_eq!(qualified, Some(ModuleName::from_str("m.B")));
+    }
+
+    #[test]
+    fn test_aliased_module_attribute_qualifies_through_the_module() {
+        let code = "import m.sub as s\n";
+        let result = make_module_info_and_resolve(code, &["test"], "s.B");
+        assert!(result.is_some());
+        let (_, is_import, qualified) = result.unwrap();
+        assert!(is_import);
+        assert_eq!(qualified, Some(ModuleName::from_str("m.sub.B")));
     }
 }

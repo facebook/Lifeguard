@@ -31,6 +31,7 @@ use crate::hasher::HashSetExt;
 use crate::hasher::extend_nested;
 use crate::hasher::merge_nested_larger;
 use crate::imports::ImportGraph;
+use crate::module_info::alias_target;
 use crate::module_parser::ParsedModule;
 use crate::pyrefly::definitions::Definition;
 use crate::pyrefly::definitions::DefinitionStyle;
@@ -733,6 +734,9 @@ impl<'a> ExportsBuilder<'a> {
                             Some(self.module_name.append(&name.id))
                         }
                         DefinitionStyle::Import(from_module) => Some(from_module.append(&name.id)),
+                        // A bare annotation names a class, never a module, so the
+                        // original name is an attribute even when it repeats the
+                        // module's own name (`SocketType = socket.socket`).
                         DefinitionStyle::ImportAs(from_module, original_name) => {
                             Some(from_module.append(original_name))
                         }
@@ -754,6 +758,12 @@ impl<'a> ExportsBuilder<'a> {
                     DefinitionStyle::ImportModule(_) => annotation.full_name(),
                     DefinitionStyle::Import(from_module) => {
                         Some(from_module.append(&base_name.id).append(&attr.attr.id))
+                    }
+                    DefinitionStyle::ImportAs(from_module, original_name) => {
+                        Some(alias_target(from_module, original_name).append(&attr.attr.id))
+                    }
+                    DefinitionStyle::ImportAsEq(from_module) => {
+                        Some(alias_target(from_module, &base_name.id).append(&attr.attr.id))
                     }
                     _ => None,
                 }
@@ -978,6 +988,66 @@ def make() -> Renamed: ...
     fn test_return_type_dotted_module_import() {
         let code = r#"
 import other
+
+def get() -> other.Result: ...
+"#;
+        let exports = get_stub_return_types(code);
+        assert_eq!(
+            exports.get_return_type(&ModuleName::from_str("test.get")),
+            Some(ModuleName::from_str("other.Result")),
+        );
+    }
+
+    #[test]
+    fn test_return_type_aliased_module_attribute() {
+        let code = r#"
+import other.sub as s
+
+def get() -> s.Result: ...
+"#;
+        let exports = get_stub_return_types(code);
+        assert_eq!(
+            exports.get_return_type(&ModuleName::from_str("test.get")),
+            Some(ModuleName::from_str("other.sub.Result")),
+        );
+    }
+
+    #[test]
+    fn test_return_type_from_import_alias_attribute() {
+        let code = r#"
+from other import sub as s
+
+def get() -> s.Result: ...
+"#;
+        let exports = get_stub_return_types(code);
+        assert_eq!(
+            exports.get_return_type(&ModuleName::from_str("test.get")),
+            Some(ModuleName::from_str("other.sub.Result")),
+        );
+    }
+
+    /// `X = M.A` names the attribute even when the attribute repeats the module name.
+    #[test]
+    fn test_return_type_alias_of_attribute_sharing_the_module_name() {
+        let code = r#"
+import socket
+
+SocketType = socket.socket
+
+def get() -> SocketType: ...
+"#;
+        let exports = get_stub_return_types(code);
+        assert_eq!(
+            exports.get_return_type(&ModuleName::from_str("test.get")),
+            Some(ModuleName::from_str("socket.socket")),
+        );
+    }
+
+    /// `import X as X` is the re-export idiom every stub uses.
+    #[test]
+    fn test_return_type_self_aliased_module_attribute() {
+        let code = r#"
+import other as other
 
 def get() -> other.Result: ...
 "#;

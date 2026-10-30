@@ -223,32 +223,56 @@ fn modules_attr_receiver(expr: &Expr) -> Option<&Expr> {
     }
 }
 
-/// Matched by name: `sys_modules_probed_keys` scans the AST with no cursor to resolve
-/// against, so an alias (`import sys as s`) is missed; any `<x>.modules` would be unsound.
-fn is_sys_modules_expr(expr: &Expr) -> bool {
+/// Names an `import sys` statement binds the module to, in any of its forms.
+/// Matched the same way as `is_sys_modules_access`, so `from foo import sys`
+/// (which binds something else entirely) is excluded.
+fn sys_module_aliases(ast: &ModModule) -> AHashSet<Name> {
+    fn from_stmt(stmt: &Stmt, names: &mut AHashSet<Name>) {
+        if let Stmt::Import(import) = stmt {
+            for alias in &import.names {
+                if alias.name.id.as_str() == "sys" {
+                    let bound = alias.asname.as_ref().map_or(&alias.name.id, |a| &a.id);
+                    names.insert(bound.clone());
+                }
+            }
+        }
+        stmt.recurse(&mut |s| from_stmt(s, names));
+    }
+
+    let mut names = AHashSet::new();
+    for stmt in &ast.body {
+        from_stmt(stmt, &mut names);
+    }
+    names
+}
+
+/// Matched by name: this scan has no cursor to resolve against, so it works from
+/// the aliases `sys_module_aliases` collected; any `<x>.modules` would be unsound.
+fn is_sys_modules_expr(expr: &Expr, aliases: &AHashSet<Name>) -> bool {
     modules_attr_receiver(expr)
-        .is_some_and(|value| matches!(value, Expr::Name(name) if name.id.as_str() == "sys"))
+        .is_some_and(|value| matches!(value, Expr::Name(name) if aliases.contains(&name.id)))
 }
 
 /// The keys this module tests with `"x" in sys.modules`. Collected per module,
 /// because the test and the read are routinely in different places.
 fn sys_modules_probed_keys(ast: &ModModule) -> AHashSet<ModuleName> {
-    fn from_expr(x: &Expr, keys: &mut AHashSet<ModuleName>) {
+    fn from_expr(x: &Expr, aliases: &AHashSet<Name>, keys: &mut AHashSet<ModuleName>) {
         // Exactly `"x" in sys.modules`; in `"x" in y in sys.modules` the key was
         // tested against `y`.
         if let Expr::Compare(cmp) = x
             && matches!(cmp.ops.as_ref(), [CmpOp::In] | [CmpOp::NotIn])
-            && is_sys_modules_expr(cmp.second_operand())
+            && is_sys_modules_expr(cmp.second_operand(), aliases)
         {
             keys.extend(string_literal_module(cmp.first_operand()));
         }
         // `Visit<Expr>` yields statement-position expressions only, so a nested
         // test is reached by recursing.
-        x.recurse(&mut |c| from_expr(c, keys));
+        x.recurse(&mut |c| from_expr(c, aliases, keys));
     }
 
+    let aliases = sys_module_aliases(ast);
     let mut keys = AHashSet::new();
-    ast.visit(&mut |e: &Expr| from_expr(e, &mut keys));
+    ast.visit(&mut |e: &Expr| from_expr(e, &aliases, &mut keys));
     keys
 }
 
@@ -1210,10 +1234,15 @@ impl<'a> SourceAnalyzer<'a> {
         false
     }
 
+    /// Matched on the imported module, not the bound name, so `import sys as s`
+    /// still counts (and `from foo import sys` does not).
     fn is_sys_modules_access(&self, expr: &Expr) -> bool {
         modules_attr_receiver(expr)
             .and_then(|value| self.info.resolve(&self.cursor, value))
-            .is_some_and(|res| res.is_import() && res.name.as_str() == "sys")
+            .is_some_and(|res| {
+                res.imported_target()
+                    .is_some_and(|target| target.as_str() == "sys")
+            })
     }
 
     /// Python registers a module before running its body and imports every ancestor
